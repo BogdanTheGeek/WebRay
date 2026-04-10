@@ -1,0 +1,2078 @@
+import { mat4, vec4 } from 'https://cdn.skypack.dev/gl-matrix';
+
+const shaderSource = await (await fetch('shaders.wgsl')).text();
+// Toggle debug overlays/features
+var DEBUG = true;
+
+// Gem species presets  [name, RI, COD, hex-colour]
+const presets = [
+   ['Quartz', 1.544, 0.013, '#e8e8e8'],
+   ['Diamond', 2.417, 0.044, '#ffffff'],
+   ['Ruby', 1.762, 0.018, '#e8253a'],
+   ['Sapphire', 1.762, 0.018, '#1a5fd4'],
+   ['Emerald', 1.575, 0.014, '#1db85c'],
+   ['Amethyst', 1.544, 0.013, '#9b59d0'],
+   ['Topaz', 1.619, 0.014, '#f5c842'],
+   ['Spinel', 1.718, 0.020, '#ff6090'],
+   ['Zircon', 1.925, 0.039, '#b8e0ff'],
+   ['Cubic Zirconia', 2.170, 0.060, '#ffffff'],
+   ['Garnet', 1.75, 0.020, '#d32e2f'],
+   ['Tourmaline', 1.62, 0.014, '#ff7b50'],
+   ['Peridot', 1.65, 0.015, '#9fff00'],
+   ['Aquamarine', 1.57, 0.012, '#7fffd4'],
+];
+
+
+// ---------------------------------------------------------------------------
+// UI panel — colour picker, RI slider, dispersion slider, light mode buttons
+// Injects its own <style> so no external CSS needed.
+// ---------------------------------------------------------------------------
+function buildUI(ui, cbs) {
+   let style = document.getElementById('gemui_style');
+   if (!style) {
+      style = document.createElement('style');
+      style.id = 'gemui_style';
+      style.textContent = `
+      #gemui {
+         position: fixed; top: 18px; right: 18px;
+         background: rgba(10,10,14,0.82);
+         border: 1px solid rgba(255,255,255,0.12);
+         border-radius: 12px;
+         padding: 16px 18px;
+         color: #e8e8e8;
+         font: 13px/1.5 system-ui, sans-serif;
+         width: 220px;
+         backdrop-filter: blur(8px);
+         user-select: none;
+         z-index: 100;
+      }
+      #gemui h3 {
+         margin: 0 0 12px; font-size: 13px; font-weight: 600;
+         letter-spacing: .05em; color: #fff; text-transform: uppercase;
+      }
+      #gemui label { display:block; margin-bottom:3px; font-size:11px; color:#aaa; }
+      #gemui .row  { margin-bottom: 12px; }
+      #gemui input[type=range] {
+         width: 100%; accent-color: #7eb8f7; cursor: pointer;
+      }
+      #gemui .val  { float:right; color:#7eb8f7; font-size:11px; font-variant-numeric: tabular-nums; }
+      #gemui .swatches { display:flex; gap:6px; flex-wrap:wrap; margin-top:4px; }
+      #gemui .swatch {
+         width:22px; height:22px; border-radius:50%; cursor:pointer;
+         border: 2px solid transparent; transition: border-color .15s;
+         box-shadow: 0 0 0 1px rgba(255,255,255,.15);
+      }
+      #gemui .swatch.active { border-color: #7eb8f7; }
+      #gemui input[type=color] {
+         width:22px; height:22px; border-radius:50%; border:none;
+         padding:0; cursor:pointer; background:none;
+         box-shadow: 0 0 0 1px rgba(255,255,255,.15);
+      }
+      #gemui .modes { display:flex; gap:4px; margin-top:4px; }
+      #gemui .mode {
+         flex:1; padding:4px 0; text-align:center; font-size:11px;
+         border-radius:6px; cursor:pointer; border: 1px solid rgba(255,255,255,.15);
+         background: rgba(255,255,255,.05); color:#aaa; transition: all .15s;
+      }
+      #gemui .mode.active { background:#7eb8f7; color:#000; border-color:#7eb8f7; font-weight:600; }
+      #gemui .divider { border:none; border-top:1px solid rgba(255,255,255,.08); margin:12px 0; }
+
+      #lightReturnPanel,
+      #facetInfoPanel {
+         position: fixed; top: 18px; right: 286px;
+         width: 420px;
+         height: 320px;
+         min-width: 260px;
+         min-height: 120px;
+         box-sizing: border-box;
+         display: flex;
+         flex-direction: column;
+         overflow: hidden;
+         background: rgba(10,10,14,0.82);
+         border: 1px solid rgba(255,255,255,0.12);
+         border-radius: 12px;
+         padding: 14px 16px;
+         color: #e8e8e8;
+         font: 12px/1.4 system-ui, sans-serif;
+         backdrop-filter: blur(8px);
+         z-index: 99;
+      }
+      #facetInfoPanel {
+         height: 260px;
+      }
+      #lightReturnPanel.collapsed,
+      #facetInfoPanel.collapsed {
+         width: 200px;
+         height: auto;
+         min-width: 200px;
+         min-height: 0;
+         padding: 8px 14px 8px 10px;
+      }
+      #lightReturnHeader,
+      #facetInfoHeader {
+         display: flex;
+         flex: 0 0 auto;
+         align-items: center;
+         justify-content: space-between;
+         gap: 8px;
+         margin-bottom: 8px;
+      }
+      #lightReturnPanel h3,
+      #facetInfoPanel h3 {
+         flex: 1 1 auto;
+         margin: 0; font-size: 13px; font-weight: 600;
+         letter-spacing: .05em; color: #fff; text-transform: uppercase;
+      }
+      #lightReturnToggle,
+      #facetInfoToggle {
+         flex: 0 0 auto;
+         min-width: 28px;
+         height: 24px;
+         padding: 0 8px;
+         border-radius: 6px;
+         border: 1px solid rgba(255,255,255,.15);
+         background: rgba(255,255,255,.05);
+         color: #aaa;
+         cursor: pointer;
+         font: inherit;
+         line-height: 1;
+      }
+      #lightReturnToggle:hover,
+      #facetInfoToggle:hover {
+         color: #fff;
+         border-color: rgba(255,255,255,.28);
+      }
+      #lightReturnBody,
+      #facetInfoBody {
+         display: flex;
+         flex: 1 1 auto;
+         min-height: 0;
+         flex-direction: column;
+         min-width: 0;
+      }
+      #lightReturnPanel.collapsed #lightReturnBody,
+      #facetInfoPanel.collapsed #facetInfoBody {
+         display: none;
+      }
+      #lightReturnPanel.collapsed #lightReturnHeader,
+      #facetInfoPanel.collapsed #facetInfoHeader {
+         margin-bottom: 0;
+         gap: 6px;
+      }
+      #lightReturnPanel.collapsed h3,
+      #facetInfoPanel.collapsed h3 {
+         font-size: 11px;
+         letter-spacing: .04em;
+         white-space: nowrap;
+         overflow: visible;
+         text-overflow: clip;
+      }
+      #lightReturnPanel.collapsed #lightReturnResize,
+      #facetInfoPanel.collapsed #facetInfoResize {
+         display: none;
+      }
+      #lightReturnStatus,
+      #facetInfoStatus {
+         margin: 0 0 8px; color: #aaa; font-size: 11px;
+         flex: 0 0 auto;
+      }
+      #lightReturnCanvas {
+         display: block; width: 100%; height: auto;
+         flex: 1 1 auto;
+         min-height: 140px;
+         border-radius: 8px; background: rgba(255,255,255,0.04);
+      }
+      #lightReturnResize,
+      #facetInfoResize {
+         position: absolute;
+         left: 0;
+         bottom: 0;
+         width: 18px;
+         height: 18px;
+         cursor: nesw-resize;
+         z-index: 3;
+      }
+      #lightReturnResize::before,
+      #facetInfoResize::before {
+         content: '';
+         position: absolute;
+         left: 4px;
+         bottom: 4px;
+         width: 10px;
+         height: 10px;
+         border-left: 2px solid rgba(255,255,255,.35);
+         border-bottom: 2px solid rgba(255,255,255,.35);
+         border-bottom-left-radius: 2px;
+      }
+      #facetInfoList {
+         flex: 1 1 auto;
+         min-height: 0;
+         overflow: auto;
+         display: flex;
+         flex-direction: column;
+         gap: 10px;
+         padding-right: 2px;
+      }
+      .facetSection {
+         border: 1px solid rgba(255,255,255,0.08);
+         background: rgba(255,255,255,0.03);
+         border-radius: 8px;
+         padding: 8px 10px 10px;
+      }
+      .facetSectionTitle {
+         color: #fff;
+         font-size: 12px;
+         font-weight: 600;
+         letter-spacing: .05em;
+         text-transform: uppercase;
+         margin: 0 0 6px;
+      }
+      .facetGroup {
+         display: grid;
+         grid-template-columns: 40px 58px minmax(0, 1fr) minmax(0, 1.2fr);
+         gap: 4px 10px;
+         align-items: start;
+         padding: 4px 0;
+      }
+      .facetGroup + .facetGroup {
+         border-top: 1px solid rgba(255,255,255,0.06);
+      }
+      .facetGroupName,
+      .facetGroupAngle {
+         color: #fff;
+         font-size: 12px;
+         font-weight: 600;
+      }
+      .facetGroupIndexes,
+      .facetGroupInst {
+         color: #bfc7d2;
+         font-size: 11px;
+         line-height: 1.45;
+         white-space: pre-wrap;
+         word-break: break-word;
+      }
+      .facetGroupIndexes {
+         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .facetGroupInst {
+         color: #d4dae3;
+      }
+      .facetEmpty {
+         color: #aaa;
+         font-size: 12px;
+         padding: 10px 2px;
+      }
+   `;
+      document.head.appendChild(style);
+   }
+
+   const lightModes = ['ISO', 'COS', 'SC2', 'RND'];
+
+   const panel = document.createElement('div');
+   panel.id = 'gemui';
+   panel.innerHTML = `
+      <h3>Gem Controls</h3>
+
+      <div class="row">
+        <label>Gem Species</label>
+        <select id="gPreset" style="width:100%;background:#1a1a22;color:#e8e8e8;border:1px solid rgba(255,255,255,.15);border-radius:6px;padding:4px 6px;font-size:12px;">
+          ${presets.map((p, i) => `<option value="${i}">${p[0]}</option>`).join('')}
+          <option value="-1">Custom</option>
+        </select>
+      </div>
+
+      <div class="row">
+        <label>Refractive Index (n<sub>D</sub>) <span class="val" id="riVal">${ui.ri.toFixed(3)}</span></label>
+        <input type="range" id="riSlider" min="1.40" max="2.90" step="0.001" value="${ui.ri}">
+      </div>
+
+      <div class="row">
+        <label>Dispersion (COD) <span class="val" id="codVal">${ui.cod.toFixed(3)}</span></label>
+        <input type="range" id="codSlider" min="0.000" max="0.120" step="0.001" value="${ui.cod}">
+      </div>
+      <hr class="divider">
+      <div class="row">
+        <label>Stone Colour</label>
+        <div class="swatches" id="swatches"></div>
+      </div>
+
+      <div class="row">
+        <label>Windowing Highlight</label>
+        <input type="color" id="exitColor" value="#000000"
+          style="width:100%;height:28px;border-radius:6px;border:none;cursor:pointer;">
+      </div>
+
+      <div class="row">
+        <label>Light Model</label>
+        <div class="modes" id="modes">
+          ${lightModes.map((m, i) => `<div class="mode${i === ui.lightMode ? ' active' : ''}" data-mode="${i}">${m}</div>`).join('')}
+        </div>
+      </div>
+
+      <hr class="divider">
+      <div class="row">
+        <label>View</label>
+        <div class="modes" id="viewBtns">
+          <div class="mode" id="vReset">↺ Reset</div>
+          <div class="mode" id="vTilt">⧡ Tilt</div>
+        </div>
+      </div>
+         <div class="row">
+            <label>Tilt Angle <span class="val" id="tiltVal">${ui.tiltAngleDeg}</span></label>
+            <input type="range" id="tiltAngle" min="0" max="30" step="1" value="${ui.tiltAngleDeg}">
+         </div>
+   `;
+   document.body.appendChild(panel);
+
+   // --- File picker inside the UI (uses callback if provided) ---
+   const fileRow = document.createElement('div');
+   fileRow.className = 'row';
+   const fileLabel = document.createElement('label');
+   fileLabel.textContent = 'Load File';
+
+   // Hidden native input
+   const uiFileInput = document.createElement('input');
+   uiFileInput.type = 'file';
+   uiFileInput.accept = '.stl,.STL,.gem,.GEM';
+   uiFileInput.style.display = 'none';
+
+   // Visible button matching other .mode buttons
+   const fileControls = document.createElement('div');
+   fileControls.className = 'modes';
+   const fileBtn = document.createElement('div');
+   fileBtn.className = 'mode';
+   fileBtn.id = 'fileBtn';
+   fileBtn.textContent = 'Choose File';
+   fileBtn.style.flex = '1';
+   fileBtn.style.cursor = 'pointer';
+
+   // Filename display
+   const fileNameEl = document.createElement('div');
+   fileNameEl.style.marginTop = '6px';
+   fileNameEl.style.fontSize = '11px';
+   fileNameEl.style.color = '#aaa';
+   fileNameEl.id = 'fileNameEl';
+   fileNameEl.textContent = '';
+
+   fileControls.appendChild(fileBtn);
+   fileRow.appendChild(fileLabel);
+   fileRow.appendChild(fileControls);
+   fileRow.appendChild(fileNameEl);
+   // append hidden input so it participates in form/file APIs
+   fileRow.appendChild(uiFileInput);
+   panel.appendChild(fileRow);
+
+   // Button triggers hidden input
+   fileBtn.addEventListener('click', () => uiFileInput.click());
+
+   uiFileInput.addEventListener('change', (ev) => {
+      const f = ev.target.files[0];
+      if (!f) return;
+      fileNameEl.textContent = f.name;
+      const url = URL.createObjectURL(f);
+      if (cbs && typeof cbs.onFileSelected === 'function') cbs.onFileSelected(f.name, url);
+   });
+
+   // --- Colour swatches ---
+   const gemColours = [
+      ['#ffffff', 'Colourless'], ['#e8253a', 'Ruby'], ['#1a5fd4', 'Sapphire'],
+      ['#1db85c', 'Emerald'], ['#9b59d0', 'Amethyst'], ['#f5c842', 'Citrine'],
+      ['#ff6090', 'Spinel'], ['#b8e0ff', 'Aqua'],
+   ];
+   const swatchContainer = panel.querySelector('#swatches');
+
+   function hexToRgb(hex) {
+      const r = parseInt(hex.slice(1, 3), 16) / 255;
+      const g = parseInt(hex.slice(3, 5), 16) / 255;
+      const b = parseInt(hex.slice(5, 7), 16) / 255;
+      return [r, g, b];
+   }
+
+   let activeSwatch = null;
+   gemColours.forEach(([hex]) => {
+      const el = document.createElement('div');
+      el.className = 'swatch' + (hex === '#ffffff' ? ' active' : '');
+      el.style.background = hex;
+      el.title = hex;
+      el.addEventListener('click', () => {
+         if (activeSwatch) activeSwatch.classList.remove('active');
+         el.classList.add('active');
+         activeSwatch = el;
+         ui.color = hexToRgb(hex);
+         colorPicker.value = hex;
+      });
+      if (hex === '#ffffff') activeSwatch = el;
+      swatchContainer.appendChild(el);
+   });
+
+   // Custom colour picker
+   const colorPicker = document.createElement('input');
+   colorPicker.type = 'color';
+   colorPicker.value = '#ffffff';
+   colorPicker.title = 'Custom colour';
+   colorPicker.addEventListener('input', () => {
+      if (activeSwatch) activeSwatch.classList.remove('active');
+      activeSwatch = null;
+      ui.color = hexToRgb(colorPicker.value);
+   });
+   swatchContainer.appendChild(colorPicker);
+
+   // --- RI slider ---
+   const riSlider = panel.querySelector('#riSlider');
+   const riVal = panel.querySelector('#riVal');
+   riSlider.addEventListener('input', () => {
+      ui.ri = parseFloat(riSlider.value);
+      riVal.textContent = ui.ri.toFixed(3);
+      panel.querySelector('#gPreset').value = '-1';
+      cbs.onGraphParamsChanged?.();
+   });
+
+   // --- COD slider ---
+   const codSlider = panel.querySelector('#codSlider');
+   const codVal = panel.querySelector('#codVal');
+   codSlider.addEventListener('input', () => {
+      ui.cod = parseFloat(codSlider.value);
+      codVal.textContent = ui.cod.toFixed(3);
+      panel.querySelector('#gPreset').value = '-1';
+      cbs.onGraphParamsChanged?.();
+   });
+
+   // --- Preset dropdown ---
+   panel.querySelector('#gPreset').addEventListener('change', (e) => {
+      const idx = parseInt(e.target.value);
+      if (idx < 0) return;
+      const [, ri, cod, hex] = presets[idx];
+      ui.ri = ri;
+      ui.cod = cod;
+      riSlider.value = ri;
+      riVal.textContent = ri.toFixed(3);
+      codSlider.value = cod;
+      codVal.textContent = cod.toFixed(3);
+      // Match colour swatch
+      const swatches = [...swatchContainer.querySelectorAll('.swatch')];
+      const match = swatches.find(s => s.style.background === hexToRgb(hex).toString()
+         || s.title === hex);
+      if (activeSwatch) activeSwatch.classList.remove('active');
+      if (match) { match.classList.add('active'); activeSwatch = match; }
+      ui.color = hexToRgb(hex);
+      colorPicker.value = hex;
+      cbs.onGraphParamsChanged?.();
+   });
+
+   panel.querySelector('#exitColor').addEventListener('input', e => {
+      ui.exitHighlight = hexToRgb(e.target.value);
+      ui.exitStrength = 1.0; // Ensure it's visible when a colour is picked
+   });
+
+   // --- Light mode buttons ---
+   panel.querySelector('#modes').addEventListener('click', (e) => {
+      const btn = e.target.closest('.mode');
+      if (!btn) return;
+      panel.querySelectorAll('#modes .mode').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      ui.lightMode = parseInt(btn.dataset.mode);
+   });
+
+   // --- View buttons (Reset / Tilt) ---
+   const vTiltEl = panel.querySelector('#vTilt');
+   panel.querySelector('#vReset').addEventListener('click', () => {
+      vTiltEl.classList.remove('active');
+      cbs.onReset();
+   });
+   vTiltEl.addEventListener('click', () => {
+      const on = cbs.onTilt();
+      vTiltEl.classList.toggle('active', on);
+   });
+
+   // Tilt angle control
+   const tiltSlider = panel.querySelector('#tiltAngle');
+   const tiltVal = panel.querySelector('#tiltVal');
+   if (tiltSlider) {
+      tiltSlider.addEventListener('input', (e) => {
+         ui.tiltAngleDeg = parseFloat(e.target.value);
+         if (tiltVal) tiltVal.textContent = ui.tiltAngleDeg.toFixed(0);
+         cbs.onGraphParamsChanged?.();
+      });
+   }
+
+   // External API for model-loading to push updates into the live panel
+   return {
+      setFileName(name) {
+         fileNameEl.textContent = name;
+      },
+      setRI(ri) {
+         ui.ri = parseFloat(ri.toFixed(3));
+         riSlider.value = ui.ri;
+         riVal.textContent = ui.ri.toFixed(3);
+         panel.querySelector('#gPreset').value = '-1';
+      },
+   };
+}
+
+async function loadSTL(url) {
+   const response = await fetch(url);
+   const buffer = await response.arrayBuffer();
+
+   const countView = new DataView(buffer, 80, 4);
+   const triangleCount = countView.getUint32(0, true);
+
+   const entrySize = 50;
+   const verticesPerTriangle = 3;
+   const floatsPerVertex = 7;
+
+   const vertexData = new Float32Array(triangleCount * verticesPerTriangle * floatsPerVertex);
+   const dataView = new DataView(buffer, 84);
+
+   for (let i = 0; i < triangleCount; i++) {
+      const offset = i * entrySize;
+      const nx = dataView.getFloat32(offset + 0, true);
+      const ny = dataView.getFloat32(offset + 4, true);
+      const nz = dataView.getFloat32(offset + 8, true);
+
+      for (let v = 0; v < 3; v++) {
+         const vOffset = offset + 12 + (v * 12);
+         const writeIdx = (i * 3 + v) * floatsPerVertex;
+         vertexData[writeIdx + 0] = dataView.getFloat32(vOffset + 0, true);
+         vertexData[writeIdx + 1] = dataView.getFloat32(vOffset + 4, true);
+         vertexData[writeIdx + 2] = dataView.getFloat32(vOffset + 8, true);
+         vertexData[writeIdx + 3] = nx;
+         vertexData[writeIdx + 4] = ny;
+         vertexData[writeIdx + 5] = nz;
+         vertexData[writeIdx + 6] = 0.0;
+      }
+   }
+
+   return { vertexData, triangleCount, refractiveIndex: 1.76 };
+}
+
+// ---------------------------------------------------------------------------
+// GemCad .gem binary format loader — derived from stone.cpp::readGemFile()
+//
+// The format is NOT a fixed-record binary. It is a flat stream of float64s:
+//
+//   FACET LOOP (repeat until sentinel):
+//     a, b, c   — float64 * 3  (raw plane normal, NOT yet unit length)
+//                 sentinel: a == -99999.0 ends the loop
+//     int32     — 4 bytes, unused padding (read and discarded)
+//     nameLen   — 1 byte: 0 = no name, else number of chars that follow
+//     nameChars — nameLen bytes (tab-delimited: "name\tcutting_instructions")
+//
+//     VERTEX LOOP for this facet (repeat until tag != 1):
+//       tag      — int32: 1 = vertex follows, anything else = end of vertices
+//       x, y, z  — float64 * 3  (only present when tag == 1)
+//
+//   TAIL (optional, may be absent in older files):
+//     nsym        — int32
+//     mirror_sym  — int32  (0 or 1)
+//     igear       — int32
+//     r_i         — float64  ← refractive index
+//
+// Key insight from stone.cpp lines 1583-1647:
+//   - a,b,c are read raw then normalised: len=sqrt(a²+b²+c²), d=0.9/len
+//   - The normalised (a/len, b/len, c/len, d) defines a half-space: ax+by+cz=d
+//   - Vertices are reconstructed by intersecting ALL combinations of 3 planes
+//   - Each facet's vertices are the intersection points that satisfy ALL planes
+//   - The vertex data in the file is ignored (it's a cache GemCad writes for
+//     its own use); stone.cpp discards it too (reads but never stores x,y,z)
+//
+// So we must reconstruct vertices ourselves by plane intersection, exactly
+// as stone.cpp::newFacet() does via half-space clipping of a convex hull.
+// ---------------------------------------------------------------------------
+async function loadGEM(url) {
+   const response = await fetch(url);
+   const buffer = await response.arrayBuffer();
+   const view = new DataView(buffer);
+   let offset = 0;
+   const SILLY = -99999.0;
+   const F64 = 8;
+   const I32 = 4;
+
+   // ── 1. Parse plane records ───────────────────────────────────────────────
+   const planes = []; // each: { a, b, c, d, name, instructions }  (unit normal, d = 0.9/|abc|)
+
+   function normalizeFacetMetadata(name, instructions) {
+      const rawName = String(name || '').trim();
+      const rawInstructions = String(instructions || '').trim();
+      const hasFrostedInstruction = /\bfrosted\b/i.test(rawInstructions);
+      const trailingFMatch = rawName.match(/^(.*\d)f$/i);
+      const normalizedName = trailingFMatch ? trailingFMatch[1] : rawName;
+      const frosted = hasFrostedInstruction || Boolean(trailingFMatch);
+      const normalizedInstructions = frosted && !hasFrostedInstruction
+         ? (rawInstructions ? `${rawInstructions} FROSTED` : 'FROSTED')
+         : rawInstructions;
+      return {
+         name: normalizedName,
+         instructions: normalizedInstructions,
+         frosted,
+      };
+   }
+
+   function readFacetLabel(byteLength) {
+      const safeLength = Math.max(0, Math.min(byteLength, buffer.byteLength - offset));
+      const bytes = new Uint8Array(buffer, offset, safeLength);
+      offset += safeLength;
+
+      let name = '';
+      let instructions = '';
+      let active = '';
+      let hasSplit = false;
+
+      for (let i = 0; i < bytes.length; i++) {
+         const ch = String.fromCharCode(bytes[i]);
+         if (ch === '\n' || ch === '\0') break;
+         if (ch === '\t' && !hasSplit) {
+            name = active;
+            active = '';
+            hasSplit = true;
+            continue;
+         }
+         active += ch;
+      }
+
+      if (hasSplit) instructions = active;
+      else name = active;
+
+      return {
+         name: name.trim(),
+         instructions: instructions.trim(),
+      };
+   }
+
+   while (offset + F64 <= buffer.byteLength) {
+      const a_raw = view.getFloat64(offset, true); offset += F64;
+      if (a_raw === SILLY) break;
+
+      if (offset + F64 * 2 > buffer.byteLength) break;
+      const b_raw = view.getFloat64(offset, true); offset += F64;
+      const c_raw = view.getFloat64(offset, true); offset += F64;
+
+      const len = Math.sqrt(a_raw * a_raw + b_raw * b_raw + c_raw * c_raw);
+      if (len === 0) { console.warn('GEM: zero-length normal, skipping'); continue; }
+
+      const plane = {
+         a: a_raw / len,
+         b: b_raw / len,
+         c: c_raw / len,
+         d: 0.9 / len,   // matches stone.cpp: d = 1/len * 0.9
+         name: '',
+         instructions: '',
+         frosted: false,
+      };
+      planes.push(plane);
+
+      // discard the int32 pad
+      offset += I32;
+
+      // read name (1-byte length prefix)
+      if (offset >= buffer.byteLength) break;
+      const nameLen = view.getUint8(offset); offset += 1;
+      if (nameLen > 0) {
+         const label = readFacetLabel(nameLen);
+         const normalized = normalizeFacetMetadata(label.name, label.instructions);
+         plane.name = normalized.name;
+         plane.instructions = normalized.instructions;
+         plane.frosted = normalized.frosted;
+      }
+
+      // skip cached vertex data: read int32 tags until tag != 1
+      while (offset + I32 <= buffer.byteLength) {
+         const tag = view.getInt32(offset, true); offset += I32;
+         if (tag !== 1) break;
+         offset += F64 * 3; // skip x, y, z
+      }
+   }
+
+   // ── 2. Read optional tail ────────────────────────────────────────────────
+   let refractiveIndex = 1.77; // default: corundum, reasonable fallback
+   if (offset + I32 * 3 + F64 <= buffer.byteLength) {
+      offset += I32; // nsym
+      offset += I32; // mirror_sym
+      offset += I32; // igear
+      refractiveIndex = view.getFloat64(offset, true);
+      console.log(`GEM: r_i = ${refractiveIndex}`);
+   }
+
+   console.log(`GEM: ${planes.length} planes parsed`);
+
+   // ── 3. Reconstruct vertices by 3-plane intersection ──────────────────────
+   // For a convex polyhedron defined by half-spaces ax+by+cz <= d, every
+   // vertex is the intersection of exactly 3 planes. We try all C(n,3)
+   // combinations and keep points that satisfy ALL planes (within epsilon).
+   const EPSILON = 1e-8;
+   const VERTEX_EPS = 1e-6; // deduplicate tolerance
+
+   function intersect3Planes(p0, p1, p2) {
+      // Solve: [p0; p1; p2] * [x,y,z]^T = [d0, d1, d2]^T
+      const { a: a0, b: b0, c: c0, d: d0 } = p0;
+      const { a: a1, b: b1, c: c1, d: d1 } = p1;
+      const { a: a2, b: b2, c: c2, d: d2 } = p2;
+
+      const det = a0 * (b1 * c2 - b2 * c1) - b0 * (a1 * c2 - a2 * c1) + c0 * (a1 * b2 - a2 * b1);
+      if (Math.abs(det) < EPSILON) return null; // parallel/degenerate
+
+      const x = (d0 * (b1 * c2 - b2 * c1) - b0 * (d1 * c2 - d2 * c1) + c0 * (d1 * b2 - d2 * b1)) / det;
+      const y = (a0 * (d1 * c2 - d2 * c1) - d0 * (a1 * c2 - a2 * c1) + c0 * (a1 * d2 - a2 * d1)) / det;
+      const z = (a0 * (b1 * d2 - b2 * d1) - b0 * (a1 * d2 - a2 * d1) + d0 * (a1 * b2 - a2 * b1)) / det;
+      return [x, y, z];
+   }
+
+   function insideAllPlanes(pt) {
+      const [x, y, z] = pt;
+      for (const p of planes) {
+         if (p.a * x + p.b * y + p.c * z > p.d + EPSILON) return false;
+      }
+      return true;
+   }
+
+   // Collect unique vertices
+   const allVerts = [];
+   function addVertex(pt) {
+      for (const v of allVerts) {
+         if (Math.abs(v[0] - pt[0]) + Math.abs(v[1] - pt[1]) + Math.abs(v[2] - pt[2]) < VERTEX_EPS)
+            return allVerts.indexOf(v);
+      }
+      allVerts.push(pt);
+      return allVerts.length - 1;
+   }
+
+   // For each plane, collect which vertices lie on it (within epsilon)
+   const n = planes.length;
+   const facetVerts = planes.map(() => []); // facetVerts[planeIdx] = [vertIdx, ...]
+
+   for (let i = 0; i < n - 2; i++) {
+      for (let j = i + 1; j < n - 1; j++) {
+         for (let k = j + 1; k < n; k++) {
+            const pt = intersect3Planes(planes[i], planes[j], planes[k]);
+            if (!pt || !insideAllPlanes(pt)) continue;
+
+            const vi = addVertex(pt);
+
+            // This vertex belongs to planes i, j, k
+            for (const pi of [i, j, k]) {
+               if (!facetVerts[pi].includes(vi))
+                  facetVerts[pi].push(vi);
+            }
+         }
+      }
+   }
+
+   console.log(`GEM: ${allVerts.length} vertices reconstructed`);
+
+   // ── 4. Order each facet's vertices in CCW winding ────────────────────────
+   // Project onto the facet plane and sort by angle around centroid.
+   function orderFacetVerts(planeIdx, vindices) {
+      if (vindices.length < 3) return vindices;
+      const p = planes[planeIdx];
+      const normal = [p.a, p.b, p.c];
+
+      // Centroid
+      let cx = 0, cy = 0, cz = 0;
+      for (const vi of vindices) {
+         cx += allVerts[vi][0];
+         cy += allVerts[vi][1];
+         cz += allVerts[vi][2];
+      }
+      cx /= vindices.length;
+      cy /= vindices.length;
+      cz /= vindices.length;
+
+      // Build two tangent vectors in the plane
+      let t0 = [1, 0, 0];
+      if (Math.abs(normal[0]) > 0.9) t0 = [0, 1, 0];
+      // t1 = normal × t0
+      const t1 = [
+         normal[1] * t0[2] - normal[2] * t0[1],
+         normal[2] * t0[0] - normal[0] * t0[2],
+         normal[0] * t0[1] - normal[1] * t0[0],
+      ];
+      // t0 = t1 × normal  (orthogonalise)
+      const tu = [
+         t1[1] * normal[2] - t1[2] * normal[1],
+         t1[2] * normal[0] - t1[0] * normal[2],
+         t1[0] * normal[1] - t1[1] * normal[0],
+      ];
+
+      const angles = vindices.map(vi => {
+         const dx = allVerts[vi][0] - cx;
+         const dy = allVerts[vi][1] - cy;
+         const dz = allVerts[vi][2] - cz;
+         const u = dx * tu[0] + dy * tu[1] + dz * tu[2];
+         const v = dx * t1[0] + dy * t1[1] + dz * t1[2];
+         return { vi, angle: Math.atan2(v, u) };
+      });
+
+      angles.sort((a, b) => a.angle - b.angle);
+      return angles.map(a => a.vi);
+   }
+
+   // ── 5. Tessellate and pack ────────────────────────────────────────────────
+   const triangles = [];
+   const facets = [];
+
+   for (let pi = 0; pi < n; pi++) {
+      const verts = orderFacetVerts(pi, facetVerts[pi]);
+      if (verts.length < 3) continue;
+
+      const p = planes[pi];
+      const nx = p.a, ny = p.b, nz = p.c;
+      const triangleCount = verts.length - 2;
+      facets.push({
+         index: pi + 1,
+         name: p.name,
+         instructions: p.instructions,
+         frosted: Boolean(p.frosted),
+         normal: [nx, ny, nz],
+         d: p.d,
+         vertexCount: verts.length,
+         triangleCount,
+      });
+
+      // Fan triangulation from first vertex
+      for (let i = 1; i < verts.length - 1; i++) {
+         triangles.push({
+            v0: allVerts[verts[0]],
+            v1: allVerts[verts[i]],
+            v2: allVerts[verts[i + 1]],
+            normal: [nx, ny, nz],
+            frosted: Boolean(p.frosted),
+         });
+      }
+   }
+
+   // Pack into flat Float32Array matching loadSTL output format
+   const triCount = triangles.length;
+   const floatsPerVertex = 7;
+   const vertexData = new Float32Array(triCount * 3 * floatsPerVertex);
+
+   for (let i = 0; i < triCount; i++) {
+      const { v0, v1, v2, normal, frosted } = triangles[i];
+      const vs = [v0, v1, v2];
+      for (let v = 0; v < 3; v++) {
+         const idx = (i * 3 + v) * floatsPerVertex;
+         vertexData[idx + 0] = vs[v][0];
+         vertexData[idx + 1] = vs[v][1];
+         vertexData[idx + 2] = vs[v][2];
+         vertexData[idx + 3] = normal[0];
+         vertexData[idx + 4] = normal[1];
+         vertexData[idx + 5] = normal[2];
+         vertexData[idx + 6] = frosted ? 1.0 : 0.0;
+      }
+   }
+
+   console.log(`GEM loaded: ${triCount} triangles`);
+   return { vertexData, triangleCount: triCount, refractiveIndex, facets };
+}
+
+function normalizeMesh(data) {
+   let min = [Infinity, Infinity, Infinity];
+   let max = [-Infinity, -Infinity, -Infinity];
+
+   for (let i = 0; i < data.length; i += 7) {
+      for (let a = 0; a < 3; a++) {
+         if (data[i + a] < min[a]) min[a] = data[i + a];
+         if (data[i + a] > max[a]) max[a] = data[i + a];
+      }
+   }
+
+   const center = min.map((v, i) => (v + max[i]) / 2);
+   const size = min.map((v, i) => max[i] - v);
+   const maxDimension = Math.max(...size);
+   const scale = 2.0 / maxDimension;
+
+   for (let i = 0; i < data.length; i += 7) {
+      data[i] = (data[i] - center[0]) * scale;
+      data[i + 1] = (data[i + 1] - center[1]) * scale;
+      data[i + 2] = (data[i + 2] - center[2]) * scale;
+   }
+
+   console.log(`Normalized. Center: ${center}, Scale: ${scale}`);
+   return scale;
+}
+
+// ---------------------------------------------------------------------------
+// BVH Builder
+// Each triangle is stored as:
+// [v0x,v0y,v0z, v1x,v1y,v1z, v2x,v2y,v2z, nx,ny,nz, frosted]
+// = 13 floats per triangle → triangleBuffer (storage buffer)
+//
+// BVH node layout (8 floats each, aligned for GPU):
+//   [aabbMinX, aabbMinY, aabbMinZ, leftOrTriIdx,
+//    aabbMaxX, aabbMaxY, aabbMaxZ, triCountOrRight]
+//
+//   Leaf:  triCountOrRight > 0  → triCount triangles starting at leftOrTriIdx
+//   Inner: triCountOrRight == 0 → left child = leftOrTriIdx, right = leftOrTriIdx+1
+// ---------------------------------------------------------------------------
+
+function buildBVH(vertexData, triangleCount) {
+   const floatsPerVertex = 7;
+   const floatsPerTriangle = 13;
+   // Pack triangles into flat array: 13 floats each
+   const tris = new Float32Array(triangleCount * floatsPerTriangle);
+   for (let i = 0; i < triangleCount; i++) {
+      const base = i * 3 * floatsPerVertex;
+      const t = i * floatsPerTriangle;
+      // v0
+      tris[t + 0] = vertexData[base + 0];
+      tris[t + 1] = vertexData[base + 1];
+      tris[t + 2] = vertexData[base + 2];
+      // v1
+      tris[t + 3] = vertexData[base + 7];
+      tris[t + 4] = vertexData[base + 8];
+      tris[t + 5] = vertexData[base + 9];
+      // v2
+      tris[t + 6] = vertexData[base + 14];
+      tris[t + 7] = vertexData[base + 15];
+      tris[t + 8] = vertexData[base + 16];
+      // face normal
+      tris[t + 9] = vertexData[base + 3];
+      tris[t + 10] = vertexData[base + 4];
+      tris[t + 11] = vertexData[base + 5];
+      tris[t + 12] = vertexData[base + 6];
+   }
+
+   // Centroid per triangle for splitting
+   const centroids = new Float32Array(triangleCount * 3);
+   for (let i = 0; i < triangleCount; i++) {
+      const t = i * floatsPerTriangle;
+      centroids[i * 3 + 0] = (tris[t + 0] + tris[t + 3] + tris[t + 6]) / 3;
+      centroids[i * 3 + 1] = (tris[t + 1] + tris[t + 4] + tris[t + 7]) / 3;
+      centroids[i * 3 + 2] = (tris[t + 2] + tris[t + 5] + tris[t + 8]) / 3;
+   }
+
+   // Triangle index array — we'll reorder this during BVH build
+   const triIndices = new Int32Array(triangleCount);
+   for (let i = 0; i < triangleCount; i++) triIndices[i] = i;
+
+   const nodes = []; // will hold {minX,minY,minZ,maxX,maxY,maxZ,left,right,triStart,triCount}
+
+   function computeAABB(start, count) {
+      let minX = Infinity, minY = Infinity, minZ = Infinity;
+      let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+      for (let i = start; i < start + count; i++) {
+         const ti = triIndices[i] * floatsPerTriangle;
+         for (let v = 0; v < 3; v++) {
+            const x = tris[ti + v * 3 + 0];
+            const y = tris[ti + v * 3 + 1];
+            const z = tris[ti + v * 3 + 2];
+            if (x < minX) minX = x; if (x > maxX) maxX = x;
+            if (y < minY) minY = y; if (y > maxY) maxY = y;
+            if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+         }
+      }
+      return { minX, minY, minZ, maxX, maxY, maxZ };
+   }
+
+   const LEAF_MAX = 4; // max triangles per leaf
+
+   function buildNode(start, count) {
+      const nodeIdx = nodes.length;
+      nodes.push(null); // placeholder
+
+      const aabb = computeAABB(start, count);
+
+      if (count <= LEAF_MAX) {
+         nodes[nodeIdx] = { ...aabb, triStart: start, triCount: count, left: -1, right: -1 };
+         return nodeIdx;
+      }
+
+      // Choose longest axis
+      const dx = aabb.maxX - aabb.minX;
+      const dy = aabb.maxY - aabb.minY;
+      const dz = aabb.maxZ - aabb.minZ;
+      const axis = dx >= dy && dx >= dz ? 0 : dy >= dz ? 1 : 2;
+
+      // Sort by centroid along axis
+      const sub = triIndices.subarray(start, start + count);
+      sub.sort((a, b) => centroids[a * 3 + axis] - centroids[b * 3 + axis]);
+
+      const mid = Math.floor(count / 2);
+      const left = buildNode(start, mid);
+      const right = buildNode(start + mid, count - mid);
+
+      nodes[nodeIdx] = { ...aabb, triStart: -1, triCount: 0, left, right };
+      return nodeIdx;
+   }
+
+   buildNode(0, triangleCount);
+
+   // Pack nodes into Float32Array: 8 floats per node
+   // [minX, minY, minZ, leftOrTriStart,  maxX, maxY, maxZ, triCountOrZero]
+   const nodeCount = nodes.length;
+   const nodeBuffer = new Float32Array(nodeCount * 8);
+   for (let i = 0; i < nodeCount; i++) {
+      const n = nodes[i];
+      const b = i * 8;
+      nodeBuffer[b + 0] = n.minX;
+      nodeBuffer[b + 1] = n.minY;
+      nodeBuffer[b + 2] = n.minZ;
+      nodeBuffer[b + 3] = n.triCount > 0 ? n.triStart : n.left; // leaf: triStart, inner: left child
+      nodeBuffer[b + 4] = n.maxX;
+      nodeBuffer[b + 5] = n.maxY;
+      nodeBuffer[b + 6] = n.maxZ;
+      nodeBuffer[b + 7] = n.triCount > 0 ? n.triCount : -(n.right + 1); // leaf: triCount>0, inner: -rightIdx
+   }
+
+   // Reorder triangle buffer by triIndices so leaves are contiguous
+   const sortedTris = new Float32Array(triangleCount * floatsPerTriangle);
+   for (let i = 0; i < triangleCount; i++) {
+      const src = triIndices[i] * floatsPerTriangle;
+      const dst = i * floatsPerTriangle;
+      for (let j = 0; j < floatsPerTriangle; j++) sortedTris[dst + j] = tris[src + j];
+   }
+
+   console.log(`BVH built: ${nodeCount} nodes for ${triangleCount} triangles`);
+   return { nodeBuffer, triBuffer: sortedTris, nodeCount };
+}
+
+// ---------------------------------------------------------------------------
+// Module-level state — shared across model reloads
+// ---------------------------------------------------------------------------
+const ui = {
+   ri: presets[0][1],
+   cod: presets[0][2],
+   lightMode: 3,
+   color: [1, 1, 1],
+   exitHighlight: [0, 0, 0],
+   exitStrength: 0.0,
+   tiltAngleDeg: 10,
+};
+
+// Camera / interaction (survive model reloads)
+const modelMat = mat4.create();
+const viewMat = mat4.create();
+const projMat = mat4.create();
+const cameraPos = vec4.fromValues(0, 0, 5, 0);
+let targetRotX = 0, targetRotY = 0;
+let currentRotX = 0, currentRotY = 0;
+let animating = false, animStartTime = 0;
+
+// Current model GPU resources — replaced by loadModel()
+let renderBundle = null; // { bindGroup, graphBindGroups, vertexBuffer, triCount }
+
+// Reference to UI controls — set by setupApp(), used by loadModel()
+let uiControls = null;
+
+const GRAPH_SAMPLE_SIZE = 64;
+const GRAPH_COLOR_FORMAT = 'rgba16float';
+const GRAPH_REDUCE_SUM_SCALE = 65536;
+const GRAPH_VALUE_SCALE = 100;
+const GRAPH_TILT_MIN = -30;
+const GRAPH_TILT_MAX = 30;
+const GRAPH_TILT_STEP = 1;
+const GRAPH_MODES = [
+   { label: 'ISO', color: '#e8e8e8', mode: 0 },
+   { label: 'COS', color: '#ff5f5f', mode: 1 },
+   { label: 'SC2', color: '#59e35f', mode: 2 },
+];
+const GRAPH_TILT_VALUES = Array.from(
+   { length: Math.floor((GRAPH_TILT_MAX - GRAPH_TILT_MIN) / GRAPH_TILT_STEP) + 1 },
+   (_, i) => GRAPH_TILT_MIN + i * GRAPH_TILT_STEP,
+);
+const GRAPH_TILT_COUNT = GRAPH_TILT_VALUES.length;
+const GRAPH_MODE_COUNT = GRAPH_MODES.length;
+const GRAPH_TILE_COUNT = GRAPH_TILT_COUNT * GRAPH_MODE_COUNT;
+const GRAPH_ATLAS_WIDTH = GRAPH_SAMPLE_SIZE * GRAPH_TILT_COUNT;
+const GRAPH_ATLAS_HEIGHT = GRAPH_SAMPLE_SIZE * GRAPH_MODE_COUNT;
+
+// ---------------------------------------------------------------------------
+// setupApp — one-time WebGPU + UI init; returns { loadModel }
+// ---------------------------------------------------------------------------
+async function setupApp() {
+   const canvas = document.getElementById('gpuCanvas');
+   const adapter = await navigator.gpu?.requestAdapter();
+   const device = await adapter?.requestDevice();
+
+   if (!device) {
+      alert('WebGPU is not supported. Try Chrome/Edge.');
+      return null;
+   }
+
+   const context = canvas.getContext('webgpu');
+   const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+   context.configure({ device, format: canvasFormat });
+
+   // --- Pipeline (created once, reused for every model load) ---
+   const shaderModule = device.createShaderModule({ code: shaderSource });
+
+   const pipeline = device.createRenderPipeline({
+      layout: 'auto',
+      vertex: {
+         module: shaderModule, entryPoint: 'vs_main',
+         buffers: [{
+            arrayStride: 7 * 4,
+            attributes: [
+               { shaderLocation: 0, offset: 0, format: 'float32x3' },
+               { shaderLocation: 1, offset: 3 * 4, format: 'float32x3' },
+               { shaderLocation: 2, offset: 6 * 4, format: 'float32' },
+            ],
+         }],
+      },
+      fragment: {
+         module: shaderModule, entryPoint: 'fs_main',
+         targets: [{
+            format: canvasFormat,
+            blend: {
+               color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+               alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+            },
+         }],
+      },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: { depthWriteEnabled: false, depthCompare: 'less', format: 'depth24plus' },
+   });
+
+   // --- Uniform buffer (layout matches Uniforms struct in shaders.wgsl) ---
+   //   0:   modelMatrix       mat4  (64 b)
+   //   64:  viewMatrix        mat4  (64 b)
+   //   128: projectionMatrix  mat4  (64 b)
+   //   192: cameraPosition + pad    (16 b)
+   //   208: time / ri / cod / mode  (16 b)
+   //   224: stoneColor + graphMode  (16 b)
+   //   240: exitHighlight + str     (16 b)
+   const uniformBuffer = device.createBuffer({
+      size: 256,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+   });
+
+   const graphUniformBuffers = Array.from({ length: GRAPH_TILE_COUNT }, () => device.createBuffer({
+      size: 256,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+   }));
+
+   const graphPipeline = device.createRenderPipeline({
+      layout: 'auto',
+      vertex: {
+         module: shaderModule, entryPoint: 'vs_main',
+         buffers: [{
+            arrayStride: 7 * 4,
+            attributes: [
+               { shaderLocation: 0, offset: 0, format: 'float32x3' },
+               { shaderLocation: 1, offset: 3 * 4, format: 'float32x3' },
+               { shaderLocation: 2, offset: 6 * 4, format: 'float32' },
+            ],
+         }],
+      },
+      fragment: {
+         module: shaderModule, entryPoint: 'fs_main',
+         targets: [{
+            format: GRAPH_COLOR_FORMAT,
+            blend: {
+               color: { srcFactor: 'src-alpha', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+               alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
+            },
+         }],
+      },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: { depthWriteEnabled: false, depthCompare: 'less', format: 'depth24plus' },
+   });
+
+   const graphReducePipeline = device.createComputePipeline({
+      layout: 'auto',
+      compute: {
+         module: shaderModule,
+         entryPoint: 'cs_reduce_graph',
+      },
+   });
+
+   // --- Depth texture (recreated on resize) ---
+   let depthTexture = device.createTexture({
+      size: [canvas.width, canvas.height],
+      format: 'depth24plus',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+   });
+
+   const graphColorTexture = device.createTexture({
+      size: [GRAPH_ATLAS_WIDTH, GRAPH_ATLAS_HEIGHT],
+      format: GRAPH_COLOR_FORMAT,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING,
+   });
+   const graphDepthTexture = device.createTexture({
+      size: [GRAPH_ATLAS_WIDTH, GRAPH_ATLAS_HEIGHT],
+      format: 'depth24plus',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT,
+   });
+   const graphAtlasParamsBuffer = device.createBuffer({
+      size: 16,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      mappedAtCreation: true,
+   });
+   new Uint32Array(graphAtlasParamsBuffer.getMappedRange()).set([
+      GRAPH_SAMPLE_SIZE,
+      GRAPH_SAMPLE_SIZE,
+      GRAPH_TILT_COUNT,
+      GRAPH_MODE_COUNT,
+   ]);
+   graphAtlasParamsBuffer.unmap();
+   const graphReduceBuffer = device.createBuffer({
+      size: GRAPH_TILE_COUNT * 8,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
+   });
+   const graphReduceReadbackBuffer = device.createBuffer({
+      size: GRAPH_TILE_COUNT * 8,
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+   });
+
+   const graphReduceBindGroup = device.createBindGroup({
+      layout: graphReducePipeline.getBindGroupLayout(1),
+      entries: [
+         { binding: 0, resource: graphColorTexture.createView() },
+         { binding: 1, resource: { buffer: graphReduceBuffer } },
+         { binding: 2, resource: { buffer: graphAtlasParamsBuffer } },
+      ],
+   });
+
+   // Camera looks down +Z toward the table
+   mat4.lookAt(viewMat, cameraPos, [0, 0, 0], [0, 1, 0]);
+
+   const graphPanel = document.createElement('div');
+   graphPanel.id = 'lightReturnPanel';
+   graphPanel.innerHTML = `
+      <div id="lightReturnHeader">
+         <h3>Light Return Graph</h3>
+         <button id="lightReturnToggle" type="button" aria-label="Minimize graph">−</button>
+      </div>
+      <div id="lightReturnBody">
+         <div id="lightReturnStatus">Waiting for model…</div>
+         <canvas id="lightReturnCanvas"></canvas>
+      </div>
+      <div id="lightReturnResize" aria-hidden="true"></div>
+   `;
+   document.body.appendChild(graphPanel);
+
+   const facetPanel = document.createElement('div');
+   facetPanel.id = 'facetInfoPanel';
+   facetPanel.innerHTML = `
+      <div id="facetInfoHeader">
+         <h3>Facet Notes</h3>
+         <button id="facetInfoToggle" type="button" aria-label="Minimize facet notes">−</button>
+      </div>
+      <div id="facetInfoBody">
+         <div id="facetInfoStatus">Waiting for model…</div>
+         <div id="facetInfoList"></div>
+      </div>
+      <div id="facetInfoResize" aria-hidden="true"></div>
+   `;
+   document.body.appendChild(facetPanel);
+
+   const graphToggleEl = graphPanel.querySelector('#lightReturnToggle');
+   const graphBodyEl = graphPanel.querySelector('#lightReturnBody');
+   const graphResizeEl = graphPanel.querySelector('#lightReturnResize');
+   const graphStatusEl = graphPanel.querySelector('#lightReturnStatus');
+   const graphCanvas = graphPanel.querySelector('#lightReturnCanvas');
+   const facetToggleEl = facetPanel.querySelector('#facetInfoToggle');
+   const facetStatusEl = facetPanel.querySelector('#facetInfoStatus');
+   const facetListEl = facetPanel.querySelector('#facetInfoList');
+   const facetResizeEl = facetPanel.querySelector('#facetInfoResize');
+   const graphCtx = graphCanvas.getContext('2d');
+   const graphDpr = window.devicePixelRatio || 1;
+   let graphCanvasWidth = 388;
+   let graphCanvasHeight = 220;
+   let latestGraphSeries = null;
+   let latestFacetInfo = [];
+
+   function resizeGraphCanvas() {
+      const nextWidth = Math.max(220, Math.round(graphCanvas.clientWidth || graphBodyEl.clientWidth));
+      const nextHeight = Math.max(140, Math.round(graphCanvas.clientHeight || 220));
+      graphCanvasWidth = nextWidth;
+      graphCanvasHeight = nextHeight;
+      graphCanvas.width = Math.round(graphCanvasWidth * graphDpr);
+      graphCanvas.height = Math.round(graphCanvasHeight * graphDpr);
+      graphCtx.setTransform(graphDpr, 0, 0, graphDpr, 0, 0);
+      if (latestGraphSeries && !graphCollapsed) drawGraph(latestGraphSeries);
+   }
+
+   resizeGraphCanvas();
+
+   let graphUpdateTimer = null;
+   let graphRequestId = 0;
+   let graphBusy = false;
+   let graphNeedsRerun = false;
+   let graphCollapsed = false;
+   let graphExpandedSize = { width: 420, height: 320 };
+   let facetCollapsed = false;
+   let facetExpandedSize = { width: 420, height: 260 };
+   const FACET_PANEL_GAP = 12;
+
+   function escapeHtml(text) {
+      return String(text)
+         .replaceAll('&', '&amp;')
+         .replaceAll('<', '&lt;')
+         .replaceAll('>', '&gt;')
+         .replaceAll('"', '&quot;')
+         .replaceAll("'", '&#39;');
+   }
+
+   function formatFacetNumber(value) {
+      const fixed = value.toFixed(4);
+      return fixed === '-0.0000' ? '0.0000' : fixed;
+   }
+
+   function computeFacetAngleDeg(normal) {
+      const nz = Math.max(-1, Math.min(1, Math.abs(normal[2] ?? 0)));
+      return Math.acos(nz) * 180 / Math.PI;
+   }
+
+   function computeFacetGearIndex(normal) {
+      const x = normal[0] ?? 0;
+      const y = normal[1] ?? 0;
+      if (Math.abs(x) < 1e-6 && Math.abs(y) < 1e-6) return 'Table';
+
+      const turns = Math.atan2(x, y) / (Math.PI * 2);
+      let gear = Math.round(turns * 96);
+      gear = ((gear % 96) + 96) % 96;
+      if (gear === 0) gear = 96;
+      return String(gear).padStart(2, '0');
+   }
+
+   function getFacetSection(name) {
+      const prefix = String(name || '').trim().charAt(0).toUpperCase();
+      if (prefix === 'P' || prefix === 'G') return 'PAVILION';
+      if (prefix === 'C' || prefix === 'T') return 'CROWN';
+      return 'OTHER';
+   }
+
+   function groupFacetInfo(facets = []) {
+      const sections = new Map([
+         ['PAVILION', []],
+         ['CROWN', []],
+         ['OTHER', []],
+      ]);
+      const grouped = new Map();
+
+      for (const facet of facets) {
+         const name = (facet.name || '').trim() || '?';
+         const instructions = (facet.instructions || '').trim();
+         const angle = computeFacetAngleDeg(facet.normal || [0, 0, 1]);
+         const angleKey = angle.toFixed(2);
+         const key = `${angleKey}\u0000${instructions}`;
+         let entry = grouped.get(key);
+         if (!entry) {
+            entry = {
+               section: getFacetSection(name),
+               name,
+               angle,
+               angleLabel: `${angleKey}°`,
+               indexes: [],
+               instructions,
+            };
+            grouped.set(key, entry);
+            sections.get(entry.section)?.push(entry);
+         } else if ((entry.name === '?' || !entry.name) && name !== '?') {
+            const nextSection = getFacetSection(name);
+            if (entry.section !== nextSection) {
+               const currentEntries = sections.get(entry.section);
+               const currentIndex = currentEntries?.indexOf(entry) ?? -1;
+               if (currentIndex >= 0) currentEntries.splice(currentIndex, 1);
+               sections.get(nextSection)?.push(entry);
+               entry.section = nextSection;
+            }
+            entry.name = name;
+         }
+         entry.indexes.push(computeFacetGearIndex(facet.normal || [0, 0, 1]));
+      }
+
+      for (const entries of sections.values()) {
+         entries.forEach((entry) => {
+            const numeric = [];
+            const text = [];
+            for (const index of entry.indexes) {
+               if (/^\d+$/.test(index)) numeric.push(parseInt(index, 10));
+               else text.push(index);
+            }
+            numeric.sort((a, b) => a - b);
+            text.sort((a, b) => a.localeCompare(b));
+            entry.indexes = [
+               ...numeric.map((value) => String(value).padStart(2, '0')),
+               ...text,
+            ];
+         });
+
+         entries.sort((a, b) => {
+            const nameCmp = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+            if (nameCmp !== 0) return nameCmp;
+            return a.angle - b.angle;
+         });
+      }
+
+      return sections;
+   }
+
+   function formatFacetIndexLines(indexes) {
+      if (!indexes.length) return ['—'];
+      const lines = [];
+      for (let i = 0; i < indexes.length; i += 6) {
+         const chunk = indexes.slice(i, i + 6);
+         const hasMore = i + 6 < indexes.length;
+         lines.push(chunk.join('-') + (hasMore ? '-' : ''));
+      }
+      return lines;
+   }
+
+   function syncFacetPanelPosition() {
+      const rect = graphPanel.getBoundingClientRect();
+      facetPanel.style.right = `${Math.max(18, Math.round(window.innerWidth - rect.right))}px`;
+      facetPanel.style.top = `${Math.round(rect.bottom + FACET_PANEL_GAP)}px`;
+   }
+
+   function setFacetStatus(text) {
+      facetStatusEl.textContent = text;
+   }
+
+   function renderFacetInfo(facets = []) {
+      latestFacetInfo = facets;
+      facetListEl.innerHTML = '';
+
+      if (!facets.length) {
+         facetListEl.innerHTML = '<div class="facetEmpty">No facet notes were found for this model.</div>';
+         return;
+      }
+
+      const groupedSections = groupFacetInfo(facets);
+      const sectionOrder = ['PAVILION', 'CROWN', 'OTHER'];
+      const html = [];
+
+      for (const sectionName of sectionOrder) {
+         const entries = groupedSections.get(sectionName) || [];
+         if (!entries.length) continue;
+
+         html.push(`
+            <div class="facetSection">
+               <div class="facetSectionTitle">${sectionName}</div>
+               ${entries.map((entry) => {
+                  const instruction = entry.instructions ? escapeHtml(entry.instructions) : '—';
+                  return `
+                     <div class="facetGroup">
+                        <div class="facetGroupName">${escapeHtml(entry.name)}</div>
+                        <div class="facetGroupAngle">${escapeHtml(entry.angleLabel)}</div>
+                        <div class="facetGroupIndexes">${escapeHtml(formatFacetIndexLines(entry.indexes).join('\n'))}</div>
+                        <div class="facetGroupInst">${instruction}</div>
+                     </div>
+                  `;
+               }).join('')}
+            </div>
+         `);
+      }
+
+      facetListEl.innerHTML = html.join('') || '<div class="facetEmpty">No facet notes were found for this model.</div>';
+   }
+
+   function setFacetCollapsed(collapsed) {
+      if (collapsed === facetCollapsed) return;
+      if (collapsed) {
+         const rect = facetPanel.getBoundingClientRect();
+         facetExpandedSize = {
+            width: Math.max(260, Math.round(rect.width)),
+            height: Math.max(120, Math.round(rect.height)),
+         };
+      }
+      facetCollapsed = collapsed;
+      facetPanel.classList.toggle('collapsed', collapsed);
+      facetToggleEl.textContent = collapsed ? '+' : '−';
+      facetToggleEl.setAttribute('aria-label', collapsed ? 'Expand facet notes' : 'Minimize facet notes');
+      if (collapsed) {
+         facetPanel.style.width = '200px';
+         facetPanel.style.height = 'auto';
+      } else {
+         facetPanel.style.width = `${facetExpandedSize.width}px`;
+         facetPanel.style.height = `${facetExpandedSize.height}px`;
+      }
+      syncFacetPanelPosition();
+   }
+
+   facetToggleEl.addEventListener('click', () => {
+      setFacetCollapsed(!facetCollapsed);
+   });
+
+   let facetResizeDrag = null;
+   let facetResizePointerId = null;
+   facetResizeEl.addEventListener('pointerdown', (e) => {
+      if (facetCollapsed) return;
+      e.preventDefault();
+      e.stopPropagation();
+      facetResizeDrag = {
+         top: facetPanel.getBoundingClientRect().top,
+         right: facetPanel.getBoundingClientRect().right,
+      };
+      facetResizePointerId = e.pointerId;
+      facetResizeEl.setPointerCapture(e.pointerId);
+   });
+
+   facetResizeEl.addEventListener('pointermove', (e) => {
+      if (!facetResizeDrag) return;
+      const nextWidth = Math.max(260, Math.round(facetResizeDrag.right - e.clientX));
+      const nextHeight = Math.max(120, Math.round(e.clientY - facetResizeDrag.top));
+      facetPanel.style.width = `${nextWidth}px`;
+      facetPanel.style.height = `${nextHeight}px`;
+      facetExpandedSize = { width: nextWidth, height: nextHeight };
+   });
+
+   function endFacetResize(pointerId = facetResizePointerId) {
+      if (!facetResizeDrag) return;
+      facetResizeDrag = null;
+      if (pointerId != null && facetResizeEl.hasPointerCapture(pointerId)) {
+         facetResizeEl.releasePointerCapture(pointerId);
+      }
+      facetResizePointerId = null;
+   }
+
+   facetResizeEl.addEventListener('pointerup', (e) => endFacetResize(e.pointerId));
+   facetResizeEl.addEventListener('pointercancel', (e) => endFacetResize(e.pointerId));
+   facetResizeEl.addEventListener('lostpointercapture', () => endFacetResize());
+   window.addEventListener('pointerup', () => endFacetResize());
+   window.addEventListener('blur', () => endFacetResize());
+
+   syncFacetPanelPosition();
+
+   const graphModelMat = mat4.create();
+   const graphProjMat = mat4.create();
+
+   function setGraphStatus(text) {
+      graphStatusEl.textContent = text;
+   }
+
+   function setGraphCollapsed(collapsed) {
+      if (collapsed === graphCollapsed) return;
+
+      if (collapsed) {
+         const rect = graphPanel.getBoundingClientRect();
+         graphExpandedSize = {
+            width: Math.max(260, Math.round(rect.width)),
+            height: Math.max(120, Math.round(rect.height)),
+         };
+         graphPanel.style.width = '200px';
+         graphPanel.style.height = 'auto';
+      } else {
+         graphPanel.style.width = `${graphExpandedSize.width}px`;
+         graphPanel.style.height = `${graphExpandedSize.height}px`;
+      }
+
+      graphCollapsed = collapsed;
+      graphPanel.classList.toggle('collapsed', collapsed);
+      graphToggleEl.textContent = collapsed ? '+' : '−';
+      graphToggleEl.setAttribute('aria-label', collapsed ? 'Expand graph' : 'Minimize graph');
+      syncFacetPanelPosition();
+      if (!collapsed) resizeGraphCanvas();
+   }
+
+   graphToggleEl.addEventListener('click', () => {
+      setGraphCollapsed(!graphCollapsed);
+   });
+
+   let graphResizeDrag = null;
+   let graphResizePointerId = null;
+   graphResizeEl.addEventListener('pointerdown', (e) => {
+      if (graphCollapsed) return;
+      e.preventDefault();
+      e.stopPropagation();
+      graphResizeDrag = {
+         top: graphPanel.getBoundingClientRect().top,
+         right: graphPanel.getBoundingClientRect().right,
+      };
+      graphResizePointerId = e.pointerId;
+      graphResizeEl.setPointerCapture(e.pointerId);
+   });
+
+   graphResizeEl.addEventListener('pointermove', (e) => {
+      if (!graphResizeDrag) return;
+      const nextWidth = Math.max(260, Math.round(graphResizeDrag.right - e.clientX));
+      const nextHeight = Math.max(120, Math.round(e.clientY - graphResizeDrag.top));
+      graphPanel.style.width = `${nextWidth}px`;
+      graphPanel.style.height = `${nextHeight}px`;
+      graphExpandedSize = { width: nextWidth, height: nextHeight };
+      resizeGraphCanvas();
+      syncFacetPanelPosition();
+   });
+
+   function endGraphResize(pointerId = graphResizePointerId) {
+      if (!graphResizeDrag) return;
+      graphResizeDrag = null;
+      if (pointerId != null && graphResizeEl.hasPointerCapture(pointerId)) {
+         graphResizeEl.releasePointerCapture(pointerId);
+      }
+      graphResizePointerId = null;
+   }
+
+   graphResizeEl.addEventListener('pointerup', (e) => endGraphResize(e.pointerId));
+   graphResizeEl.addEventListener('pointercancel', (e) => endGraphResize(e.pointerId));
+   graphResizeEl.addEventListener('lostpointercapture', () => endGraphResize());
+   window.addEventListener('pointerup', () => endGraphResize());
+   window.addEventListener('blur', () => endGraphResize());
+
+   const graphResizeObserver = new ResizeObserver(() => {
+      if (!graphCollapsed) resizeGraphCanvas();
+      syncFacetPanelPosition();
+   });
+   graphResizeObserver.observe(graphPanel);
+   graphResizeObserver.observe(graphCanvas);
+
+   function writeUniformsToBuffer(buffer, modelMatrix, projectionMatrix, time, lightMode, graphMode = 0.0) {
+      device.queue.writeBuffer(buffer, 0, modelMatrix);
+      device.queue.writeBuffer(buffer, 64, viewMat);
+      device.queue.writeBuffer(buffer, 128, projectionMatrix);
+      device.queue.writeBuffer(buffer, 192, new Float32Array([cameraPos[0], cameraPos[1], cameraPos[2], 0]));
+      device.queue.writeBuffer(buffer, 208, new Float32Array([time, ui.ri, ui.cod, lightMode]));
+      device.queue.writeBuffer(buffer, 224, new Float32Array([ui.color[0], ui.color[1], ui.color[2], graphMode]));
+      device.queue.writeBuffer(buffer, 240, new Float32Array([ui.exitHighlight[0], ui.exitHighlight[1], ui.exitHighlight[2], ui.exitStrength]));
+   }
+
+   function drawGraph(seriesList) {
+      latestGraphSeries = seriesList;
+      const W = graphCanvasWidth;
+      const H = graphCanvasHeight;
+      const padL = 36, padR = 12, padT = 12, padB = 26;
+      const plotW = W - padL - padR;
+      const plotH = H - padT - padB;
+
+      graphCtx.clearRect(0, 0, W, H);
+      graphCtx.fillStyle = 'rgba(255,255,255,0.04)';
+      graphCtx.fillRect(0, 0, W, H);
+
+      graphCtx.strokeStyle = 'rgba(255,255,255,0.08)';
+      graphCtx.lineWidth = 1;
+      for (let y = 0; y <= 5; y++) {
+         const py = padT + (plotH * y / 5);
+         graphCtx.beginPath();
+         graphCtx.moveTo(padL, py);
+         graphCtx.lineTo(W - padR, py);
+         graphCtx.stroke();
+      }
+      for (let x = 0; x <= 6; x++) {
+         const px = padL + (plotW * x / 6);
+         graphCtx.beginPath();
+         graphCtx.moveTo(px, padT);
+         graphCtx.lineTo(px, H - padB);
+         graphCtx.stroke();
+      }
+
+      graphCtx.strokeStyle = '#cfcfcf';
+      graphCtx.beginPath();
+      graphCtx.moveTo(padL, padT);
+      graphCtx.lineTo(padL, H - padB);
+      graphCtx.lineTo(W - padR, H - padB);
+      graphCtx.stroke();
+
+      graphCtx.font = '11px system-ui';
+      graphCtx.fillStyle = '#aaa';
+      graphCtx.textAlign = 'right';
+      graphCtx.textBaseline = 'middle';
+      for (let v = 0; v <= 100; v += 20) {
+         const py = padT + plotH - (v / 100) * plotH;
+         graphCtx.fillText(String(v), padL - 6, py);
+      }
+
+      graphCtx.textAlign = 'center';
+      graphCtx.textBaseline = 'top';
+      for (let x = GRAPH_TILT_MIN; x <= GRAPH_TILT_MAX; x += 10) {
+         const px = padL + ((x - GRAPH_TILT_MIN) / (GRAPH_TILT_MAX - GRAPH_TILT_MIN)) * plotW;
+         graphCtx.fillText(String(x), px, H - padB + 6);
+      }
+
+      for (const series of seriesList) {
+         graphCtx.strokeStyle = series.color;
+         graphCtx.lineWidth = 2;
+         graphCtx.beginPath();
+         series.points.forEach((p, i) => {
+            const px = padL + ((p.tilt - GRAPH_TILT_MIN) / (GRAPH_TILT_MAX - GRAPH_TILT_MIN)) * plotW;
+            const py = padT + plotH - Math.max(0, Math.min(100, p.value)) / 100 * plotH;
+            if (i === 0) graphCtx.moveTo(px, py);
+            else graphCtx.lineTo(px, py);
+         });
+         graphCtx.stroke();
+      }
+
+      graphCtx.textAlign = 'left';
+      graphCtx.textBaseline = 'middle';
+      seriesList.forEach((series, i) => {
+         const y = padT + 8 + i * 16;
+         graphCtx.strokeStyle = series.color;
+         graphCtx.beginPath();
+         graphCtx.moveTo(W - padR - 82, y);
+         graphCtx.lineTo(W - padR - 54, y);
+         graphCtx.stroke();
+         graphCtx.fillStyle = '#ddd';
+         graphCtx.fillText(series.label, W - padR - 48, y);
+      });
+   }
+
+   async function sampleGraphSweep(runId) {
+      if (!renderBundle || runId !== graphRequestId) return null;
+
+      mat4.perspective(graphProjMat, Math.PI / 4, canvas.width / canvas.height, 0.1, 100.0);
+
+      const { graphBindGroups, vertexBuffer, triCount } = renderBundle;
+      const encoder = device.createCommandEncoder();
+      encoder.clearBuffer(graphReduceBuffer);
+
+      const pass = encoder.beginRenderPass({
+         colorAttachments: [{
+            view: graphColorTexture.createView(),
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: 'clear',
+            storeOp: 'store',
+         }],
+         depthStencilAttachment: {
+            view: graphDepthTexture.createView(),
+            depthClearValue: 1.0,
+            depthLoadOp: 'clear',
+            depthStoreOp: 'store',
+         },
+      });
+      pass.setPipeline(graphPipeline);
+      pass.setVertexBuffer(0, vertexBuffer);
+
+      for (let modeIndex = 0; modeIndex < GRAPH_MODE_COUNT; modeIndex++) {
+         const lightMode = GRAPH_MODES[modeIndex].mode;
+         for (let tiltIndex = 0; tiltIndex < GRAPH_TILT_COUNT; tiltIndex++) {
+            if (runId !== graphRequestId) {
+               pass.end();
+               return null;
+            }
+
+            const tiltDeg = GRAPH_TILT_VALUES[tiltIndex];
+            const tileIndex = modeIndex * GRAPH_TILT_COUNT + tiltIndex;
+            mat4.identity(graphModelMat);
+            mat4.rotateX(graphModelMat, graphModelMat, tiltDeg * Math.PI / 180.0);
+            writeUniformsToBuffer(graphUniformBuffers[tileIndex], graphModelMat, graphProjMat, 0, lightMode, 1.0);
+
+            pass.setViewport(
+               tiltIndex * GRAPH_SAMPLE_SIZE,
+               modeIndex * GRAPH_SAMPLE_SIZE,
+               GRAPH_SAMPLE_SIZE,
+               GRAPH_SAMPLE_SIZE,
+               0,
+               1,
+            );
+            pass.setScissorRect(
+               tiltIndex * GRAPH_SAMPLE_SIZE,
+               modeIndex * GRAPH_SAMPLE_SIZE,
+               GRAPH_SAMPLE_SIZE,
+               GRAPH_SAMPLE_SIZE,
+            );
+            pass.setBindGroup(0, graphBindGroups[tileIndex]);
+            pass.draw(triCount * 3);
+         }
+      }
+      pass.end();
+
+      const reducePass = encoder.beginComputePass();
+      reducePass.setPipeline(graphReducePipeline);
+      reducePass.setBindGroup(1, graphReduceBindGroup);
+      reducePass.dispatchWorkgroups(
+         Math.ceil(GRAPH_ATLAS_WIDTH / 8),
+         Math.ceil(GRAPH_ATLAS_HEIGHT / 8),
+         1,
+      );
+      reducePass.end();
+
+      encoder.copyBufferToBuffer(graphReduceBuffer, 0, graphReduceReadbackBuffer, 0, GRAPH_TILE_COUNT * 8);
+
+      device.queue.submit([encoder.finish()]);
+      await graphReduceReadbackBuffer.mapAsync(GPUMapMode.READ);
+      const reduced = new Uint32Array(graphReduceReadbackBuffer.getMappedRange());
+
+      const seriesList = GRAPH_MODES.map((mode, modeIndex) => {
+         const points = GRAPH_TILT_VALUES.map((tilt, tiltIndex) => {
+            const tileIndex = modeIndex * GRAPH_TILT_COUNT + tiltIndex;
+            const valueSum = reduced[tileIndex * 2 + 0];
+            const count = reduced[tileIndex * 2 + 1];
+            const value = count > 0
+               ? (valueSum / (count * GRAPH_REDUCE_SUM_SCALE)) * GRAPH_VALUE_SCALE
+               : 0;
+            return { tilt, value };
+         });
+         return { label: mode.label, color: mode.color, points };
+      });
+
+      graphReduceReadbackBuffer.unmap();
+      return seriesList;
+   }
+
+   async function recomputeGraph(runId) {
+      if (!renderBundle) return;
+
+      const seriesList = await sampleGraphSweep(runId);
+      if (!seriesList) return;
+
+      if (runId !== graphRequestId) return;
+      drawGraph(seriesList);
+      setGraphStatus(`Updated for RI ${ui.ri.toFixed(3)}, COD ${ui.cod.toFixed(3)} · sweep ${GRAPH_TILT_MIN}°…${GRAPH_TILT_MAX}°`);
+   }
+
+   function scheduleGraphUpdate(reason = 'parameter change') {
+      if (!renderBundle) return;
+      graphRequestId++;
+      const runId = graphRequestId;
+      clearTimeout(graphUpdateTimer);
+      setGraphStatus(`Updating graph… (${reason})`);
+      graphUpdateTimer = setTimeout(async () => {
+         if (graphBusy) {
+            graphNeedsRerun = true;
+            return;
+         }
+         graphBusy = true;
+         try {
+            await recomputeGraph(runId);
+         } finally {
+            graphBusy = false;
+            if (graphNeedsRerun) {
+               graphNeedsRerun = false;
+               scheduleGraphUpdate('latest values');
+            }
+         }
+      }, 150);
+   }
+
+   // -------------------------------------------------------------------------
+   // loadModel — swap mesh buffers; pipeline and UI are untouched.
+   // -------------------------------------------------------------------------
+   async function loadModel(filename, url) {
+      console.log(`Loading ${filename}...`);
+
+      const meshData = filename.toLowerCase().endsWith('.gem')
+         ? await loadGEM(url)
+         : await loadSTL(url);
+
+      if (meshData.refractiveIndex)
+         console.log(`RI from file: ${meshData.refractiveIndex}`);
+
+      normalizeMesh(meshData.vertexData);
+
+      const { nodeBuffer, triBuffer } = buildBVH(meshData.vertexData, meshData.triangleCount);
+
+      const makeBuf = (data, usage) => {
+         const buf = device.createBuffer({
+            size: data.byteLength,
+            usage: usage | GPUBufferUsage.COPY_DST,
+            mappedAtCreation: true,
+         });
+         new Float32Array(buf.getMappedRange()).set(data);
+         buf.unmap();
+         return buf;
+      };
+
+      const vertexBuffer = makeBuf(meshData.vertexData, GPUBufferUsage.VERTEX);
+      const triStorageBuffer = makeBuf(triBuffer, GPUBufferUsage.STORAGE);
+      const bvhStorageBuffer = makeBuf(nodeBuffer, GPUBufferUsage.STORAGE);
+
+      const bindGroup = device.createBindGroup({
+         layout: pipeline.getBindGroupLayout(0),
+         entries: [
+            { binding: 0, resource: { buffer: uniformBuffer } },
+            { binding: 1, resource: { buffer: triStorageBuffer } },
+            { binding: 2, resource: { buffer: bvhStorageBuffer } },
+         ],
+      });
+
+      const graphBindGroups = graphUniformBuffers.map((graphUniformBuffer) => device.createBindGroup({
+         layout: graphPipeline.getBindGroupLayout(0),
+         entries: [
+            { binding: 0, resource: { buffer: graphUniformBuffer } },
+            { binding: 1, resource: { buffer: triStorageBuffer } },
+            { binding: 2, resource: { buffer: bvhStorageBuffer } },
+         ],
+      }));
+
+      renderBundle = { bindGroup, graphBindGroups, vertexBuffer, triCount: meshData.triangleCount };
+
+      // Push RI and filename into the live panel
+      if (meshData.refractiveIndex && meshData.refractiveIndex > 1.0)
+         uiControls.setRI(meshData.refractiveIndex);
+      uiControls.setFileName(filename);
+      if (Array.isArray(meshData.facets) && meshData.facets.length > 0) {
+         renderFacetInfo(meshData.facets);
+         setFacetStatus(`${meshData.facets.length} facets parsed from ${filename}`);
+      } else {
+         renderFacetInfo([]);
+         setFacetStatus(filename.toLowerCase().endsWith('.gem')
+            ? `No named facets found in ${filename}`
+            : `Facet notes are only available for .gem files`);
+      }
+      syncFacetPanelPosition();
+      scheduleGraphUpdate('model load');
+   }
+
+   // --- UI (built once; survives model swaps) ---
+   uiControls = buildUI(ui, {
+      onReset() {
+         targetRotX = 0; targetRotY = 0;
+         currentRotX = 0; currentRotY = 0;
+         animating = false;
+      },
+      onTilt() {
+         animating = !animating;
+         if (animating) animStartTime = performance.now() * 0.001;
+         return animating;
+      },
+      onGraphParamsChanged() { scheduleGraphUpdate(); },
+      onFileSelected(name, fileUrl) { loadModel(name, fileUrl); },
+   });
+
+   // --- Pointer (canvas rotation) ---
+   let isPointerDown = false, lastX = 0, lastY = 0;
+   gpuCanvas.addEventListener('pointerdown', (e) => { isPointerDown = true; lastX = e.clientX; lastY = e.clientY; });
+   gpuCanvas.addEventListener('pointerup', () => { isPointerDown = false; });
+   gpuCanvas.addEventListener('pointermove', (e) => {
+      if (!isPointerDown) return;
+      targetRotY += ((e.clientX - lastX) / 500) * Math.PI;
+      targetRotX += ((e.clientY - lastY) / 500) * Math.PI * 0.5;
+      lastX = e.clientX; lastY = e.clientY;
+   });
+
+   // --- Axis indicator (created once) ---
+   const axisCanvas = document.createElement('canvas');
+   axisCanvas.id = 'axisCanvas';
+   Object.assign(axisCanvas.style, {
+      position: 'fixed', bottom: '16px', left: '16px',
+      width: '120px', height: '120px',
+      borderRadius: '8px', background: 'rgba(0,0,0,0)', pointerEvents: 'none',
+   });
+   document.body.appendChild(axisCanvas);
+   const axCtx = axisCanvas.getContext('2d');
+   const dpr = window.devicePixelRatio || 1;
+   axisCanvas.width = 120 * dpr;
+   axisCanvas.height = 120 * dpr;
+   axCtx.scale(dpr, dpr);
+
+   function drawAxes() {
+      const cx = 60, cy = 60, len = 40;
+      axCtx.clearRect(0, 0, 120, 120);
+      const axes = [
+         { label: 'X', color: '#f55', dx: modelMat[0], dy: modelMat[1] },
+         { label: 'Y', color: '#5f5', dx: modelMat[4], dy: modelMat[5] },
+         { label: 'Z', color: '#58f', dx: modelMat[8], dy: modelMat[9] },
+      ];
+      axes.sort((a, b) => a.dy - b.dy);
+      axCtx.font = 'bold 11px system-ui';
+      axCtx.textAlign = 'center';
+      axCtx.textBaseline = 'middle';
+      for (const ax of axes) {
+         const ex = cx + ax.dx * len;
+         const ey = cy - ax.dy * len;
+         axCtx.beginPath(); axCtx.moveTo(cx, cy); axCtx.lineTo(ex, ey);
+         axCtx.strokeStyle = ax.color; axCtx.lineWidth = 2; axCtx.stroke();
+         axCtx.beginPath(); axCtx.arc(ex, ey, 3, 0, Math.PI * 2);
+         axCtx.fillStyle = ax.color; axCtx.fill();
+         axCtx.fillText(ax.label, cx + ax.dx * (len + 11), cy - ax.dy * (len + 11));
+      }
+      axCtx.beginPath(); axCtx.arc(cx, cy, 3, 0, Math.PI * 2);
+      axCtx.fillStyle = '#fff'; axCtx.fill();
+   }
+
+   // --- FPS overlay (debug only) ---
+   let fpsEl = null, fpsSmoothed = 0, lastFpsUpdate = 0, lastFrameTime = performance.now() * 0.001;
+   if (DEBUG) {
+      fpsEl = document.createElement('div');
+      fpsEl.id = 'fpsOverlay';
+      Object.assign(fpsEl.style, {
+         position: 'fixed', left: '16px', top: '16px',
+         background: 'rgba(0,0,0,0.6)', color: '#e8e8e8',
+         padding: '6px 8px', borderRadius: '6px', fontSize: '12px',
+         zIndex: 200, pointerEvents: 'none',
+      });
+      document.body.appendChild(fpsEl);
+      lastFpsUpdate = performance.now() * 0.001;
+   }
+
+   // --- Uniforms ---
+   function updateUniforms(time) {
+      let animX = 0, animY = 0;
+      if (animating) {
+         const STEP = 1.2;
+         const elapsed = time - animStartTime;
+         const cycle = elapsed % (STEP * 2);
+         const step = Math.floor(cycle / STEP);
+         const frac = (cycle % STEP) / STEP;
+         const bell = Math.sin(frac * Math.PI);
+         const amp = ui.tiltAngleDeg * Math.PI / 180.0;
+         animX = step === 0 ? bell * amp : 0;
+         animY = step === 1 ? bell * amp : 0;
+      }
+
+      currentRotX += (targetRotX - currentRotX) * 0.05;
+      currentRotY += (targetRotY - currentRotY) * 0.05;
+
+      mat4.identity(modelMat);
+      mat4.rotateX(modelMat, modelMat, currentRotX + animX);
+      mat4.rotateY(modelMat, modelMat, currentRotY + animY);
+
+      const aspect = canvas.width / canvas.height;
+      mat4.perspective(projMat, Math.PI / 4, aspect, 0.1, 100.0);
+
+      device.queue.writeBuffer(uniformBuffer, 0, modelMat);
+      device.queue.writeBuffer(uniformBuffer, 64, viewMat);
+      device.queue.writeBuffer(uniformBuffer, 128, projMat);
+      device.queue.writeBuffer(uniformBuffer, 192, new Float32Array([cameraPos[0], cameraPos[1], cameraPos[2], 0]));
+      device.queue.writeBuffer(uniformBuffer, 208, new Float32Array([time, ui.ri, ui.cod, ui.lightMode]));
+      device.queue.writeBuffer(uniformBuffer, 224, new Float32Array([ui.color[0], ui.color[1], ui.color[2], 0.0]));
+      device.queue.writeBuffer(uniformBuffer, 240, new Float32Array([ui.exitHighlight[0], ui.exitHighlight[1], ui.exitHighlight[2], ui.exitStrength]));
+   }
+
+   // --- Render loop ---
+   function frame() {
+      const time = performance.now() * 0.001;
+
+      if (DEBUG && fpsEl) {
+         const dt = time - lastFrameTime;
+         lastFrameTime = time;
+         fpsSmoothed = fpsSmoothed * 0.9 + (dt > 0 ? 1 / dt : 0) * 0.1;
+         if (time - lastFpsUpdate > 0.2) {
+            fpsEl.textContent = `FPS: ${Math.round(fpsSmoothed)}`;
+            lastFpsUpdate = time;
+         }
+      }
+
+      updateUniforms(time);
+      drawAxes();
+
+      if (renderBundle) {
+         const { bindGroup, vertexBuffer, triCount } = renderBundle;
+         const canvasTexture = context.getCurrentTexture();
+         const commandEncoder = device.createCommandEncoder();
+         const renderPass = commandEncoder.beginRenderPass({
+            colorAttachments: [{
+               view: canvasTexture.createView(),
+               clearValue: { r: 0.05, g: 0.05, b: 0.05, a: 1.0 },
+               loadOp: 'clear',
+               storeOp: 'store',
+            }],
+            depthStencilAttachment: {
+               view: depthTexture.createView(),
+               depthClearValue: 1.0,
+               depthLoadOp: 'clear',
+               depthStoreOp: 'store',
+            },
+         });
+         renderPass.setPipeline(pipeline);
+         renderPass.setBindGroup(0, bindGroup);
+         renderPass.setVertexBuffer(0, vertexBuffer);
+         renderPass.draw(triCount * 3);
+         renderPass.end();
+         device.queue.submit([commandEncoder.finish()]);
+      }
+
+      requestAnimationFrame(frame);
+   }
+
+   // --- Resize ---
+   function resize() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      depthTexture = device.createTexture({
+         size: [canvas.width, canvas.height],
+         format: 'depth24plus',
+         usage: GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+      syncFacetPanelPosition();
+   }
+   window.addEventListener('resize', resize);
+   resize();
+   requestAnimationFrame(frame);
+
+   return { loadModel };
+}
+
+// ---------------------------------------------------------------------------
+// Startup
+// ---------------------------------------------------------------------------
+const app = await setupApp();
+if (app) app.loadModel('stone.gem', 'stone.gem');

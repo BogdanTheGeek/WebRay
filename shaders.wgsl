@@ -1,0 +1,553 @@
+// ============================================================
+// shaders.wgsl  —  Gem shader with BVH + UI controls
+// Lighting matches raytracer.cpp light models:
+//   ISO  — uniform hemisphere
+//   COS  — cosine (bright zenith, dark horizon)
+//   SC2  — 2*sin*cos (bright at 45°, dark at zenith & horizon)
+//   RND  — random mottled sky with spotlights
+// ============================================================
+
+// -----------------------------------------------------------
+// Uniform layout (must match JS writeBuffer offsets exactly):
+// -----------------------------------------------------------
+struct Uniforms {
+    modelMatrix:          mat4x4<f32>,  // 0
+    viewMatrix:           mat4x4<f32>,  // 64
+    projectionMatrix:     mat4x4<f32>,  // 128
+    cameraPosition:       vec3<f32>,    // 192
+    _pad0:                f32,          // 204
+    time:                 f32,          // 208
+    ri_d:                 f32,          // 212
+    cod:                  f32,          // 216
+    lightMode:            f32,          // 220
+    stoneColor:           vec3<f32>,    // 224
+    graphMode:            f32,          // 236 (0 = normal render, >0.5 = raw graph luminance)
+    exitHighlight:        vec3<f32>,    // 240
+    exitStrength:         f32,          // 252
+};
+
+@group(0) @binding(0) var<uniform>       uniforms:  Uniforms;
+@group(0) @binding(1) var<storage, read> triangles: array<f32>;
+@group(0) @binding(2) var<storage, read> bvhNodes:  array<f32>;
+
+struct GraphReduceCell {
+    sum: atomic<u32>,
+    count: atomic<u32>,
+};
+
+struct GraphAtlasParams {
+    tileWidth: u32,
+    tileHeight: u32,
+    tilesX: u32,
+    tilesY: u32,
+};
+
+@group(1) @binding(0) var graphTexture: texture_2d<f32>;
+@group(1) @binding(1) var<storage, read_write> graphReduce: array<GraphReduceCell>;
+@group(1) @binding(2) var<uniform> graphAtlas: GraphAtlasParams;
+
+// ─────────────────────────────────────────────────
+// Vertex shader
+// ─────────────────────────────────────────────────
+struct VertexOutput {
+    @builtin(position) position:      vec4<f32>,
+    @location(0)       worldPosition: vec3<f32>,
+    @location(1)       worldNormal:   vec3<f32>,
+    @location(2)       localPos:      vec3<f32>,
+    @location(3) @interpolate(flat) frosted: f32,
+};
+
+@vertex
+fn vs_main(@location(0) pos: vec3<f32>, @location(1) norm: vec3<f32>, @location(2) frosted: f32) -> VertexOutput {
+    var out: VertexOutput;
+    let worldPos      = uniforms.modelMatrix * vec4<f32>(pos, 1.0);
+    out.worldPosition = worldPos.xyz;
+    out.worldNormal   = normalize((uniforms.modelMatrix * vec4<f32>(norm, 0.0)).xyz);
+    out.localPos      = pos;
+    out.frosted       = frosted;
+    out.position      = uniforms.projectionMatrix * uniforms.viewMatrix * worldPos;
+    return out;
+}
+
+// ─────────────────────────────────────────────────
+// Cauchy dispersion: n(λ) = A + B/λ²
+// Returns (ri_r, ri_g, ri_b) for λ = 650, 510, 475 nm in one call,
+// hoisting the shared A and B coefficients.
+// ─────────────────────────────────────────────────
+fn cauchy_ri3(ri_d: f32, cod: f32) -> vec3<f32> {
+    let B = cod * 306033.0;
+    let A = ri_d - B / (589.3 * 589.3);
+    return vec3<f32>(
+        A + B / (650.0 * 650.0),  // red   650 nm
+        A + B / (510.0 * 510.0),  // green 510 nm
+        A + B / (475.0 * 475.0),  // blue  475 nm
+    );
+}
+
+// ─────────────────────────────────────────────────
+// Hash for RND sky — smooth bilinear patch grid
+// matching raytracer's npatch=17 random sky array
+// ─────────────────────────────────────────────────
+fn hash21(p: vec2<f32>) -> f32 {
+    var q = fract(p * vec2<f32>(127.1, 311.7));
+    q += dot(q, q + 17.43);
+    return fract(q.x * q.y);
+}
+
+fn rnd_sky(d: vec3<f32>) -> f32 {
+    let uv = d.xz * 8.5 + 8.5; // scale to [0,17] patch space
+    let i  = floor(uv);
+    let f  = fract(uv);
+    let a  = hash21(i);
+    let b  = hash21(i + vec2<f32>(1.0, 0.0));
+    let c  = hash21(i + vec2<f32>(0.0, 1.0));
+    let dd = hash21(i + vec2<f32>(1.0, 1.0));
+    let sf = f * f * (3.0 - 2.0 * f);
+    return mix(mix(a, b, sf.x), mix(c, dd, sf.x), sf.y);
+}
+
+fn hash31(p: vec3<f32>) -> f32 {
+    var q = fract(p * vec3<f32>(0.1031, 0.11369, 0.13787));
+    q += dot(q, q.yzx + 19.19);
+    return fract((q.x + q.y) * q.z);
+}
+
+fn jitter_direction(dir: vec3<f32>, pos: vec3<f32>, roughness: f32, salt: f32) -> vec3<f32> {
+    let n = normalize(dir);
+    let seed1 = hash31(pos * 18.0 + n * (2.7 + salt));
+    let seed2 = hash31(pos.zxy * 21.0 + n.yzx * (4.1 + salt * 1.7));
+    let phi = 6.28318530718 * seed1;
+    let radius = roughness * sqrt(seed2);
+
+    var tangent = cross(vec3<f32>(0.0, 0.0, 1.0), n);
+    if (dot(tangent, tangent) < 1e-5) {
+        tangent = cross(vec3<f32>(0.0, 1.0, 0.0), n);
+    }
+    tangent = normalize(tangent);
+    let bitangent = normalize(cross(n, tangent));
+    return normalize(n + tangent * cos(phi) * radius + bitangent * sin(phi) * radius);
+}
+
+fn frosted_env(dir: vec3<f32>, pos: vec3<f32>, roughness: f32) -> vec3<f32> {
+    let d0 = jitter_direction(dir, pos + vec3<f32>(0.13, 0.29, 0.47), roughness, 0.0);
+    let d1 = jitter_direction(dir, pos + vec3<f32>(0.61, 0.17, 0.23), roughness, 1.0);
+    let d2 = jitter_direction(dir, pos + vec3<f32>(0.41, 0.73, 0.19), roughness, 2.0);
+    let d3 = jitter_direction(dir, pos + vec3<f32>(0.07, 0.37, 0.83), roughness, 3.0);
+    return 0.25 * (sample_env(d0) + sample_env(d1) + sample_env(d2) + sample_env(d3));
+}
+
+// ─────────────────────────────────────────────────
+// Environment sampler
+// Implements all four raytracer.cpp light models.
+// Head shadow matches C++ coshead = cos(20°) ≈ 0.9397
+// ─────────────────────────────────────────────────
+fn sample_env(dir: vec3<f32>) -> vec3<f32> {
+    let d    = normalize(dir);
+    let mode = uniforms.lightMode;
+    let graphOnly = uniforms.graphMode > 0.5;
+
+    // Head shadow — dark circle directly above stone (viewer's head)
+    var shadow = 1.0;
+    if (!graphOnly && d.z > 0.9397) { shadow = 0.08; } // cos(20°)
+
+    var intensity = 0.0;
+
+    if (mode < 0.5) {
+        // ISO: uniform — constant 1.0 above horizon
+        // Matches: isoInten += ss * c  where c = 1
+        intensity = select(0.0, 1.0, d.z > 0.0);
+
+    } else if (mode < 1.5) {
+        // COS: cosine-weighted — bright zenith, dark horizon
+        // Matches: cosInten += ss * d  where d = dot(ray, up)
+        intensity = max(0.0, d.z);
+
+    } else if (mode < 2.5) {
+        // SC2: sin(2θ) = 2·sinθ·cosθ — bright at 45°
+        // Matches: sc2Inten += ss * e  where e = 2*sinθ*cosθ
+        let sinTheta = sqrt(max(0.0, 1.0 - d.z * d.z));
+        intensity = 2.0 * sinTheta * max(0.0, d.z);
+
+    } else {
+        // RND: mottled patches + moving spotlights
+        // Matches: rndInten bilinear sky + spotlight loop (nspot=20)
+        if (d.z > 0.0) {
+            intensity = rnd_sky(d) * 0.85;
+            // Static spotlights (removed time-varying motion)
+            let p1 = normalize(vec3<f32>(0.0, 1.0, 0.0));
+            let p2 = normalize(vec3<f32>(0.5, 0.7, 0.5));
+            let p3 = normalize(vec3<f32>(-0.5, 0.6, 0.4));
+            intensity += pow(max(0.0, dot(d, p1)), 80.0) * 2.5;
+            intensity += pow(max(0.0, dot(d, p2)), 80.0) * 1.8;
+            intensity += pow(max(0.0, dot(d, p3)), 60.0) * 1.5;
+        }
+    }
+
+    intensity *= shadow;
+
+    // Stone colour tint — modulates transmitted light so the body colour
+    // of coloured gems (ruby, sapphire, emerald) comes through correctly.
+    // White = no tint. Mix weight 0.55 preserves some brightness.
+    let tint = select(
+        vec3<f32>(1.0),
+        mix(vec3<f32>(1.0), uniforms.stoneColor, 1.0),
+        !graphOnly,
+    );
+
+    // Small blue-white ambient from below (light table / bench lamp)
+    // Matches the raytracer's background "leak" colour
+    let tableAmbient = select(
+        vec3<f32>(0.0),
+        vec3<f32>(0.06, 0.07, 0.10) * max(0.0, -d.z + 0.25),
+        !graphOnly,
+    );
+
+    return tint * intensity + tableAmbient;
+}
+
+fn aces_tonemap(x: vec3<f32>) -> vec3<f32> {
+    let a = 2.51; let b = 0.03; let c = 2.43; let d = 0.59; let e = 0.14;
+    return clamp((x*(a*x+b))/(x*(c*x+d)+e), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+// ─────────────────────────────────────────────────
+// Ray–AABB slab test
+// ─────────────────────────────────────────────────
+fn ray_aabb(ro: vec3<f32>, inv_rd: vec3<f32>,
+            bmin: vec3<f32>, bmax: vec3<f32>) -> vec2<f32> {
+    let t0   = (bmin - ro) * inv_rd;
+    let t1   = (bmax - ro) * inv_rd;
+    let tMin = max(max(min(t0.x, t1.x), min(t0.y, t1.y)), min(t0.z, t1.z));
+    let tMax = min(min(max(t0.x, t1.x), max(t0.y, t1.y)), max(t0.z, t1.z));
+    return vec2<f32>(tMin, tMax);
+}
+
+// ─────────────────────────────────────────────────
+// Möller–Trumbore ray–triangle
+// ─────────────────────────────────────────────────
+fn ray_triangle(ro: vec3<f32>, rd: vec3<f32>, triIdx: i32) -> f32 {
+    let base = triIdx * 13;
+    let v0   = vec3<f32>(triangles[base + 0], triangles[base + 1], triangles[base + 2]);
+    let v1   = vec3<f32>(triangles[base + 3], triangles[base + 4], triangles[base + 5]);
+    let v2   = vec3<f32>(triangles[base + 6], triangles[base + 7], triangles[base + 8]);
+    let e1   = v1 - v0;
+    let e2   = v2 - v0;
+    let h    = cross(rd, e2);
+    let det  = dot(e1, h);
+    if (abs(det) < 1e-6) { return -1.0; }
+    let inv_det = 1.0 / det;
+    let s       = ro - v0;
+    let u       = dot(s, h) * inv_det;
+    if (u < 0.0 || u > 1.0) { return -1.0; }
+    let q = cross(s, e1);
+    let v = dot(rd, q) * inv_det;
+    if (v < 0.0 || u + v > 1.0) { return -1.0; }
+    let t = dot(e2, q) * inv_det;
+    if (t < 1e-4) { return -1.0; }
+    return t;
+}
+
+// ─────────────────────────────────────────────────
+// BVH traversal — iterative, explicit stack
+// ─────────────────────────────────────────────────
+struct HitResult { t: f32, normal: vec3<f32>, frosted: f32 };
+
+fn bvh_intersect(ro: vec3<f32>, rd: vec3<f32>, tMax_in: f32) -> HitResult {
+    var result: HitResult;
+    result.t      = -1.0;
+    result.normal = vec3<f32>(0.0, 1.0, 0.0);
+    result.frosted = 0.0;
+    let inv_rd    = vec3<f32>(1.0) / rd;
+    var tBest     = tMax_in;
+    var stack: array<i32, 32>;
+    stack[0]  = 0;
+    var stackTop = 1;
+    while (stackTop > 0) {
+        stackTop--;
+        let nodeIdx = stack[stackTop];
+        let b       = nodeIdx * 8;
+        let bmin    = vec3<f32>(bvhNodes[b + 0], bvhNodes[b + 1], bvhNodes[b + 2]);
+        let bmax    = vec3<f32>(bvhNodes[b + 4], bvhNodes[b + 5], bvhNodes[b + 6]);
+        let ab      = ray_aabb(ro, inv_rd, bmin, bmax);
+        if (ab.y < ab.x || ab.x > tBest) { continue; }
+        let leftOrTriStart  = i32(bvhNodes[b + 3]);
+        let triCountOrRight = bvhNodes[b + 7];
+        if (triCountOrRight > 0.0) {
+            let triStart = leftOrTriStart;
+            let triCount = i32(triCountOrRight);
+            for (var i = 0; i < triCount; i++) {
+                let t = ray_triangle(ro, rd, triStart + i);
+                if (t > 0.0 && t < tBest) {
+                    tBest         = t;
+                    result.t      = t;
+                    let nb        = (triStart + i) * 13 + 9;
+                    result.normal = vec3<f32>(triangles[nb], triangles[nb+1], triangles[nb+2]);
+                    result.frosted = triangles[nb + 3];
+                }
+            }
+        } else {
+            let leftChild  = leftOrTriStart;
+            let rightChild = i32(-triCountOrRight) - 1;
+            // Pre-test both children so we only push hits, and push the
+            // farther child first so the nearer one is popped next.
+            let bL   = leftChild * 8;
+            let abL  = ray_aabb(ro, inv_rd,
+                           vec3<f32>(bvhNodes[bL+0], bvhNodes[bL+1], bvhNodes[bL+2]),
+                           vec3<f32>(bvhNodes[bL+4], bvhNodes[bL+5], bvhNodes[bL+6]));
+            let hitL = abL.y >= abL.x && abL.x <= tBest;
+
+            let bR   = rightChild * 8;
+            let abR  = ray_aabb(ro, inv_rd,
+                           vec3<f32>(bvhNodes[bR+0], bvhNodes[bR+1], bvhNodes[bR+2]),
+                           vec3<f32>(bvhNodes[bR+4], bvhNodes[bR+5], bvhNodes[bR+6]));
+            let hitR = abR.y >= abR.x && abR.x <= tBest;
+
+            if (hitL && hitR && stackTop + 1 < 32) {
+                // Push farther child first (nearer popped first → earlier tBest shrink)
+                if (abL.x <= abR.x) {
+                    stack[stackTop]     = rightChild;
+                    stack[stackTop + 1] = leftChild;
+                } else {
+                    stack[stackTop]     = leftChild;
+                    stack[stackTop + 1] = rightChild;
+                }
+                stackTop += 2;
+            } else if (hitL && stackTop < 32) {
+                stack[stackTop] = leftChild;
+                stackTop += 1;
+            } else if (hitR && stackTop < 32) {
+                stack[stackTop] = rightChild;
+                stackTop += 1;
+            }
+        }
+    }
+    return result;
+}
+
+// ─────────────────────────────────────────────────
+// trace_internal return value (per R/G/B channel):
+//   light  — brilliance: energy returned toward the viewer
+//   window — fraction of throughput that leaked out the pavilion
+//            0 = full TIR, 1 = pure window
+// ─────────────────────────────────────────────────
+struct TraceResult { light: vec3<f32>, window: vec3<f32> };
+
+// Merged 3-channel trace: one BVH traversal per bounce shared across R/G/B.
+// The green channel drives geometry (navigator ray). R and B deviate only by
+// the small dispersion angle, so they hit the same facet — a valid approximation
+// for all common gem materials (Δangle < 0.5° even for high-dispersion CZ).
+fn trace_internal(rd_r: vec3<f32>, rd_g: vec3<f32>, rd_b: vec3<f32>,
+                  origin_in: vec3<f32>, eta: vec3<f32>) -> TraceResult {
+    var r      = rd_r;
+    var g      = rd_g;
+    var b      = rd_b;
+    var origin = origin_in;
+
+    var accumulated = vec3<f32>(0.0);
+    var throughput  = vec3<f32>(1.0);
+    var windowLeak  = vec3<f32>(0.0);
+
+    for (var bounce = 0; bounce < 10; bounce++) {
+        // Single BVH traversal using the green (middle) navigator ray
+        let hit = bvh_intersect(origin, g, 1e9);
+
+        if (hit.t < 0.0) {
+            // All channels escaped — sample environment per direction
+            accumulated += throughput * vec3<f32>(
+                sample_env(r).r,
+                sample_env(g).g,
+                sample_env(b).b,
+            );
+            break;
+        }
+
+        let hitPos = origin + g * hit.t;
+        var n = normalize(hit.normal);
+        if (dot(g, n) > 0.0) { n = -n; }
+
+        if (hit.frosted > 0.5) {
+            let glow = vec3<f32>(0.82, 0.84, 0.86);
+            let diffuse = max(0.0, n.z);
+            let refl = reflect(g, n);
+            let reflected = sample_env(refl) * 0.18;
+            accumulated += throughput * (glow * (0.58 + 0.28 * diffuse) + reflected);
+            break;
+        }
+
+        // Per-channel cos(θ_i) from each ray's slight angular deviation
+        let cosR = max(0.0, dot(-r, n));
+        let cosG = max(0.0, dot(-g, n));
+        let cosB = max(0.0, dot(-b, n));
+
+        // sin²(θ_t) = eta² · sin²(θ_i)  —  Snell gem→air
+        let st_r = (1.0 - cosR * cosR) * eta.x * eta.x;
+        let st_g = (1.0 - cosG * cosG) * eta.y * eta.y;
+        let st_b = (1.0 - cosB * cosB) * eta.z * eta.z;
+
+        // Per-channel Fresnel (TIR = 1.0 when sin²θ_t ≥ 1)
+        var fresnel = vec3<f32>(1.0);
+        if (st_r < 1.0) {
+            let ct = sqrt(1.0 - st_r);
+            let rs = (eta.x * cosR - ct) / (eta.x * cosR + ct);
+            let rp = (cosR - eta.x * ct) / (cosR + eta.x * ct);
+            fresnel.x = 0.5 * (rs * rs + rp * rp);
+        }
+        if (st_g < 1.0) {
+            let ct = sqrt(1.0 - st_g);
+            let rs = (eta.y * cosG - ct) / (eta.y * cosG + ct);
+            let rp = (cosG - eta.y * ct) / (cosG + eta.y * ct);
+            fresnel.y = 0.5 * (rs * rs + rp * rp);
+        }
+        if (st_b < 1.0) {
+            let ct = sqrt(1.0 - st_b);
+            let rs = (eta.z * cosB - ct) / (eta.z * cosB + ct);
+            let rp = (cosB - eta.z * ct) / (cosB + eta.z * ct);
+            fresnel.z = 0.5 * (rs * rs + rp * rp);
+        }
+
+        // Window detection (shared normal, un-flipped)
+        let outZ = hit.normal.z;
+        if (outZ < -0.1) {
+            windowLeak += throughput * (1.0 - fresnel) * max(0.0, -outZ);
+        }
+
+        // Refracted escape contribution per channel
+        if (st_r < 1.0) {
+            let esc = refract(r, n, eta.x);
+            if (length(esc) > 0.1) {
+                accumulated.x += throughput.x * sample_env(esc).r * (1.0 - fresnel.x);
+            }
+        }
+        if (st_g < 1.0) {
+            let esc = refract(g, n, eta.y);
+            if (length(esc) > 0.1) {
+                accumulated.y += throughput.y * sample_env(esc).g * (1.0 - fresnel.y);
+            }
+        }
+        if (st_b < 1.0) {
+            let esc = refract(b, n, eta.z);
+            if (length(esc) > 0.1) {
+                accumulated.z += throughput.z * sample_env(esc).b * (1.0 - fresnel.z);
+            }
+        }
+
+        // Advance origin along green ray; reflect all three channels
+        origin      = origin + g * hit.t + n * 1e-4;
+        let refl_r   = reflect(r, n);
+        let refl_g   = reflect(g, n);
+        let refl_b   = reflect(b, n);
+        r           = refl_r;
+        g           = refl_g;
+        b           = refl_b;
+        throughput *= fresnel;
+        if (all(throughput < vec3<f32>(0.001))) { break; }
+    }
+
+    var result: TraceResult;
+    result.light  = accumulated;
+    result.window = clamp(windowLeak, vec3<f32>(0.0), vec3<f32>(1.0));
+    return result;
+}
+
+// ─────────────────────────────────────────────────
+// Fragment shader
+// ─────────────────────────────────────────────────
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    let V_world = normalize(input.worldPosition - uniforms.cameraPosition);
+    var N_world = normalize(input.worldNormal);
+
+    let isFrontFace = dot(V_world, N_world) < 0.0;
+    if (!isFrontFace) { N_world = -N_world; }
+
+    let invModel = transpose(uniforms.modelMatrix);
+    let V_local  = normalize((invModel * vec4<f32>(V_world, 0.0)).xyz);
+    let N_local  = normalize((invModel * vec4<f32>(N_world, 0.0)).xyz);
+
+    if (input.frosted > 0.5) {
+        let upLight = max(0.0, N_world.z);
+        let rim = pow(1.0 - max(0.0, dot(-V_world, N_world)), 1.6);
+        let frostFresnel = 0.10 + 0.20 * pow(1.0 - max(0.0, dot(-V_world, N_world)), 3.0);
+        let frostRefl = sample_env(reflect(V_world, N_world)) * frostFresnel;
+        let frostWhite = vec3<f32>(0.88, 0.90, 0.92);
+        let frostDiffuse = frostWhite * (0.72 + 0.20 * upLight) + vec3<f32>(0.18) * rim;
+        let frostColor = frostDiffuse + frostRefl;
+        if (uniforms.graphMode > 0.5) {
+            let rawLuminance = dot(frostColor, vec3<f32>(0.2126, 0.7152, 0.0722));
+            return vec4<f32>(rawLuminance, rawLuminance, rawLuminance, 1.0);
+        }
+        return vec4<f32>(aces_tonemap(frostColor), 0.98);
+    }
+
+    let ri      = cauchy_ri3(uniforms.ri_d, uniforms.cod); // vec3(ri_r, ri_g, ri_b)
+    let ri_r    = ri.x;
+    let ri_g    = ri.y;
+    let ri_b    = ri.z;
+
+    let f0      = pow((ri_g - 1.0) / (ri_g + 1.0), 2.0);
+    let fresnel = f0 + (1.0 - f0) * pow(1.0 - max(0.0, dot(-V_world, N_world)), 5.0);
+
+    let refl_dir   = reflect(V_world, N_world);
+    let reflection = sample_env(refl_dir) * fresnel;
+
+    let refr_base_r = refract(V_local, N_local, 1.0 / ri_r);
+    let refr_base_g = refract(V_local, N_local, 1.0 / ri_g);
+    let refr_base_b = refract(V_local, N_local, 1.0 / ri_b);
+    let refr_rd_r = refr_base_r;
+    let refr_rd_g = refr_base_g;
+    let refr_rd_b = refr_base_b;
+
+    let entry = input.localPos;
+    let tr    = trace_internal(refr_rd_r, refr_rd_g, refr_rd_b, entry, ri);
+
+    // Brilliance: light reflected back up through the crown
+    let baseColor = reflection
+        + tr.light * (1.0 - fresnel);
+
+    // Dedicated graph mode: emit raw pre-tonemap luminance directly.
+    // This avoids ACES tonemapping, 8-bit quantization bias, and the
+    // artistic scintillation boost used in the normal display path.
+    if (uniforms.graphMode > 0.5) {
+        let rawLuminance = dot(baseColor, vec3<f32>(0.2126, 0.7152, 0.0722));
+        return vec4<f32>(rawLuminance, rawLuminance, rawLuminance, 1.0);
+    }
+
+    var finalColor = baseColor;
+
+    // Window effect: average downward leakage across the three channels,
+    // scaled by exitStrength slider.
+    let windowAmount = (tr.window.x + tr.window.y + tr.window.z) / 3.0;
+    let windowTinted = uniforms.exitHighlight * windowAmount * uniforms.exitStrength;
+    finalColor += windowTinted * (1.0 - fresnel);
+
+    // Scintillation
+    let lum = dot(finalColor, vec3<f32>(0.21, 0.72, 0.07));
+    finalColor += pow(lum, 12.0) * 10.0;
+
+    let alpha = clamp(fresnel + 0.55, 0.0, 1.0);
+    return vec4<f32>(aces_tonemap(finalColor * 1.5), alpha);
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn cs_reduce_graph(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = textureDimensions(graphTexture);
+    if (gid.x >= dims.x || gid.y >= dims.y) {
+        return;
+    }
+
+    let texel = textureLoad(graphTexture, vec2<i32>(gid.xy), 0);
+    if (texel.a <= 0.01) {
+        return;
+    }
+
+    let tileX = gid.x / graphAtlas.tileWidth;
+    let tileY = gid.y / graphAtlas.tileHeight;
+    if (tileX >= graphAtlas.tilesX || tileY >= graphAtlas.tilesY) {
+        return;
+    }
+    let tileIndex = tileY * graphAtlas.tilesX + tileX;
+
+    let scaled = u32(clamp(texel.r * 65536.0, 0.0, 4294967295.0));
+    atomicAdd(&graphReduce[tileIndex].sum, scaled);
+    atomicAdd(&graphReduce[tileIndex].count, 1u);
+}
