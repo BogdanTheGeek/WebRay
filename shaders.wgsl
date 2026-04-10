@@ -366,11 +366,11 @@ fn trace_internal(rd_r: vec3<f32>, rd_g: vec3<f32>, rd_b: vec3<f32>,
         if (dot(g, n) > 0.0) { n = -n; }
 
         if (hit.frosted > 0.5) {
-            let glow = vec3<f32>(0.82, 0.84, 0.86);
+            let glow = mix(vec3<f32>(0.82, 0.84, 0.86), uniforms.stoneColor, 0.30);
             let diffuse = max(0.0, n.z);
             let refl = reflect(g, n);
-            let reflected = sample_env(refl) * 0.18;
-            accumulated += throughput * (glow * (0.58 + 0.28 * diffuse) + reflected);
+            let reflected = sample_env(refl) * mix(vec3<f32>(1.0), uniforms.stoneColor, 0.18) * 0.32;
+            accumulated += throughput * (glow * (0.54 + 0.24 * diffuse) + reflected);
             break;
         }
 
@@ -467,10 +467,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     if (input.frosted > 0.5) {
         let upLight = max(0.0, N_world.z);
         let rim = pow(1.0 - max(0.0, dot(-V_world, N_world)), 1.6);
-        let frostFresnel = 0.10 + 0.20 * pow(1.0 - max(0.0, dot(-V_world, N_world)), 3.0);
-        let frostRefl = sample_env(reflect(V_world, N_world)) * frostFresnel;
-        let frostWhite = vec3<f32>(0.88, 0.90, 0.92);
-        let frostDiffuse = frostWhite * (0.72 + 0.20 * upLight) + vec3<f32>(0.18) * rim;
+        let frostFresnel = 0.18 + 0.28 * pow(1.0 - max(0.0, dot(-V_world, N_world)), 3.0);
+        let frostRefl = sample_env(reflect(V_world, N_world)) * mix(vec3<f32>(1.0), uniforms.stoneColor, 0.30) * frostFresnel;
+        let frostWhite = mix(vec3<f32>(0.88, 0.90, 0.92), uniforms.stoneColor, 0.42);
+        let frostDiffuse = frostWhite * (0.66 + 0.18 * upLight) + vec3<f32>(0.14) * rim;
         let frostColor = frostDiffuse + frostRefl;
         if (uniforms.graphMode > 0.5) {
             let rawLuminance = dot(frostColor, vec3<f32>(0.2126, 0.7152, 0.0722));
