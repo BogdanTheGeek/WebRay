@@ -42,8 +42,12 @@
             width: 256px;
             box-sizing: border-box;
             flex-shrink: 0;
+            min-height: 0;
+            overflow-x: hidden;
             overflow-y: auto;
-            max-height: 100%;
+            overscroll-behavior: contain;
+            -webkit-overflow-scrolling: touch;
+            max-height: calc(100vh - 36px);
             background: rgba(10,10,14,0.82);
             border: 1px solid rgba(255,255,255,0.12);
             border-radius: 12px;
@@ -392,6 +396,15 @@
             <div class="row">
                 <label>Focal Length <span class="val" id="focalVal">200 mm</span></label>
                 <input type="range" id="focalSlider" min="20" max="300" step="1" value="200">
+            </div>
+
+            <hr class="divider">
+
+            <div class="row">
+                <label>
+                    <input type="checkbox" id="perfStatsToggle">
+                    Show Performance Stats
+                </label>
             </div>
 
             <hr class="divider">

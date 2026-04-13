@@ -1890,11 +1890,6 @@ async function setupApp() {
    // --- FPS overlay (debug only) ---
    const fpsEl = document.getElementById('fpsOverlay');
    let perfStatsVisible = false;
-   const SECRET_TAP_TARGET = 5;
-   const SECRET_TAP_WINDOW = 1.2;
-   const SECRET_CORNER_SIZE = 72;
-   let secretTapCount = 0;
-   let secretTapLastTime = 0;
 
    let fpsSmoothed = 0, lastFpsUpdate = 0, lastFrameTime = performance.now() * 0.001;
    let frameCpuTotalMsSmoothed = 0;
@@ -1914,43 +1909,16 @@ async function setupApp() {
       lastFpsUpdate = performance.now() * 0.001;
    }
 
-   function registerSecretTap(clientX, clientY, time) {
-      const rect = gpuCanvas.getBoundingClientRect();
-      const x = clientX - rect.left;
-      const y = clientY - rect.top;
-      const inCorner = x >= 0 && y >= 0 && x <= SECRET_CORNER_SIZE && y <= SECRET_CORNER_SIZE;
-
-      if (!inCorner) {
-         secretTapCount = 0;
-         return;
-      }
-
-      if ((time - secretTapLastTime) > SECRET_TAP_WINDOW) {
-         secretTapCount = 0;
-      }
-
-      secretTapLastTime = time;
-      secretTapCount += 1;
-
-      if (secretTapCount >= SECRET_TAP_TARGET) {
-         secretTapCount = 0;
-         setPerfStatsVisible(!perfStatsVisible);
-         requestRender();
-      }
-   }
-
    if (DEBUG) {
       setPerfStatsVisible(false);
-      gpuCanvas.addEventListener('pointerup', (e) => {
-         registerSecretTap(e.clientX, e.clientY, performance.now() * 0.001);
-      }, { passive: true });
-
-      window.addEventListener('keydown', (e) => {
-         if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.code === 'KeyP') {
-            setPerfStatsVisible(!perfStatsVisible);
+      const perfStatsToggle = document.getElementById('perfStatsToggle');
+      if (perfStatsToggle instanceof HTMLInputElement) {
+         perfStatsToggle.checked = false;
+         perfStatsToggle.addEventListener('change', () => {
+            setPerfStatsVisible(perfStatsToggle.checked);
             requestRender();
-         }
-      });
+         });
+      }
    }
 
    // --- Uniforms ---
