@@ -925,8 +925,24 @@ const GRAPH_ATLAS_HEIGHT = GRAPH_SAMPLE_SIZE * GRAPH_MODE_COUNT;
 // ---------------------------------------------------------------------------
 async function setupApp() {
    const canvas = document.getElementById('gpuCanvas');
-   const adapter = await navigator.gpu?.requestAdapter();
-   const device = await adapter?.requestDevice();
+   const isMobileDevice =
+      navigator.userAgentData?.mobile
+      || /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+   const adapter = await navigator.gpu?.requestAdapter(
+      isMobileDevice ? { powerPreference: 'low-power' } : undefined,
+   );
+   const adapterSupportsTimestamps = adapter?.features?.has?.('timestamp-query') ?? false;
+   let device = null;
+   if (adapterSupportsTimestamps) {
+      try {
+         device = await adapter?.requestDevice({ requiredFeatures: ['timestamp-query'] });
+      } catch {
+         device = null;
+      }
+   }
+   if (!device) {
+      device = await adapter?.requestDevice();
+   }
 
    if (!device) {
       alert('WebGPU is not supported. Try Chrome/Edge.');
@@ -1071,6 +1087,26 @@ async function setupApp() {
          { binding: 2, resource: { buffer: graphAtlasParamsBuffer } },
       ],
    });
+
+   const hasGpuTimestamps = device.features?.has?.('timestamp-query') ?? false;
+   const frameTimestampQuerySet = hasGpuTimestamps
+      ? device.createQuerySet({ type: 'timestamp', count: 2 })
+      : null;
+   const frameTimestampResolveBuffer = hasGpuTimestamps
+      ? device.createBuffer({
+         size: 16,
+         usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC,
+      })
+      : null;
+   const frameTimestampReadbackBuffer = hasGpuTimestamps
+      ? device.createBuffer({
+         size: 16,
+         usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      })
+      : null;
+   const queueTimestampPeriod = typeof device.queue.getTimestampPeriod === 'function'
+      ? device.queue.getTimestampPeriod()
+      : 1;
 
    // Camera looks down +Z toward the table
    mat4.lookAt(viewMat, cameraPos, [0, 0, 0], [0, 1, 0]);
@@ -1390,15 +1426,42 @@ async function setupApp() {
    graphResizeObserver.observe(graphPanel);
    graphResizeObserver.observe(graphCanvas);
 
+   const uniformScratch = new Float32Array(272 / 4);
+
+   function packUniformData(out, modelMatrix, projectionMatrix, time, lightMode, graphMode, flatShading) {
+      out.set(modelMatrix, 0);
+      out.set(viewMat, 16);
+      out.set(projectionMatrix, 32);
+
+      out[48] = cameraPos[0];
+      out[49] = cameraPos[1];
+      out[50] = cameraPos[2];
+      out[51] = 0.0;
+
+      out[52] = time;
+      out[53] = ui.ri;
+      out[54] = ui.cod;
+      out[55] = lightMode;
+
+      out[56] = ui.color[0];
+      out[57] = ui.color[1];
+      out[58] = ui.color[2];
+      out[59] = graphMode;
+
+      out[60] = ui.exitHighlight[0];
+      out[61] = ui.exitHighlight[1];
+      out[62] = ui.exitHighlight[2];
+      out[63] = ui.exitStrength;
+
+      out[64] = flatShading;
+      out[65] = 0.0;
+      out[66] = 0.0;
+      out[67] = 0.0;
+   }
+
    function writeUniformsToBuffer(buffer, modelMatrix, projectionMatrix, time, lightMode, graphMode = 0.0) {
-      device.queue.writeBuffer(buffer, 0, modelMatrix);
-      device.queue.writeBuffer(buffer, 64, viewMat);
-      device.queue.writeBuffer(buffer, 128, projectionMatrix);
-      device.queue.writeBuffer(buffer, 192, new Float32Array([cameraPos[0], cameraPos[1], cameraPos[2], 0]));
-      device.queue.writeBuffer(buffer, 208, new Float32Array([time, ui.ri, ui.cod, lightMode]));
-      device.queue.writeBuffer(buffer, 224, new Float32Array([ui.color[0], ui.color[1], ui.color[2], graphMode]));
-      device.queue.writeBuffer(buffer, 240, new Float32Array([ui.exitHighlight[0], ui.exitHighlight[1], ui.exitHighlight[2], ui.exitStrength]));
-      device.queue.writeBuffer(buffer, 256, new Float32Array([0.0, 0.0, 0.0, 0.0])); // graph always raytraces
+      packUniformData(uniformScratch, modelMatrix, projectionMatrix, time, lightMode, graphMode, 0.0);
+      device.queue.writeBuffer(buffer, 0, uniformScratch);
    }
 
    function drawGraph(seriesList) {
@@ -1482,6 +1545,7 @@ async function setupApp() {
 
    async function sampleGraphSweep(runId) {
       if (!renderBundle || runId !== graphRequestId) return null;
+      const graphSweepStartMs = performance.now();
 
       // Graph renders at the currently selected focal length.
       const SENSOR_HALF = 5 * Math.tan(Math.PI / 8); // ≈ 2.071 — same reference as main camera
@@ -1582,6 +1646,9 @@ async function setupApp() {
       });
 
       graphReduceReadbackBuffer.unmap();
+
+      const graphSweepMs = performance.now() - graphSweepStartMs;
+      graphSweepMsSmoothed = graphSweepMsSmoothed * 0.8 + graphSweepMs * 0.2;
 
       // Restore main-camera globals
       viewMat.set(savedViewMat);
@@ -1700,23 +1767,51 @@ async function setupApp() {
             : `Facet notes are only available for .gem files`);
       }
       scheduleGraphUpdate('model load');
+      requestRender();
    }
 
    // --- UI (built once; survives model swaps) ---
+   let framePending = false;
+   const ROT_EPSILON = 1e-4;
+
+   function shouldKeepRendering() {
+      const rotSettling = Math.abs(targetRotX - currentRotX) > ROT_EPSILON
+         || Math.abs(targetRotY - currentRotY) > ROT_EPSILON;
+      return animating || dragPointerId !== null || rotSettling;
+   }
+
+   function requestRender() {
+      if (framePending) return;
+      framePending = true;
+      requestAnimationFrame(frame);
+   }
+
    uiControls = buildUI(ui, {
       onReset() {
          targetRotX = 0; targetRotY = 0;
          currentRotX = 0; currentRotY = 0;
          animating = false;
+         requestRender();
       },
       onTilt() {
          animating = !animating;
-         if (animating) animStartTime = performance.now() * 0.001;
+         if (animating) {
+            animStartTime = performance.now() * 0.001;
+         }
+         requestRender();
          return animating;
       },
-      onGraphParamsChanged() { scheduleGraphUpdate(); },
+      onGraphParamsChanged() {
+         scheduleGraphUpdate();
+         requestRender();
+      },
       onFileSelected(name, fileUrl) { loadModel(name, fileUrl); },
    });
+
+   const uiPanel = document.getElementById('gemui');
+   uiPanel?.addEventListener('input', requestRender, { passive: true });
+   uiPanel?.addEventListener('change', requestRender, { passive: true });
+   uiPanel?.addEventListener('click', requestRender, { passive: true });
 
    // --- Pointer (canvas rotation) ---
    // setPointerCapture ensures move/up events are delivered even when the
@@ -1729,11 +1824,13 @@ async function setupApp() {
       dragPointerId = e.pointerId;
       lastX = e.clientX; lastY = e.clientY;
       gpuCanvas.setPointerCapture(e.pointerId);
+      requestRender();
    });
 
    function endDrag(e) {
       if (e.pointerId !== dragPointerId) return;
       dragPointerId = null;
+      requestRender();
    }
    gpuCanvas.addEventListener('pointerup',     endDrag);
    gpuCanvas.addEventListener('pointercancel', endDrag);
@@ -1747,6 +1844,7 @@ async function setupApp() {
          targetRotY += dx; targetRotX += dy;
          lastX = ev.clientX; lastY = ev.clientY;
       }
+      requestRender();
    });
 
    // --- Axis indicator (created once) ---
@@ -1791,10 +1889,68 @@ async function setupApp() {
 
    // --- FPS overlay (debug only) ---
    const fpsEl = document.getElementById('fpsOverlay');
+   let perfStatsVisible = false;
+   const SECRET_TAP_TARGET = 5;
+   const SECRET_TAP_WINDOW = 1.2;
+   const SECRET_CORNER_SIZE = 72;
+   let secretTapCount = 0;
+   let secretTapLastTime = 0;
+
    let fpsSmoothed = 0, lastFpsUpdate = 0, lastFrameTime = performance.now() * 0.001;
-   if (DEBUG) {
-      fpsEl.style.display = 'block';
+   let frameCpuTotalMsSmoothed = 0;
+   let frameCpuUpdateMsSmoothed = 0;
+   let frameCpuDrawMsSmoothed = 0;
+   let frameCpuSubmitMsSmoothed = 0;
+   let graphSweepMsSmoothed = 0;
+   let frameGpuMsSmoothed = 0;
+   let frameGpuReadPending = false;
+   let lastGpuSampleTime = 0;
+
+   function setPerfStatsVisible(visible) {
+      perfStatsVisible = visible;
+      if (!fpsEl) return;
+      fpsEl.style.display = perfStatsVisible ? 'block' : 'none';
+      if (!perfStatsVisible) fpsEl.textContent = '';
       lastFpsUpdate = performance.now() * 0.001;
+   }
+
+   function registerSecretTap(clientX, clientY, time) {
+      const rect = gpuCanvas.getBoundingClientRect();
+      const x = clientX - rect.left;
+      const y = clientY - rect.top;
+      const inCorner = x >= 0 && y >= 0 && x <= SECRET_CORNER_SIZE && y <= SECRET_CORNER_SIZE;
+
+      if (!inCorner) {
+         secretTapCount = 0;
+         return;
+      }
+
+      if ((time - secretTapLastTime) > SECRET_TAP_WINDOW) {
+         secretTapCount = 0;
+      }
+
+      secretTapLastTime = time;
+      secretTapCount += 1;
+
+      if (secretTapCount >= SECRET_TAP_TARGET) {
+         secretTapCount = 0;
+         setPerfStatsVisible(!perfStatsVisible);
+         requestRender();
+      }
+   }
+
+   if (DEBUG) {
+      setPerfStatsVisible(false);
+      gpuCanvas.addEventListener('pointerup', (e) => {
+         registerSecretTap(e.clientX, e.clientY, performance.now() * 0.001);
+      }, { passive: true });
+
+      window.addEventListener('keydown', (e) => {
+         if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.code === 'KeyP') {
+            setPerfStatsVisible(!perfStatsVisible);
+            requestRender();
+         }
+      });
    }
 
    // --- Uniforms ---
@@ -1831,38 +1987,46 @@ async function setupApp() {
       const fovY = 2 * Math.atan(SENSOR_HALF / camDist);
       mat4.perspective(projMat, fovY, aspect, 0.1, 200.0);
 
-      device.queue.writeBuffer(uniformBuffer, 0, modelMat);
-      device.queue.writeBuffer(uniformBuffer, 64, viewMat);
-      device.queue.writeBuffer(uniformBuffer, 128, projMat);
-      device.queue.writeBuffer(uniformBuffer, 192, new Float32Array([cameraPos[0], cameraPos[1], cameraPos[2], 0]));
-      device.queue.writeBuffer(uniformBuffer, 208, new Float32Array([time, ui.ri, ui.cod, ui.lightMode]));
-      device.queue.writeBuffer(uniformBuffer, 224, new Float32Array([ui.color[0], ui.color[1], ui.color[2], 0.0]));
-      device.queue.writeBuffer(uniformBuffer, 240, new Float32Array([ui.exitHighlight[0], ui.exitHighlight[1], ui.exitHighlight[2], ui.exitStrength]));
-      device.queue.writeBuffer(uniformBuffer, 256, new Float32Array([ui.lightMode === 4 ? 1.0 : 0.0, 0.0, 0.0, 0.0]));
+      packUniformData(
+         uniformScratch,
+         modelMat,
+         projMat,
+         time,
+         ui.lightMode,
+         0.0,
+         ui.lightMode === 4 ? 1.0 : 0.0,
+      );
+      device.queue.writeBuffer(uniformBuffer, 0, uniformScratch);
    }
 
    // --- Render loop ---
    function frame() {
+      framePending = false;
+      const frameStartMs = performance.now();
       const time = performance.now() * 0.001;
 
-      if (DEBUG && fpsEl) {
+      if (perfStatsVisible && fpsEl) {
          const dt = time - lastFrameTime;
          lastFrameTime = time;
          fpsSmoothed = fpsSmoothed * 0.9 + (dt > 0 ? 1 / dt : 0) * 0.1;
-         if (time - lastFpsUpdate > 0.2) {
-            fpsEl.textContent = `FPS: ${Math.round(fpsSmoothed)}`;
-            lastFpsUpdate = time;
-         }
       }
 
+      const updateStartMs = performance.now();
       updateUniforms(time);
+      const updateEndMs = performance.now();
+
+      const drawStartMs = performance.now();
       drawAxes();
+      const drawEndMs = performance.now();
 
       if (renderBundle) {
          const { bindGroup, vertexBuffer, triCount } = renderBundle;
          const canvasTexture = context.getCurrentTexture();
          const commandEncoder = device.createCommandEncoder();
-         const renderPass = commandEncoder.beginRenderPass({
+         const useGpuTimestampSample = perfStatsVisible && hasGpuTimestamps
+            && !frameGpuReadPending
+            && (time - lastGpuSampleTime) >= 0.25;
+         const renderPassDescriptor = {
             colorAttachments: [{
                view: canvasTexture.createView(),
                clearValue: { r: 0.05, g: 0.05, b: 0.05, a: 1.0 },
@@ -1875,16 +2039,72 @@ async function setupApp() {
                depthLoadOp: 'clear',
                depthStoreOp: 'store',
             },
-         });
+         };
+         if (useGpuTimestampSample && frameTimestampQuerySet) {
+            renderPassDescriptor.timestampWrites = {
+               querySet: frameTimestampQuerySet,
+               beginningOfPassWriteIndex: 0,
+               endOfPassWriteIndex: 1,
+            };
+         }
+         const renderPass = commandEncoder.beginRenderPass(renderPassDescriptor);
          renderPass.setPipeline(pipeline);
          renderPass.setBindGroup(0, bindGroup);
          renderPass.setVertexBuffer(0, vertexBuffer);
          renderPass.draw(triCount * 3);
          renderPass.end();
+
+         if (useGpuTimestampSample && frameTimestampQuerySet && frameTimestampResolveBuffer && frameTimestampReadbackBuffer) {
+            commandEncoder.resolveQuerySet(frameTimestampQuerySet, 0, 2, frameTimestampResolveBuffer, 0);
+            commandEncoder.copyBufferToBuffer(frameTimestampResolveBuffer, 0, frameTimestampReadbackBuffer, 0, 16);
+         }
+
+         const submitStartMs = performance.now();
          device.queue.submit([commandEncoder.finish()]);
+         const submitEndMs = performance.now();
+         frameCpuSubmitMsSmoothed = frameCpuSubmitMsSmoothed * 0.8 + (submitEndMs - submitStartMs) * 0.2;
+
+         if (useGpuTimestampSample && frameTimestampReadbackBuffer) {
+            frameGpuReadPending = true;
+            lastGpuSampleTime = time;
+            frameTimestampReadbackBuffer.mapAsync(GPUMapMode.READ).then(() => {
+               const data = new BigUint64Array(frameTimestampReadbackBuffer.getMappedRange());
+               const deltaTicks = Number(data[1] - data[0]);
+               frameTimestampReadbackBuffer.unmap();
+               const gpuMs = (deltaTicks * queueTimestampPeriod) / 1e6;
+               frameGpuMsSmoothed = frameGpuMsSmoothed * 0.8 + gpuMs * 0.2;
+               frameGpuReadPending = false;
+            }).catch(() => {
+               frameGpuReadPending = false;
+            });
+         }
       }
 
-      requestAnimationFrame(frame);
+      if (perfStatsVisible) {
+         frameCpuUpdateMsSmoothed = frameCpuUpdateMsSmoothed * 0.8 + (updateEndMs - updateStartMs) * 0.2;
+         frameCpuDrawMsSmoothed = frameCpuDrawMsSmoothed * 0.8 + (drawEndMs - drawStartMs) * 0.2;
+         frameCpuTotalMsSmoothed = frameCpuTotalMsSmoothed * 0.8 + (performance.now() - frameStartMs) * 0.2;
+      }
+
+      if (perfStatsVisible && fpsEl && (time - lastFpsUpdate > 0.2)) {
+         const gpuLabel = hasGpuTimestamps
+            ? `${frameGpuMsSmoothed.toFixed(2)} ms`
+            : 'n/a';
+         fpsEl.innerHTML = [
+            `FPS: ${Math.round(fpsSmoothed)}`,
+            `CPU total: ${frameCpuTotalMsSmoothed.toFixed(2)} ms`,
+            `CPU update: ${frameCpuUpdateMsSmoothed.toFixed(2)} ms`,
+            `CPU axes: ${frameCpuDrawMsSmoothed.toFixed(2)} ms`,
+            `CPU submit: ${frameCpuSubmitMsSmoothed.toFixed(2)} ms`,
+            `GPU render: ${gpuLabel}`,
+            `Graph sweep: ${graphSweepMsSmoothed.toFixed(1)} ms`,
+         ].join('<br>');
+         lastFpsUpdate = time;
+      }
+
+      if (shouldKeepRendering()) {
+         requestRender();
+      }
    }
 
    // --- Resize ---
@@ -1896,10 +2116,11 @@ async function setupApp() {
          format: 'depth24plus',
          usage: GPUTextureUsage.RENDER_ATTACHMENT,
       });
+      requestRender();
    }
    window.addEventListener('resize', resize);
    resize();
-   requestAnimationFrame(frame);
+   requestRender();
 
    return { loadModel };
 }

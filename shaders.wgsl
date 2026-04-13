@@ -178,7 +178,7 @@ fn sample_env(dir: vec3<f32>) -> vec3<f32> {
     // White = no tint. Mix weight 0.55 preserves some brightness.
     let tint = select(
         vec3<f32>(1.0),
-        mix(vec3<f32>(1.0), uniforms.stoneColor, 1.0),
+        uniforms.stoneColor,
         !graphOnly,
     );
 
@@ -349,7 +349,6 @@ fn trace_internal(rd_r: vec3<f32>, rd_g: vec3<f32>, rd_b: vec3<f32>,
             break;
         }
 
-        let hitPos = origin + g * hit.t;
         var n = normalize(hit.normal);
         if (dot(g, n) > 0.0) { n = -n; }
 
@@ -513,12 +512,9 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let refl_dir   = reflect(V_world, N_world);
     let reflection = sample_env(refl_dir) * fresnel;
 
-    let refr_base_r = refract(V_local, N_local, 1.0 / ri_r);
-    let refr_base_g = refract(V_local, N_local, 1.0 / ri_g);
-    let refr_base_b = refract(V_local, N_local, 1.0 / ri_b);
-    let refr_rd_r = refr_base_r;
-    let refr_rd_g = refr_base_g;
-    let refr_rd_b = refr_base_b;
+    let refr_rd_r = refract(V_local, N_local, 1.0 / ri_r);
+    let refr_rd_g = refract(V_local, N_local, 1.0 / ri_g);
+    let refr_rd_b = refract(V_local, N_local, 1.0 / ri_b);
 
     let entry = input.localPos;
     let tr    = trace_internal(refr_rd_r, refr_rd_g, refr_rd_b, entry, ri);
