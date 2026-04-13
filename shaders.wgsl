@@ -24,6 +24,10 @@ struct Uniforms {
     graphMode:            f32,          // 236 (0 = normal render, >0.5 = raw graph luminance)
     exitHighlight:        vec3<f32>,    // 240
     exitStrength:         f32,          // 252
+    flatShading:          f32,          // 256
+    _pad1:                f32,          // 260
+    _pad2:                f32,          // 264
+    _pad3:                f32,          // 268
 };
 
 @group(0) @binding(0) var<uniform>       uniforms:  Uniforms;
@@ -460,6 +464,16 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let isFrontFace = dot(V_world, N_world) < 0.0;
     if (!isFrontFace) { N_world = -N_world; }
 
+    // Flat shading mode — simple Lambert + rim, no raytracing
+    if (uniforms.flatShading > 0.5) {
+        let upDiff  = max(0.0, N_world.z);
+        let sideDiff = max(0.0, dot(N_world, normalize(vec3<f32>(0.6, 0.4, 0.7))));
+        let rim     = pow(1.0 - max(0.0, dot(-V_world, N_world)), 3.0) * 0.35;
+        let col     = uniforms.stoneColor * (0.15 + 0.65 * upDiff + 0.20 * sideDiff)
+                      + vec3<f32>(rim);
+        return vec4<f32>(aces_tonemap(col), 1.0);
+    }
+
     let invModel = transpose(uniforms.modelMatrix);
     let V_local  = normalize((invModel * vec4<f32>(V_world, 0.0)).xyz);
     let N_local  = normalize((invModel * vec4<f32>(N_world, 0.0)).xyz);
@@ -524,7 +538,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let lum = dot(finalColor, vec3<f32>(0.21, 0.72, 0.07));
     finalColor += pow(lum, 12.0) * 10.0;
 
-    let alpha = clamp(fresnel + 0.55, 0.0, 1.0);
+    let alpha = 1.0;
     return vec4<f32>(aces_tonemap(finalColor * 1.5), alpha);
 }
 
