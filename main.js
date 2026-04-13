@@ -456,7 +456,6 @@ function buildUI(ui, cbs) {
       if (match) { match.classList.add('active'); activeSwatch = match; }
       ui.color = hexToRgb(hex);
       colorPicker.value = hex;
-      cbs.onGraphParamsChanged?.();
    });
 
    panel.querySelector('#exitColor').addEventListener('input', e => {
@@ -491,7 +490,6 @@ function buildUI(ui, cbs) {
       tiltSlider.addEventListener('input', (e) => {
          ui.tiltAngleDeg = parseFloat(e.target.value);
          if (tiltVal) tiltVal.textContent = ui.tiltAngleDeg.toFixed(0);
-         cbs.onGraphParamsChanged?.();
       });
    }
 
