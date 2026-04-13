@@ -1,6 +1,7 @@
 import { mat4, vec4 } from 'https://cdn.skypack.dev/gl-matrix';
 
-const shaderSource = await (await fetch('shaders.wgsl')).text();
+const shaderSource        = await (await fetch('shaders.wgsl')).text();
+const computeShaderSource = await (await fetch('compute.wgsl')).text();
 // Toggle debug overlays/features
 var DEBUG = true;
 
@@ -1320,10 +1321,14 @@ async function setupApp() {
       depthStencil: { depthWriteEnabled: true, depthCompare: 'less', format: 'depth24plus' },
    });
 
+   // Separate module loaded from compute.wgsl — only declares @group(0)
+   // bindings it actually uses, so Firefox doesn't require the main
+   // shader's @group(0) (uniforms/triangles/bvh) to be bound at dispatch.
+   const computeReduceShaderModule = device.createShaderModule({ code: computeShaderSource });
    const graphReducePipeline = device.createComputePipeline({
       layout: 'auto',
       compute: {
-         module: shaderModule,
+         module: computeReduceShaderModule,
          entryPoint: 'cs_reduce_graph',
       },
    });
@@ -1367,7 +1372,7 @@ async function setupApp() {
    });
 
    const graphReduceBindGroup = device.createBindGroup({
-      layout: graphReducePipeline.getBindGroupLayout(1),
+      layout: graphReducePipeline.getBindGroupLayout(0),
       entries: [
          { binding: 0, resource: graphColorTexture.createView() },
          { binding: 1, resource: { buffer: graphReduceBuffer } },
@@ -1923,7 +1928,7 @@ async function setupApp() {
 
       const reducePass = encoder.beginComputePass();
       reducePass.setPipeline(graphReducePipeline);
-      reducePass.setBindGroup(1, graphReduceBindGroup);
+      reducePass.setBindGroup(0, graphReduceBindGroup);
       reducePass.dispatchWorkgroups(
          Math.ceil(GRAPH_ATLAS_WIDTH / 8),
          Math.ceil(GRAPH_ATLAS_HEIGHT / 8),
