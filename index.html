@@ -219,6 +219,15 @@
         }
         #gemui-toggle:hover { border-color: rgba(255,255,255,0.30); color: #fff; }
 
+        /* ── FPS overlay ────────────────────────────────────────────── */
+        #fpsOverlay {
+            display: none;
+            position: fixed; left: 16px; top: 16px;
+            background: rgba(0,0,0,0.6); color: #e8e8e8;
+            padding: 6px 8px; border-radius: 6px; font: 12px/1 system-ui, sans-serif;
+            z-index: 200; pointer-events: none;
+        }
+
         /* ── Mobile layout (≤ 960 px) ───────────────────────────────── */
         @media (max-width: 960px) {
             #gemui-toggle { display: flex; }
@@ -403,6 +412,8 @@
     <div id="gemui-toggle" role="button" aria-label="Toggle controls">
         <span>&#9776;</span><span>CONTROLS</span>
     </div>
+
+    <div id="fpsOverlay"></div>
 
     <script type="module" src="main.js"></script>
 </body>

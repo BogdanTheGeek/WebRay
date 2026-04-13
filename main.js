@@ -65,7 +65,8 @@ function buildUI(ui, cbs) {
       const collapsePanel = (panelId, toggleId, expandLabel) => {
          document.getElementById(panelId)?.classList.add('collapsed');
          const btn = document.getElementById(toggleId);
-         if (btn) { btn.textContent = '+'; btn.setAttribute('aria-label', expandLabel); }
+         btn.textContent = '+';
+         btn.setAttribute('aria-label', expandLabel);
       };
       collapsePanel('lightReturnPanel', 'lightReturnToggle', 'Expand graph');
       collapsePanel('facetInfoPanel', 'facetInfoToggle', 'Expand facet notes');
@@ -79,14 +80,14 @@ function buildUI(ui, cbs) {
       if (!f) return;
       fileNameEl.textContent = f.name;
       const url = URL.createObjectURL(f);
-      if (cbs && typeof cbs.onFileSelected === 'function') cbs.onFileSelected(f.name, url);
+      cbs.onFileSelected?.(f.name, url);
    });
 
    // --- Colour swatches ---
    const gemColours = [
-      ['#ffffff', 'Colourless'], ['#e8253a', 'Ruby'], ['#1a5fd4', 'Sapphire'],
-      ['#1db85c', 'Emerald'], ['#9b59d0', 'Amethyst'], ['#f5c842', 'Citrine'],
-      ['#ff6090', 'Spinel'], ['#b8e0ff', 'Aqua'],
+      '#ffffff', '#e8253a', '#1a5fd4',
+      '#1db85c', '#9b59d0', '#f5c842',
+      '#ff6090', '#b8e0ff',
    ];
    const swatchContainer = panel.querySelector('#swatches');
 
@@ -98,7 +99,7 @@ function buildUI(ui, cbs) {
    }
 
    let activeSwatch = null;
-   gemColours.forEach(([hex]) => {
+   gemColours.forEach(hex => {
       const el = document.createElement('div');
       el.className = 'swatch' + (hex === '#ffffff' ? ' active' : '');
       el.style.background = hex;
@@ -205,12 +206,10 @@ function buildUI(ui, cbs) {
    // Tilt angle control
    const tiltSlider = panel.querySelector('#tiltAngle');
    const tiltVal = panel.querySelector('#tiltVal');
-   if (tiltSlider) {
-      tiltSlider.addEventListener('input', (e) => {
-         ui.tiltAngleDeg = parseFloat(e.target.value);
-         if (tiltVal) tiltVal.textContent = ui.tiltAngleDeg.toFixed(0);
-      });
-   }
+   tiltSlider.addEventListener('input', (e) => {
+      ui.tiltAngleDeg = parseFloat(e.target.value);
+      tiltVal.textContent = ui.tiltAngleDeg.toFixed(0);
+   });
 
    // External API for model-loading to push updates into the live panel
    return {
@@ -338,7 +337,6 @@ async function loadGCS(url) {
       const disp = parseFloat(renderEl.getAttribute('dispersion'));
       if (isFinite(disp)) dispersion = disp;
    }
-   console.log(`GCS: ri=${refractiveIndex}, dispersion=${dispersion}`);
 
    const floatsPerVertex = 7;
    const triangles = [];
@@ -411,7 +409,6 @@ async function loadGCS(url) {
       }
    }
 
-   console.log(`GCS loaded: ${triCount} triangles from ${facets.length} facets`);
    return new StoneData(vertexData, triCount, facets, refractiveIndex, dispersion);
 }
 
@@ -500,7 +497,7 @@ async function loadGEM(url) {
       const c_raw = view.getFloat64(offset, true); offset += F64;
 
       const len = Math.sqrt(a_raw * a_raw + b_raw * b_raw + c_raw * c_raw);
-      if (len === 0) { console.warn('GEM: zero-length normal, skipping'); continue; }
+      if (len === 0) continue; // zero-length normal, skip plane
 
       const plane = {
          a: a_raw / len,
@@ -542,10 +539,7 @@ async function loadGEM(url) {
       offset += I32; // mirror_sym
       offset += I32; // igear
       refractiveIndex = view.getFloat64(offset, true);
-      console.log(`GEM: r_i = ${refractiveIndex}`);
    }
-
-   console.log(`GEM: ${planes.length} planes parsed`);
 
    // ── 3. Reconstruct vertices by 3-plane intersection ──────────────────────
    // For a convex polyhedron defined by half-spaces ax+by+cz <= d, every
@@ -608,8 +602,6 @@ async function loadGEM(url) {
          }
       }
    }
-
-   console.log(`GEM: ${allVerts.length} vertices reconstructed`);
 
    // ── 4. Order each facet's vertices in CCW winding ────────────────────────
    // Project onto the facet plane and sort by angle around centroid.
@@ -715,7 +707,6 @@ async function loadGEM(url) {
       }
    }
 
-   console.log(`GEM loaded: ${triCount} triangles`);
    return new StoneData(vertexData, triCount, facets, refractiveIndex, null);
 }
 
@@ -741,7 +732,6 @@ function normalizeMesh(data) {
       data[i + 2] = (data[i + 2] - center[2]) * scale;
    }
 
-   console.log(`Normalized. Center: ${center}, Scale: ${scale}`);
    return scale;
 }
 
@@ -876,7 +866,6 @@ function buildBVH(vertexData, triangleCount) {
       for (let j = 0; j < floatsPerTriangle; j++) sortedTris[dst + j] = tris[src + j];
    }
 
-   console.log(`BVH built: ${nodeCount} nodes for ${triangleCount} triangles`);
    return { nodeBuffer, triBuffer: sortedTris, nodeCount };
 }
 
@@ -1135,10 +1124,6 @@ async function setupApp() {
          .replaceAll("'", '&#39;');
    }
 
-   function formatFacetNumber(value) {
-      const fixed = value.toFixed(4);
-      return fixed === '-0.0000' ? '0.0000' : fixed;
-   }
 
    function computeFacetAngleDeg(normal) {
       const nz = Math.max(-1, Math.min(1, Math.abs(normal[2] ?? 0)));
@@ -1655,7 +1640,7 @@ async function setupApp() {
       }
 
       if (stone.refractiveIndex)
-         console.log(`RI from file: ${stone.refractiveIndex}`);
+         uiControls.setRI(stone.refractiveIndex);
 
       normalizeMesh(stone.vertexData);
 
@@ -1735,13 +1720,19 @@ async function setupApp() {
 
    // --- Pointer (canvas rotation) ---
    let isPointerDown = false, lastX = 0, lastY = 0;
-   gpuCanvas.addEventListener('pointerdown', (e) => { isPointerDown = true; lastX = e.clientX; lastY = e.clientY; });
+   gpuCanvas.addEventListener('pointerdown', (e) => {
+      isPointerDown = true; lastX = e.clientX; lastY = e.clientY;
+   });
    gpuCanvas.addEventListener('pointerup', () => { isPointerDown = false; });
    gpuCanvas.addEventListener('pointermove', (e) => {
       if (!isPointerDown) return;
-      targetRotY += ((e.clientX - lastX) / 500) * Math.PI;
-      targetRotX += ((e.clientY - lastY) / 500) * Math.PI * 0.5;
-      lastX = e.clientX; lastY = e.clientY;
+      const events = e.getCoalescedEvents?.() ?? [e];
+      for (const ev of events) {
+         const dx = ((ev.clientX - lastX) / 500) * Math.PI;
+         const dy = ((ev.clientY - lastY) / 500) * Math.PI * 0.5;
+         targetRotY += dx; targetRotX += dy;
+         lastX = ev.clientX; lastY = ev.clientY;
+      }
    });
 
    // --- Axis indicator (created once) ---
@@ -1785,17 +1776,10 @@ async function setupApp() {
    }
 
    // --- FPS overlay (debug only) ---
-   let fpsEl = null, fpsSmoothed = 0, lastFpsUpdate = 0, lastFrameTime = performance.now() * 0.001;
+   const fpsEl = document.getElementById('fpsOverlay');
+   let fpsSmoothed = 0, lastFpsUpdate = 0, lastFrameTime = performance.now() * 0.001;
    if (DEBUG) {
-      fpsEl = document.createElement('div');
-      fpsEl.id = 'fpsOverlay';
-      Object.assign(fpsEl.style, {
-         position: 'fixed', left: '16px', top: '16px',
-         background: 'rgba(0,0,0,0.6)', color: '#e8e8e8',
-         padding: '6px 8px', borderRadius: '6px', fontSize: '12px',
-         zIndex: 200, pointerEvents: 'none',
-      });
-      document.body.appendChild(fpsEl);
+      fpsEl.style.display = 'block';
       lastFpsUpdate = performance.now() * 0.001;
    }
 
@@ -1814,8 +1798,8 @@ async function setupApp() {
          animY = step === 1 ? bell * amp : 0;
       }
 
-      currentRotX += (targetRotX - currentRotX) * 0.05;
-      currentRotY += (targetRotY - currentRotY) * 0.05;
+      currentRotX += (targetRotX - currentRotX) * 0.1;
+      currentRotY += (targetRotY - currentRotY) * 0.1;
 
       mat4.identity(modelMat);
       mat4.rotateX(modelMat, modelMat, currentRotX + animX);
