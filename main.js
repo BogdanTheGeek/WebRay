@@ -1,6 +1,6 @@
 import { mat4, vec4 } from 'https://cdn.skypack.dev/gl-matrix';
 
-const shaderSource        = await (await fetch('shaders.wgsl')).text();
+const shaderSource = await (await fetch('shaders.wgsl')).text();
 const computeShaderSource = await (await fetch('compute.wgsl')).text();
 // Toggle debug overlays/features
 var DEBUG = true;
@@ -25,348 +25,51 @@ const presets = [
 
 
 // ---------------------------------------------------------------------------
-// UI panel — colour picker, RI slider, dispersion slider, light mode buttons
-// Injects its own <style> so no external CSS needed.
+// UI panel — markup and CSS live in index.html; this function wires up
+// event listeners and initialises values from the ui state object.
 // ---------------------------------------------------------------------------
 function buildUI(ui, cbs) {
-   let style = document.getElementById('gemui_style');
-   if (!style) {
-      style = document.createElement('style');
-      style.id = 'gemui_style';
-      style.textContent = `
-      #gemui {
-         position: fixed; top: 18px; right: 18px;
-         background: rgba(10,10,14,0.82);
-         border: 1px solid rgba(255,255,255,0.12);
-         border-radius: 12px;
-         padding: 16px 18px;
-         color: #e8e8e8;
-         font: 13px/1.5 system-ui, sans-serif;
-         width: 220px;
-         backdrop-filter: blur(8px);
-         user-select: none;
-         z-index: 100;
-      }
-      #gemui h3 {
-         margin: 0 0 12px; font-size: 13px; font-weight: 600;
-         letter-spacing: .05em; color: #fff; text-transform: uppercase;
-      }
-      #gemui label { display:block; margin-bottom:3px; font-size:11px; color:#aaa; }
-      #gemui .row  { margin-bottom: 12px; }
-      #gemui input[type=range] {
-         width: 100%; accent-color: #7eb8f7; cursor: pointer;
-      }
-      #gemui .val  { float:right; color:#7eb8f7; font-size:11px; font-variant-numeric: tabular-nums; }
-      #gemui .swatches { display:flex; gap:6px; flex-wrap:wrap; margin-top:4px; }
-      #gemui .swatch {
-         width:22px; height:22px; border-radius:50%; cursor:pointer;
-         border: 2px solid transparent; transition: border-color .15s;
-         box-shadow: 0 0 0 1px rgba(255,255,255,.15);
-      }
-      #gemui .swatch.active { border-color: #7eb8f7; }
-      #gemui input[type=color] {
-         width:22px; height:22px; border-radius:50%; border:none;
-         padding:0; cursor:pointer; background:none;
-         box-shadow: 0 0 0 1px rgba(255,255,255,.15);
-      }
-      #gemui .modes { display:flex; gap:4px; margin-top:4px; }
-      #gemui .mode {
-         flex:1; padding:4px 0; text-align:center; font-size:11px;
-         border-radius:6px; cursor:pointer; border: 1px solid rgba(255,255,255,.15);
-         background: rgba(255,255,255,.05); color:#aaa; transition: all .15s;
-      }
-      #gemui .mode.active { background:#7eb8f7; color:#000; border-color:#7eb8f7; font-weight:600; }
-      #gemui .divider { border:none; border-top:1px solid rgba(255,255,255,.08); margin:12px 0; }
+   const panel = document.getElementById('gemui');
+   const toggleBtn = document.getElementById('gemui-toggle');
+   const uiFileInput = document.getElementById('uiFileInput');
+   const fileBtn = document.getElementById('fileBtn');
+   const fileNameEl = document.getElementById('fileNameEl');
 
-      #lightReturnPanel,
-      #facetInfoPanel {
-         position: fixed; top: 18px; right: 286px;
-         width: 420px;
-         height: 320px;
-         min-width: 260px;
-         min-height: 120px;
-         box-sizing: border-box;
-         display: flex;
-         flex-direction: column;
-         overflow: hidden;
-         background: rgba(10,10,14,0.82);
-         border: 1px solid rgba(255,255,255,0.12);
-         border-radius: 12px;
-         padding: 14px 16px;
-         color: #e8e8e8;
-         font: 12px/1.4 system-ui, sans-serif;
-         backdrop-filter: blur(8px);
-         z-index: 99;
-      }
-      #facetInfoPanel {
-         height: 260px;
-      }
-      #lightReturnPanel.collapsed,
-      #facetInfoPanel.collapsed {
-         width: 200px;
-         height: auto;
-         min-width: 200px;
-         min-height: 0;
-         padding: 8px 14px 8px 10px;
-      }
-      #lightReturnHeader,
-      #facetInfoHeader {
-         display: flex;
-         flex: 0 0 auto;
-         align-items: center;
-         justify-content: space-between;
-         gap: 8px;
-         margin-bottom: 8px;
-      }
-      #lightReturnPanel h3,
-      #facetInfoPanel h3 {
-         flex: 1 1 auto;
-         margin: 0; font-size: 13px; font-weight: 600;
-         letter-spacing: .05em; color: #fff; text-transform: uppercase;
-      }
-      #lightReturnToggle,
-      #facetInfoToggle {
-         flex: 0 0 auto;
-         min-width: 28px;
-         height: 24px;
-         padding: 0 8px;
-         border-radius: 6px;
-         border: 1px solid rgba(255,255,255,.15);
-         background: rgba(255,255,255,.05);
-         color: #aaa;
-         cursor: pointer;
-         font: inherit;
-         line-height: 1;
-      }
-      #lightReturnToggle:hover,
-      #facetInfoToggle:hover {
-         color: #fff;
-         border-color: rgba(255,255,255,.28);
-      }
-      #lightReturnBody,
-      #facetInfoBody {
-         display: flex;
-         flex: 1 1 auto;
-         min-height: 0;
-         flex-direction: column;
-         min-width: 0;
-      }
-      #lightReturnPanel.collapsed #lightReturnBody,
-      #facetInfoPanel.collapsed #facetInfoBody {
-         display: none;
-      }
-      #lightReturnPanel.collapsed #lightReturnHeader,
-      #facetInfoPanel.collapsed #facetInfoHeader {
-         margin-bottom: 0;
-         gap: 6px;
-      }
-      #lightReturnPanel.collapsed h3,
-      #facetInfoPanel.collapsed h3 {
-         font-size: 11px;
-         letter-spacing: .04em;
-         white-space: nowrap;
-         overflow: visible;
-         text-overflow: clip;
-      }
-      #lightReturnPanel.collapsed #lightReturnResize,
-      #facetInfoPanel.collapsed #facetInfoResize {
-         display: none;
-      }
-      #lightReturnStatus,
-      #facetInfoStatus {
-         margin: 0 0 8px; color: #aaa; font-size: 11px;
-         flex: 0 0 auto;
-      }
-      #lightReturnCanvas {
-         display: block; width: 100%; height: auto;
-         flex: 1 1 auto;
-         min-height: 140px;
-         border-radius: 8px; background: rgba(255,255,255,0.04);
-      }
-      #lightReturnResize,
-      #facetInfoResize {
-         position: absolute;
-         left: 0;
-         bottom: 0;
-         width: 18px;
-         height: 18px;
-         cursor: nesw-resize;
-         z-index: 3;
-      }
-      #lightReturnResize::before,
-      #facetInfoResize::before {
-         content: '';
-         position: absolute;
-         left: 4px;
-         bottom: 4px;
-         width: 10px;
-         height: 10px;
-         border-left: 2px solid rgba(255,255,255,.35);
-         border-bottom: 2px solid rgba(255,255,255,.35);
-         border-bottom-left-radius: 2px;
-      }
-      #facetInfoList {
-         flex: 1 1 auto;
-         min-height: 0;
-         overflow: auto;
-         display: flex;
-         flex-direction: column;
-         gap: 10px;
-         padding-right: 2px;
-      }
-      .facetSection {
-         border: 1px solid rgba(255,255,255,0.08);
-         background: rgba(255,255,255,0.03);
-         border-radius: 8px;
-         padding: 8px 10px 10px;
-      }
-      .facetSectionTitle {
-         color: #fff;
-         font-size: 12px;
-         font-weight: 600;
-         letter-spacing: .05em;
-         text-transform: uppercase;
-         margin: 0 0 6px;
-      }
-      .facetGroup {
-         display: grid;
-         grid-template-columns: 40px 58px minmax(0, 1fr) minmax(0, 1.2fr);
-         gap: 4px 10px;
-         align-items: start;
-         padding: 4px 0;
-      }
-      .facetGroup + .facetGroup {
-         border-top: 1px solid rgba(255,255,255,0.06);
-      }
-      .facetGroupName,
-      .facetGroupAngle {
-         color: #fff;
-         font-size: 12px;
-         font-weight: 600;
-      }
-      .facetGroupIndexes,
-      .facetGroupInst {
-         color: #bfc7d2;
-         font-size: 11px;
-         line-height: 1.45;
-         white-space: pre-wrap;
-         word-break: break-word;
-      }
-      .facetGroupIndexes {
-         font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-      }
-      .facetGroupInst {
-         color: #d4dae3;
-      }
-      .facetEmpty {
-         color: #aaa;
-         font-size: 12px;
-         padding: 10px 2px;
-      }
-   `;
-      document.head.appendChild(style);
+   // Populate preset dropdown (options are generated from the JS presets array)
+   const gPreset = panel.querySelector('#gPreset');
+   gPreset.innerHTML = presets.map((p, i) => `<option value="${i}">${p[0]}</option>`).join('')
+      + '<option value="-1">Custom</option>';
+
+   // Initialise slider / display values from ui state
+   panel.querySelector('#riSlider').value = ui.ri;
+   panel.querySelector('#riVal').textContent = ui.ri.toFixed(3);
+   panel.querySelector('#codSlider').value = ui.cod;
+   panel.querySelector('#codVal').textContent = ui.cod.toFixed(3);
+   panel.querySelector('#tiltAngle').value = ui.tiltAngleDeg;
+   panel.querySelector('#tiltVal').textContent = ui.tiltAngleDeg;
+   panel.querySelector('#focalSlider').value = ui.focalLength;
+   panel.querySelector('#focalVal').textContent = `${ui.focalLength} mm`;
+
+   // Sync active light-mode button with ui.lightMode
+   panel.querySelectorAll('#modes .mode').forEach(b =>
+      b.classList.toggle('active', parseInt(b.dataset.mode) === ui.lightMode)
+   );
+
+   // Mobile toggle
+   toggleBtn.addEventListener('click', () => {
+      panel.classList.toggle('mobile-open');
+      const icon = toggleBtn.querySelector('span:first-child');
+      icon.textContent = panel.classList.contains('mobile-open') ? '✕' : '☰';
+   });
+   if (window.innerWidth <= 960) {
+      const collapsePanel = (panelId, toggleId, expandLabel) => {
+         document.getElementById(panelId)?.classList.add('collapsed');
+         const btn = document.getElementById(toggleId);
+         if (btn) { btn.textContent = '+'; btn.setAttribute('aria-label', expandLabel); }
+      };
+      collapsePanel('lightReturnPanel', 'lightReturnToggle', 'Expand graph');
+      collapsePanel('facetInfoPanel', 'facetInfoToggle', 'Expand facet notes');
    }
-
-   const lightModes = ['ISO', 'COS', 'SC2', 'RND', 'FLAT'];
-
-   const panel = document.createElement('div');
-   panel.id = 'gemui';
-   panel.innerHTML = `
-      <h3>Gem Controls</h3>
-
-      <div class="row">
-        <label>Gem Species</label>
-        <select id="gPreset" style="width:100%;background:#1a1a22;color:#e8e8e8;border:1px solid rgba(255,255,255,.15);border-radius:6px;padding:4px 6px;font-size:12px;">
-          ${presets.map((p, i) => `<option value="${i}">${p[0]}</option>`).join('')}
-          <option value="-1">Custom</option>
-        </select>
-      </div>
-
-      <div class="row">
-        <label>Refractive Index (n<sub>D</sub>) <span class="val" id="riVal">${ui.ri.toFixed(3)}</span></label>
-        <input type="range" id="riSlider" min="1.40" max="2.90" step="0.001" value="${ui.ri}">
-      </div>
-
-      <div class="row">
-        <label>Dispersion (COD) <span class="val" id="codVal">${ui.cod.toFixed(3)}</span></label>
-        <input type="range" id="codSlider" min="0.000" max="0.120" step="0.001" value="${ui.cod}">
-      </div>
-      <hr class="divider">
-      <div class="row">
-        <label>Stone Colour</label>
-        <div class="swatches" id="swatches"></div>
-      </div>
-
-      <div class="row">
-        <label>Windowing Highlight</label>
-        <input type="color" id="exitColor" value="#000000"
-          style="width:100%;height:28px;border-radius:6px;border:none;cursor:pointer;">
-      </div>
-
-      <div class="row">
-        <label>Light Model</label>
-        <div class="modes" id="modes">
-          ${lightModes.map((m, i) => `<div class="mode${i === ui.lightMode ? ' active' : ''}" data-mode="${i}">${m}</div>`).join('')}
-        </div>
-      </div>
-
-      <hr class="divider">
-      <div class="row">
-        <label>View</label>
-        <div class="modes" id="viewBtns">
-          <div class="mode" id="vReset">↺ Reset</div>
-          <div class="mode" id="vTilt">⧡ Tilt</div>
-        </div>
-      </div>
-         <div class="row">
-            <label>Tilt Angle <span class="val" id="tiltVal">${ui.tiltAngleDeg}</span></label>
-            <input type="range" id="tiltAngle" min="0" max="30" step="1" value="${ui.tiltAngleDeg}">
-         </div>
-      <hr class="divider">
-      <div class="row">
-        <label>Focal Length <span class="val" id="focalVal">${ui.focalLength} mm</span></label>
-        <input type="range" id="focalSlider" min="20" max="300" step="1" value="${ui.focalLength}">
-      </div>
-   `;
-   document.body.appendChild(panel);
-
-   // --- File picker inside the UI (uses callback if provided) ---
-   const fileRow = document.createElement('div');
-   fileRow.className = 'row';
-   const fileLabel = document.createElement('label');
-   fileLabel.textContent = 'Load File';
-
-   // Hidden native input
-   const uiFileInput = document.createElement('input');
-   uiFileInput.type = 'file';
-   uiFileInput.accept = '.stl,.STL,.gem,.GEM,.gcs,.GCS';
-   uiFileInput.style.display = 'none';
-
-   // Visible button matching other .mode buttons
-   const fileControls = document.createElement('div');
-   fileControls.className = 'modes';
-   const fileBtn = document.createElement('div');
-   fileBtn.className = 'mode';
-   fileBtn.id = 'fileBtn';
-   fileBtn.textContent = 'Choose File';
-   fileBtn.style.flex = '1';
-   fileBtn.style.cursor = 'pointer';
-
-   // Filename display
-   const fileNameEl = document.createElement('div');
-   fileNameEl.style.marginTop = '6px';
-   fileNameEl.style.fontSize = '11px';
-   fileNameEl.style.color = '#aaa';
-   fileNameEl.id = 'fileNameEl';
-   fileNameEl.textContent = '';
-
-   fileControls.appendChild(fileBtn);
-   fileRow.appendChild(fileLabel);
-   fileRow.appendChild(fileControls);
-   fileRow.appendChild(fileNameEl);
-   // append hidden input so it participates in form/file APIs
-   fileRow.appendChild(uiFileInput);
-   panel.appendChild(fileRow);
 
    // Button triggers hidden input
    fileBtn.addEventListener('click', () => uiFileInput.click());
@@ -1383,45 +1086,18 @@ async function setupApp() {
    // Camera looks down +Z toward the table
    mat4.lookAt(viewMat, cameraPos, [0, 0, 0], [0, 1, 0]);
 
-   const graphPanel = document.createElement('div');
-   graphPanel.id = 'lightReturnPanel';
-   graphPanel.innerHTML = `
-      <div id="lightReturnHeader">
-         <h3>Light Return Graph</h3>
-         <button id="lightReturnToggle" type="button" aria-label="Minimize graph">−</button>
-      </div>
-      <div id="lightReturnBody">
-         <div id="lightReturnStatus">Waiting for model…</div>
-         <canvas id="lightReturnCanvas"></canvas>
-      </div>
-      <div id="lightReturnResize" aria-hidden="true"></div>
-   `;
-   document.body.appendChild(graphPanel);
-
-   const facetPanel = document.createElement('div');
-   facetPanel.id = 'facetInfoPanel';
-   facetPanel.innerHTML = `
-      <div id="facetInfoHeader">
-         <h3>Facet Notes</h3>
-         <button id="facetInfoToggle" type="button" aria-label="Minimize facet notes">−</button>
-      </div>
-      <div id="facetInfoBody">
-         <div id="facetInfoStatus">Waiting for model…</div>
-         <div id="facetInfoList"></div>
-      </div>
-      <div id="facetInfoResize" aria-hidden="true"></div>
-   `;
-   document.body.appendChild(facetPanel);
-
-   const graphToggleEl = graphPanel.querySelector('#lightReturnToggle');
-   const graphBodyEl = graphPanel.querySelector('#lightReturnBody');
-   const graphResizeEl = graphPanel.querySelector('#lightReturnResize');
-   const graphStatusEl = graphPanel.querySelector('#lightReturnStatus');
-   const graphCanvas = graphPanel.querySelector('#lightReturnCanvas');
-   const facetToggleEl = facetPanel.querySelector('#facetInfoToggle');
-   const facetStatusEl = facetPanel.querySelector('#facetInfoStatus');
-   const facetListEl = facetPanel.querySelector('#facetInfoList');
-   const facetResizeEl = facetPanel.querySelector('#facetInfoResize');
+   // Panels are defined in index.html — just acquire references.
+   const graphPanel = document.getElementById('lightReturnPanel');
+   const facetPanel = document.getElementById('facetInfoPanel');
+   const graphToggleEl = document.getElementById('lightReturnToggle');
+   const graphBodyEl = document.getElementById('lightReturnBody');
+   const graphResizeEl = document.getElementById('lightReturnResize');
+   const graphStatusEl = document.getElementById('lightReturnStatus');
+   const graphCanvas = document.getElementById('lightReturnCanvas');
+   const facetToggleEl = document.getElementById('facetInfoToggle');
+   const facetStatusEl = document.getElementById('facetInfoStatus');
+   const facetListEl = document.getElementById('facetInfoList');
+   const facetResizeEl = document.getElementById('facetInfoResize');
    const graphCtx = graphCanvas.getContext('2d');
    const graphDpr = window.devicePixelRatio || 1;
    let graphCanvasWidth = 388;
@@ -1437,7 +1113,7 @@ async function setupApp() {
       graphCanvas.width = Math.round(graphCanvasWidth * graphDpr);
       graphCanvas.height = Math.round(graphCanvasHeight * graphDpr);
       graphCtx.setTransform(graphDpr, 0, 0, graphDpr, 0, 0);
-      if (latestGraphSeries && !graphCollapsed) drawGraph(latestGraphSeries);
+      if (latestGraphSeries && !graphPanel.classList.contains('collapsed')) drawGraph(latestGraphSeries);
    }
 
    resizeGraphCanvas();
@@ -1446,11 +1122,9 @@ async function setupApp() {
    let graphRequestId = 0;
    let graphBusy = false;
    let graphNeedsRerun = false;
-   let graphCollapsed = false;
+   // DOM is the source of truth for collapsed state — no separate JS flags.
    let graphExpandedSize = { width: 420, height: 320 };
-   let facetCollapsed = false;
    let facetExpandedSize = { width: 420, height: 260 };
-   const FACET_PANEL_GAP = 12;
 
    function escapeHtml(text) {
       return String(text)
@@ -1567,12 +1241,6 @@ async function setupApp() {
       return lines;
    }
 
-   function syncFacetPanelPosition() {
-      const rect = graphPanel.getBoundingClientRect();
-      facetPanel.style.right = `${Math.max(18, Math.round(window.innerWidth - rect.right))}px`;
-      facetPanel.style.top = `${Math.round(rect.bottom + FACET_PANEL_GAP)}px`;
-   }
-
    function setFacetStatus(text) {
       facetStatusEl.textContent = text;
    }
@@ -1615,37 +1283,38 @@ async function setupApp() {
       facetListEl.innerHTML = html.join('') || '<div class="facetEmpty">No facet notes were found for this model.</div>';
    }
 
-   function setFacetCollapsed(collapsed) {
-      if (collapsed === facetCollapsed) return;
-      if (collapsed) {
-         const rect = facetPanel.getBoundingClientRect();
-         facetExpandedSize = {
-            width: Math.max(260, Math.round(rect.width)),
-            height: Math.max(120, Math.round(rect.height)),
-         };
-      }
-      facetCollapsed = collapsed;
-      facetPanel.classList.toggle('collapsed', collapsed);
-      facetToggleEl.textContent = collapsed ? '+' : '−';
-      facetToggleEl.setAttribute('aria-label', collapsed ? 'Expand facet notes' : 'Minimize facet notes');
-      if (collapsed) {
-         facetPanel.style.width = '200px';
-         facetPanel.style.height = 'auto';
+   // Toggles a panel's collapsed state. DOM class is the sole source of truth.
+   function togglePanel(panelEl, toggleEl, expandedSizeRef, name, onExpand) {
+      const willCollapse = !panelEl.classList.contains('collapsed');
+      if (window.innerWidth > 960) {
+         if (willCollapse) {
+            const rect = panelEl.getBoundingClientRect();
+            expandedSizeRef.width = Math.max(260, Math.round(rect.width));
+            expandedSizeRef.height = Math.max(120, Math.round(rect.height));
+            panelEl.style.width = '200px';
+            panelEl.style.height = 'auto';
+         } else {
+            panelEl.style.width = `${expandedSizeRef.width}px`;
+            panelEl.style.height = `${expandedSizeRef.height}px`;
+         }
       } else {
-         facetPanel.style.width = `${facetExpandedSize.width}px`;
-         facetPanel.style.height = `${facetExpandedSize.height}px`;
+         panelEl.style.width = '';
+         panelEl.style.height = '';
       }
-      syncFacetPanelPosition();
+      panelEl.classList.toggle('collapsed', willCollapse);
+      toggleEl.textContent = willCollapse ? '+' : '−';
+      toggleEl.setAttribute('aria-label', willCollapse ? `Expand ${name}` : `Minimize ${name}`);
+      if (!willCollapse) onExpand?.();
    }
 
    facetToggleEl.addEventListener('click', () => {
-      setFacetCollapsed(!facetCollapsed);
+      togglePanel(facetPanel, facetToggleEl, facetExpandedSize, 'facet notes');
    });
 
    let facetResizeDrag = null;
    let facetResizePointerId = null;
    facetResizeEl.addEventListener('pointerdown', (e) => {
-      if (facetCollapsed) return;
+      if (facetPanel.classList.contains('collapsed')) return;
       e.preventDefault();
       e.stopPropagation();
       facetResizeDrag = {
@@ -1680,8 +1349,6 @@ async function setupApp() {
    window.addEventListener('pointerup', () => endFacetResize());
    window.addEventListener('blur', () => endFacetResize());
 
-   syncFacetPanelPosition();
-
    const graphModelMat = mat4.create();
    const graphProjMat = mat4.create();
 
@@ -1689,38 +1356,14 @@ async function setupApp() {
       graphStatusEl.textContent = text;
    }
 
-   function setGraphCollapsed(collapsed) {
-      if (collapsed === graphCollapsed) return;
-
-      if (collapsed) {
-         const rect = graphPanel.getBoundingClientRect();
-         graphExpandedSize = {
-            width: Math.max(260, Math.round(rect.width)),
-            height: Math.max(120, Math.round(rect.height)),
-         };
-         graphPanel.style.width = '200px';
-         graphPanel.style.height = 'auto';
-      } else {
-         graphPanel.style.width = `${graphExpandedSize.width}px`;
-         graphPanel.style.height = `${graphExpandedSize.height}px`;
-      }
-
-      graphCollapsed = collapsed;
-      graphPanel.classList.toggle('collapsed', collapsed);
-      graphToggleEl.textContent = collapsed ? '+' : '−';
-      graphToggleEl.setAttribute('aria-label', collapsed ? 'Expand graph' : 'Minimize graph');
-      syncFacetPanelPosition();
-      if (!collapsed) resizeGraphCanvas();
-   }
-
    graphToggleEl.addEventListener('click', () => {
-      setGraphCollapsed(!graphCollapsed);
+      togglePanel(graphPanel, graphToggleEl, graphExpandedSize, 'graph', resizeGraphCanvas);
    });
 
    let graphResizeDrag = null;
    let graphResizePointerId = null;
    graphResizeEl.addEventListener('pointerdown', (e) => {
-      if (graphCollapsed) return;
+      if (graphPanel.classList.contains('collapsed')) return;
       e.preventDefault();
       e.stopPropagation();
       graphResizeDrag = {
@@ -1739,7 +1382,6 @@ async function setupApp() {
       graphPanel.style.height = `${nextHeight}px`;
       graphExpandedSize = { width: nextWidth, height: nextHeight };
       resizeGraphCanvas();
-      syncFacetPanelPosition();
    });
 
    function endGraphResize(pointerId = graphResizePointerId) {
@@ -1758,8 +1400,7 @@ async function setupApp() {
    window.addEventListener('blur', () => endGraphResize());
 
    const graphResizeObserver = new ResizeObserver(() => {
-      if (!graphCollapsed) resizeGraphCanvas();
-      syncFacetPanelPosition();
+      if (!graphPanel.classList.contains('collapsed')) resizeGraphCanvas();
    });
    graphResizeObserver.observe(graphPanel);
    graphResizeObserver.observe(graphCanvas);
@@ -2073,7 +1714,6 @@ async function setupApp() {
             ? `No named facets found in ${filename}`
             : `Facet notes are only available for .gem files`);
       }
-      syncFacetPanelPosition();
       scheduleGraphUpdate('model load');
    }
 
@@ -2258,7 +1898,6 @@ async function setupApp() {
          format: 'depth24plus',
          usage: GPUTextureUsage.RENDER_ATTACHMENT,
       });
-      syncFacetPanelPosition();
    }
    window.addEventListener('resize', resize);
    resize();
