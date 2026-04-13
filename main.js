@@ -1719,13 +1719,27 @@ async function setupApp() {
    });
 
    // --- Pointer (canvas rotation) ---
-   let isPointerDown = false, lastX = 0, lastY = 0;
+   // setPointerCapture ensures move/up events are delivered even when the
+   // finger slides off the canvas edge. touch-action:none (CSS) prevents
+   // the browser from hijacking touches for scroll/zoom.
+   let dragPointerId = null, lastX = 0, lastY = 0;
+
    gpuCanvas.addEventListener('pointerdown', (e) => {
-      isPointerDown = true; lastX = e.clientX; lastY = e.clientY;
+      if (dragPointerId !== null) return;          // ignore extra fingers
+      dragPointerId = e.pointerId;
+      lastX = e.clientX; lastY = e.clientY;
+      gpuCanvas.setPointerCapture(e.pointerId);
    });
-   gpuCanvas.addEventListener('pointerup', () => { isPointerDown = false; });
+
+   function endDrag(e) {
+      if (e.pointerId !== dragPointerId) return;
+      dragPointerId = null;
+   }
+   gpuCanvas.addEventListener('pointerup',     endDrag);
+   gpuCanvas.addEventListener('pointercancel', endDrag);
+
    gpuCanvas.addEventListener('pointermove', (e) => {
-      if (!isPointerDown) return;
+      if (e.pointerId !== dragPointerId) return;
       const events = e.getCoalescedEvents?.() ?? [e];
       for (const ev of events) {
          const dx = ((ev.clientX - lastX) / 500) * Math.PI;
