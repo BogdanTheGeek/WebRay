@@ -464,14 +464,39 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let isFrontFace = dot(V_world, N_world) < 0.0;
     if (!isFrontFace) { N_world = -N_world; }
 
-    // Flat shading mode — simple Lambert + rim, no raytracing
+    // Flat shading mode — multi-light Lambert + Blinn-Phong, no raytracing
     if (uniforms.flatShading > 0.5) {
-        let upDiff  = max(0.0, N_world.z);
-        let sideDiff = max(0.0, dot(N_world, normalize(vec3<f32>(0.6, 0.4, 0.7))));
-        let rim     = pow(1.0 - max(0.0, dot(-V_world, N_world)), 3.0) * 0.35;
-        let col     = uniforms.stoneColor * (0.15 + 0.65 * upDiff + 0.20 * sideDiff)
-                      + vec3<f32>(rim);
-        return vec4<f32>(aces_tonemap(col), 1.0);
+        let NdotV = max(0.0, dot(-V_world, N_world));
+
+        // Four area-spread key lights — directions, diffuse weights, specular exponent
+        let L0 = normalize(vec3<f32>( 0.6,  0.4,  0.7)); // front-right top  (warm key)
+        let L1 = normalize(vec3<f32>(-0.5,  0.3,  0.8)); // front-left top   (fill)
+        let L2 = normalize(vec3<f32>( 0.1, -0.6,  0.6)); // back-right mid   (accent)
+        let L3 = normalize(vec3<f32>(-0.2,  0.8,  0.3)); // left rim         (edge)
+
+        // Diffuse — wider falloff (pow 1 = Lambert)
+        let d0 = max(0.0, dot(N_world, L0));
+        let d1 = max(0.0, dot(N_world, L1)) * 0.55;
+        let d2 = max(0.0, dot(N_world, L2)) * 0.35;
+        let d3 = max(0.0, dot(N_world, L3)) * 0.25;
+        let diffuse = 0.04 + d0 + d1 + d2 + d3 - 0.25;
+
+        // Specular — lower exponent = wider/softer highlight per light
+        let H0 = normalize(L0 - V_world);
+        let H1 = normalize(L1 - V_world);
+        let H2 = normalize(L2 - V_world);
+        let H3 = normalize(L3 - V_world);
+        let s0 = pow(max(0.0, dot(N_world, H0)), 22.0) * 0.55;
+        let s1 = pow(max(0.0, dot(N_world, H1)), 18.0) * 0.35;
+        let s2 = pow(max(0.0, dot(N_world, H2)), 14.0) * 0.20;
+        let s3 = pow(max(0.0, dot(N_world, H3)), 10.0) * 0.15;
+        let spec = s0 + s1 + s2 + s3;
+
+        // Silhouette rim
+        let rim = pow(1.0 - NdotV, 4.0) * 0.25;
+
+        let col = uniforms.stoneColor * diffuse + vec3<f32>(spec + rim);
+        return vec4<f32>(aces_tonemap(col * 0.3), 1.0);
     }
 
     let invModel = transpose(uniforms.modelMatrix);

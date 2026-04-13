@@ -266,7 +266,7 @@ function buildUI(ui, cbs) {
       document.head.appendChild(style);
    }
 
-   const lightModes = ['ISO', 'COS', 'SC2', 'RND'];
+   const lightModes = ['ISO', 'COS', 'SC2', 'RND', 'FLAT'];
 
    const panel = document.createElement('div');
    panel.id = 'gemui';
@@ -325,10 +325,6 @@ function buildUI(ui, cbs) {
       <div class="row">
         <label>Focal Length <span class="val" id="focalVal">${ui.focalLength} mm</span></label>
         <input type="range" id="focalSlider" min="20" max="300" step="1" value="${ui.focalLength}">
-      </div>
-      <div class="row" style="align-items:center;gap:8px;">
-        <label style="flex:1;">Flat Shading</label>
-        <input type="checkbox" id="flatShadingCheck" style="width:16px;height:16px;cursor:pointer;" ${ui.flatShading ? 'checked' : ''}>
       </div>
    `;
    document.body.appendChild(panel);
@@ -482,11 +478,6 @@ function buildUI(ui, cbs) {
       ui.lightMode = parseInt(btn.dataset.mode);
    });
 
-   // --- Flat shading checkbox ---
-   panel.querySelector('#flatShadingCheck').addEventListener('change', (e) => {
-      ui.flatShading = e.target.checked;
-   });
-
    // --- Focal length slider ---
    const focalSlider = panel.querySelector('#focalSlider');
    const focalVal = panel.querySelector('#focalVal');
@@ -528,7 +519,23 @@ function buildUI(ui, cbs) {
          riVal.textContent = ui.ri.toFixed(3);
          panel.querySelector('#gPreset').value = '-1';
       },
+      setCOD(cod) {
+         ui.cod = parseFloat(cod.toFixed(3));
+         codSlider.value = ui.cod;
+         codVal.textContent = ui.cod.toFixed(3);
+         panel.querySelector('#gPreset').value = '-1';
+      },
    };
+}
+
+class StoneData {
+   constructor(vertexData, triangleCount, facets = [], refractiveIndex = null, dispersion = null) {
+      this.vertexData = vertexData;
+      this.triangleCount = triangleCount;
+      this.facets = facets;
+      this.refractiveIndex = refractiveIndex;
+      this.dispersion = dispersion;
+   }
 }
 
 async function loadSTL(url) {
@@ -564,7 +571,7 @@ async function loadSTL(url) {
       }
    }
 
-   return { vertexData, triangleCount, refractiveIndex: 1.76 };
+   return new StoneData(vertexData, triangleCount);
 }
 
 function normalizeFacetMetadata(name, instructions) {
@@ -639,7 +646,7 @@ async function loadGCS(url) {
 
       for (const facetEl of tierEl.querySelectorAll('facet')) {
          const nx = parseFloat(facetEl.getAttribute('nx') || '0');
-         const ny = -parseFloat(facetEl.getAttribute('ny') || '0'); // flip Y
+         const ny = parseFloat(facetEl.getAttribute('ny') || '0');
          const nz = parseFloat(facetEl.getAttribute('nz') || '0');
          // Re-normalise (tiny floating-point noise in source)
          const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
@@ -648,9 +655,12 @@ async function loadGCS(url) {
          const vertEls = facetEl.querySelectorAll('vertex');
          if (vertEls.length < 3) continue;
 
+         // GCS vertices are in CW order from outside — swap v1↔v2 in the fan
+         // to restore CCW (front-face) winding. No Y-flip needed: GCS uses the
+         // same coordinate convention as the renderer (Z = table = up).
          const verts = Array.from(vertEls).map(v => [
             parseFloat(v.getAttribute('x') || '0'),
-            -parseFloat(v.getAttribute('y') || '0'), // flip Y
+            parseFloat(v.getAttribute('y') || '0'),
             parseFloat(v.getAttribute('z') || '0'),
          ]);
 
@@ -666,8 +676,7 @@ async function loadGCS(url) {
             triangleCount,
          });
 
-         // Fan triangulation — winding is already correct after Y-flip
-         // because negating Y reverses orientation; swapping v1↔v2 restores it.
+         // GCS vertices are listed CW from outside; swap v1↔v2 to get CCW (front face).
          for (let i = 1; i < verts.length - 1; i++) {
             triangles.push({
                v0: verts[0],
@@ -699,7 +708,7 @@ async function loadGCS(url) {
    }
 
    console.log(`GCS loaded: ${triCount} triangles from ${facets.length} facets`);
-   return { vertexData, triangleCount: triCount, refractiveIndex, dispersion, facets };
+   return new StoneData(vertexData, triCount, facets, refractiveIndex, dispersion);
 }
 
 // ---------------------------------------------------------------------------
@@ -1003,7 +1012,7 @@ async function loadGEM(url) {
    }
 
    console.log(`GEM loaded: ${triCount} triangles`);
-   return { vertexData, triangleCount: triCount, refractiveIndex, facets };
+   return new StoneData(vertexData, triCount, facets, refractiveIndex, null);
 }
 
 function normalizeMesh(data) {
@@ -1992,16 +2001,19 @@ async function setupApp() {
       console.log(`Loading ${filename}...`);
 
       const ext = filename.toLowerCase().match(/\.\w+$/)?.[0] ?? '';
-      const meshData = ext === '.gem' ? await loadGEM(url)
-         : ext === '.gcs' ? await loadGCS(url)
-            : await loadSTL(url);
+      let stone;
+      switch (ext) {
+         case '.gem': stone = await loadGEM(url); break;
+         case '.gcs': stone = await loadGCS(url); break;
+         default: stone = await loadSTL(url); break;
+      }
 
-      if (meshData.refractiveIndex)
-         console.log(`RI from file: ${meshData.refractiveIndex}`);
+      if (stone.refractiveIndex)
+         console.log(`RI from file: ${stone.refractiveIndex}`);
 
-      normalizeMesh(meshData.vertexData);
+      normalizeMesh(stone.vertexData);
 
-      const { nodeBuffer, triBuffer } = buildBVH(meshData.vertexData, meshData.triangleCount);
+      const { nodeBuffer, triBuffer } = buildBVH(stone.vertexData, stone.triangleCount);
 
       const makeBuf = (data, usage) => {
          const buf = device.createBuffer({
@@ -2014,7 +2026,7 @@ async function setupApp() {
          return buf;
       };
 
-      const vertexBuffer = makeBuf(meshData.vertexData, GPUBufferUsage.VERTEX);
+      const vertexBuffer = makeBuf(stone.vertexData, GPUBufferUsage.VERTEX);
       const triStorageBuffer = makeBuf(triBuffer, GPUBufferUsage.STORAGE);
       const bvhStorageBuffer = makeBuf(nodeBuffer, GPUBufferUsage.STORAGE);
 
@@ -2036,15 +2048,20 @@ async function setupApp() {
          ],
       }));
 
-      renderBundle = { bindGroup, graphBindGroups, vertexBuffer, triCount: meshData.triangleCount };
+      renderBundle = { bindGroup, graphBindGroups, vertexBuffer, triCount: stone.triangleCount };
 
       // Push RI and filename into the live panel
-      if (meshData.refractiveIndex && meshData.refractiveIndex > 1.0)
-         uiControls.setRI(meshData.refractiveIndex);
+      if (stone.refractiveIndex && stone.refractiveIndex > 1.0) {
+         uiControls.setRI(stone.refractiveIndex);
+      }
+      if (stone.dispersion != null) {
+         uiControls.setCOD(stone.dispersion);
+      }
+
       uiControls.setFileName(filename);
-      if (Array.isArray(meshData.facets) && meshData.facets.length > 0) {
-         renderFacetInfo(meshData.facets);
-         setFacetStatus(`${meshData.facets.length} facets parsed from ${filename}`);
+      if (Array.isArray(stone.facets) && stone.facets.length > 0) {
+         renderFacetInfo(stone.facets);
+         setFacetStatus(`${stone.facets.length} facets parsed from ${filename}`);
       } else {
          renderFacetInfo([]);
          setFacetStatus(filename.toLowerCase().endsWith('.gem')
@@ -2178,7 +2195,7 @@ async function setupApp() {
       device.queue.writeBuffer(uniformBuffer, 208, new Float32Array([time, ui.ri, ui.cod, ui.lightMode]));
       device.queue.writeBuffer(uniformBuffer, 224, new Float32Array([ui.color[0], ui.color[1], ui.color[2], 0.0]));
       device.queue.writeBuffer(uniformBuffer, 240, new Float32Array([ui.exitHighlight[0], ui.exitHighlight[1], ui.exitHighlight[2], ui.exitStrength]));
-      device.queue.writeBuffer(uniformBuffer, 256, new Float32Array([ui.flatShading ? 1.0 : 0.0, 0.0, 0.0, 0.0]));
+      device.queue.writeBuffer(uniformBuffer, 256, new Float32Array([ui.lightMode === 4 ? 1.0 : 0.0, 0.0, 0.0, 0.0]));
    }
 
    // --- Render loop ---
