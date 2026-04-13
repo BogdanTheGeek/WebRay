@@ -321,6 +321,11 @@ function buildUI(ui, cbs) {
             <label>Tilt Angle <span class="val" id="tiltVal">${ui.tiltAngleDeg}</span></label>
             <input type="range" id="tiltAngle" min="0" max="30" step="1" value="${ui.tiltAngleDeg}">
          </div>
+      <hr class="divider">
+      <div class="row">
+        <label>Focal Length <span class="val" id="focalVal">${ui.focalLength} mm</span></label>
+        <input type="range" id="focalSlider" min="20" max="300" step="1" value="${ui.focalLength}">
+      </div>
    `;
    document.body.appendChild(panel);
 
@@ -470,6 +475,15 @@ function buildUI(ui, cbs) {
       panel.querySelectorAll('#modes .mode').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       ui.lightMode = parseInt(btn.dataset.mode);
+   });
+
+   // --- Focal length slider ---
+   const focalSlider = panel.querySelector('#focalSlider');
+   const focalVal = panel.querySelector('#focalVal');
+   focalSlider.addEventListener('input', () => {
+      ui.focalLength = parseFloat(focalSlider.value);
+      focalVal.textContent = `${ui.focalLength} mm`;
+      cbs.onGraphParamsChanged?.();
    });
 
    // --- View buttons (Reset / Tilt) ---
@@ -837,21 +851,24 @@ async function loadGEM(url) {
       }
    }
 
-   // Pack into flat Float32Array matching loadSTL output format
+   // Pack into flat Float32Array matching loadSTL output format.
+   // GemCad's Y axis is inverted relative to the renderer's convention,
+   // so negate Y on both positions and normals. Swapping v1↔v2 restores
+   // the CCW winding that the negation would otherwise flip.
    const triCount = triangles.length;
    const floatsPerVertex = 7;
    const vertexData = new Float32Array(triCount * 3 * floatsPerVertex);
 
    for (let i = 0; i < triCount; i++) {
       const { v0, v1, v2, normal, frosted } = triangles[i];
-      const vs = [v0, v1, v2];
+      const vs = [v0, v2, v1]; // swap v1↔v2 to fix winding after Y-flip
       for (let v = 0; v < 3; v++) {
          const idx = (i * 3 + v) * floatsPerVertex;
          vertexData[idx + 0] = vs[v][0];
-         vertexData[idx + 1] = vs[v][1];
+         vertexData[idx + 1] = -vs[v][1]; // flip Y
          vertexData[idx + 2] = vs[v][2];
          vertexData[idx + 3] = normal[0];
-         vertexData[idx + 4] = normal[1];
+         vertexData[idx + 4] = -normal[1]; // flip Y
          vertexData[idx + 5] = normal[2];
          vertexData[idx + 6] = frosted ? 1.0 : 0.0;
       }
@@ -1033,6 +1050,7 @@ const ui = {
    exitHighlight: [0, 0, 0],
    exitStrength: 0.0,
    tiltAngleDeg: 10,
+   focalLength: 200,
 };
 
 // Camera / interaction (survive model reloads)
@@ -1437,8 +1455,8 @@ async function setupApp() {
             <div class="facetSection">
                <div class="facetSectionTitle">${sectionName}</div>
                ${entries.map((entry) => {
-                  const instruction = entry.instructions ? escapeHtml(entry.instructions) : '—';
-                  return `
+            const instruction = entry.instructions ? escapeHtml(entry.instructions) : '—';
+            return `
                      <div class="facetGroup">
                         <div class="facetGroupName">${escapeHtml(entry.name)}</div>
                         <div class="facetGroupAngle">${escapeHtml(entry.angleLabel)}</div>
@@ -1446,7 +1464,7 @@ async function setupApp() {
                         <div class="facetGroupInst">${instruction}</div>
                      </div>
                   `;
-               }).join('')}
+         }).join('')}
             </div>
          `);
       }
@@ -1695,7 +1713,17 @@ async function setupApp() {
    async function sampleGraphSweep(runId) {
       if (!renderBundle || runId !== graphRequestId) return null;
 
-      mat4.perspective(graphProjMat, Math.PI / 4, canvas.width / canvas.height, 0.1, 100.0);
+      // Graph renders at the currently selected focal length.
+      const SENSOR_HALF = 5 * Math.tan(Math.PI / 8); // ≈ 2.071 — same reference as main camera
+      const graphCamDist = ui.focalLength / 10;
+      const graphFovY = 2 * Math.atan(SENSOR_HALF / graphCamDist);
+      mat4.perspective(graphProjMat, graphFovY, GRAPH_SAMPLE_SIZE / GRAPH_SAMPLE_SIZE, 0.1, 200.0);
+
+      // Temporarily set globals so writeUniformsToBuffer sends the correct view
+      const savedViewMat = new Float32Array(viewMat);
+      const savedCamPos = [cameraPos[0], cameraPos[1], cameraPos[2]];
+      mat4.lookAt(viewMat, [0, 0, graphCamDist], [0, 0, 0], [0, 1, 0]);
+      cameraPos[0] = 0; cameraPos[1] = 0; cameraPos[2] = graphCamDist;
 
       const { graphBindGroups, vertexBuffer, triCount } = renderBundle;
       const encoder = device.createCommandEncoder();
@@ -1723,6 +1751,8 @@ async function setupApp() {
          for (let tiltIndex = 0; tiltIndex < GRAPH_TILT_COUNT; tiltIndex++) {
             if (runId !== graphRequestId) {
                pass.end();
+               viewMat.set(savedViewMat);
+               cameraPos[0] = savedCamPos[0]; cameraPos[1] = savedCamPos[1]; cameraPos[2] = savedCamPos[2];
                return null;
             }
 
@@ -1782,6 +1812,11 @@ async function setupApp() {
       });
 
       graphReduceReadbackBuffer.unmap();
+
+      // Restore main-camera globals
+      viewMat.set(savedViewMat);
+      cameraPos[0] = savedCamPos[0]; cameraPos[1] = savedCamPos[1]; cameraPos[2] = savedCamPos[2];
+
       return seriesList;
    }
 
@@ -1994,7 +2029,16 @@ async function setupApp() {
       mat4.rotateY(modelMat, modelMat, currentRotY + animY);
 
       const aspect = canvas.width / canvas.height;
-      mat4.perspective(projMat, Math.PI / 4, aspect, 0.1, 100.0);
+      // Focal length: maintain stone size by scaling camera distance proportionally.
+      // Reference: fl=50mm → d=5 units, fov=45°. For other focal lengths:
+      //   d = fl/10  (same angular size because fov narrows as d grows)
+      //   fov = 2·atan(SENSOR_HALF / d)  where SENSOR_HALF = d_ref·tan(fov_ref/2)
+      const SENSOR_HALF = 5 * Math.tan(Math.PI / 8); // ≈ 2.071, constant across all fl
+      const camDist = ui.focalLength / 10;
+      cameraPos[2] = camDist;
+      mat4.lookAt(viewMat, [0, 0, camDist], [0, 0, 0], [0, 1, 0]);
+      const fovY = 2 * Math.atan(SENSOR_HALF / camDist);
+      mat4.perspective(projMat, fovY, aspect, 0.1, 200.0);
 
       device.queue.writeBuffer(uniformBuffer, 0, modelMat);
       device.queue.writeBuffer(uniformBuffer, 64, viewMat);
