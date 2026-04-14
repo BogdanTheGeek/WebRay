@@ -24,18 +24,21 @@ const presets = [
    ['Aquamarine', 1.57, 0.012, '#7fffd4'],
 ];
 
+const panel = document.getElementById('gemui');
+const toggleBtn = document.getElementById('gemui-toggle');
+const uiFileInput = document.getElementById('uiFileInput');
+const fileBtn = document.getElementById('fileBtn');
+const fileNameEl = document.getElementById('fileNameEl');
+const exportTiltBtn = document.getElementById('exportTiltBtn');
+const exportStatusEl = document.getElementById('exportStatus');
+
+
 
 // ---------------------------------------------------------------------------
 // UI panel — markup and CSS live in index.html; this function wires up
 // event listeners and initialises values from the ui state object.
 // ---------------------------------------------------------------------------
 function buildUI(ui, cbs) {
-   const panel = document.getElementById('gemui');
-   const toggleBtn = document.getElementById('gemui-toggle');
-   const uiFileInput = document.getElementById('uiFileInput');
-   const fileBtn = document.getElementById('fileBtn');
-   const fileNameEl = document.getElementById('fileNameEl');
-
    // Populate preset dropdown (options are generated from the JS presets array)
    const gPreset = panel.querySelector('#gPreset');
    gPreset.innerHTML = presets.map((p, i) => `<option value="${i}">${p[0]}</option>`).join('')
@@ -85,6 +88,31 @@ function buildUI(ui, cbs) {
       fileNameEl.textContent = f.name;
       const url = URL.createObjectURL(f);
       cbs.onFileSelected?.(f.name, url);
+   });
+
+   exportTiltBtn?.addEventListener('click', async () => {
+      if (exportTiltBtn.dataset.busy === '1') return;
+      exportTiltBtn.dataset.busy = '1';
+      exportTiltBtn.style.pointerEvents = 'none';
+      exportTiltBtn.textContent = 'Exporting…';
+      if (exportStatusEl) exportStatusEl.textContent = 'Preparing export…';
+      try {
+         const ok = await cbs.onExportTiltLoop?.();
+         if (exportStatusEl) {
+            exportStatusEl.textContent = ok ? 'Export complete.' : 'Export failed.';
+            setTimeout(() => {
+               if (exportStatusEl.textContent === 'Export complete.' || exportStatusEl.textContent === 'Export failed.') {
+                  exportStatusEl.textContent = '';
+               }
+            }, 2500);
+         }
+      } catch {
+         if (exportStatusEl) exportStatusEl.textContent = 'Export failed.';
+      } finally {
+         exportTiltBtn.dataset.busy = '0';
+         exportTiltBtn.style.pointerEvents = '';
+         exportTiltBtn.textContent = 'Export Video';
+      }
    });
 
    // --- Colour swatches ---
@@ -1778,6 +1806,7 @@ async function setupApp() {
    let tiltCyclePrevPhase = null;
    let tiltCycleFrameCount = 0;
    let tiltCycleAccumSec = 0;
+   let tiltCycleCompletedCount = 0;
    let tiltCycleAvgFps = 0;
    let tiltPreRenderRequested = false;
    let tiltPreRenderReady = false;
@@ -2033,6 +2062,7 @@ async function setupApp() {
    // -------------------------------------------------------------------------
    async function loadModel(filename, url) {
       console.log(`Loading ${filename}...`);
+      currentModelFilename = filename;
 
       const ext = filename.toLowerCase().match(/\.\w+$/)?.[0] ?? '';
       let stone;
@@ -2108,6 +2138,7 @@ async function setupApp() {
    }
 
    // --- UI (built once; survives model swaps) ---
+   let currentModelFilename = 'stone.gem';
    let framePending = false;
    const ROT_EPSILON = 1e-4;
 
@@ -2124,6 +2155,132 @@ async function setupApp() {
       requestAnimationFrame(frame);
    }
 
+   function waitForCondition(predicate, timeoutMs = 15000) {
+      return new Promise((resolve, reject) => {
+         const start = performance.now();
+         const tick = () => {
+            if (predicate()) {
+               resolve();
+               return;
+            }
+            if (performance.now() - start > timeoutMs) {
+               reject(new Error('Timed out waiting for condition'));
+               return;
+            }
+            requestRender();
+            requestAnimationFrame(tick);
+         };
+         tick();
+      });
+   }
+
+   function delay(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+   }
+
+   function pickExportMimeType() {
+      const options = [
+         'video/mp4;codecs=avc1.64001F',
+         'video/mp4;codecs=avc1.42E01E',
+         'video/mp4',
+         'video/webm;codecs=vp9',
+         'video/webm;codecs=vp8',
+         'video/webm',
+      ];
+      for (const opt of options) {
+         if (MediaRecorder.isTypeSupported(opt)) return opt;
+      }
+      return '';
+   }
+
+   function makeExportBaseName(filename) {
+      const safe = String(filename || 'stone.gem')
+         .trim()
+         .replace(/^.*[\\/]/, '')
+         .replace(/\.[^.]*$/, '')
+         .replace(/[^a-zA-Z0-9._-]+/g, '-');
+      return safe || 'stone';
+   }
+
+   async function exportTiltLoop() {
+      if (!renderBundle) return false;
+      if (typeof MediaRecorder === 'undefined' || typeof canvas.captureStream !== 'function') {
+         return false;
+      }
+      const exportLoopCount = 3;
+
+      if (!tiltPreRenderReady) {
+         requestTiltPreRender();
+         await waitForCondition(() => tiltPreRenderReady, 20000);
+      }
+
+      const prevAnimating = animating;
+      const prevAnimStartTime = animStartTime;
+      const prevTiltCyclePrevPhase = tiltCyclePrevPhase;
+      const prevTiltCycleFrameCount = tiltCycleFrameCount;
+      const prevTiltCycleAccumSec = tiltCycleAccumSec;
+      const prevTiltCycleCompletedCount = tiltCycleCompletedCount;
+
+      const exportFps = TILT_PRERENDER_SAMPLE_FPS;
+      const stream = canvas.captureStream(exportFps);
+      const mimeType = pickExportMimeType();
+      const recorderOptions = mimeType
+         ? { mimeType, videoBitsPerSecond: 8_000_000 }
+         : { videoBitsPerSecond: 8_000_000 };
+      const recorder = mimeType
+         ? new MediaRecorder(stream, recorderOptions)
+         : new MediaRecorder(stream, recorderOptions);
+
+      const chunks = [];
+      const stopped = new Promise((resolve, reject) => {
+         recorder.ondataavailable = (event) => {
+            if (event.data && event.data.size > 0) chunks.push(event.data);
+         };
+         recorder.onerror = () => reject(recorder.error || new Error('Recording failed'));
+         recorder.onstop = () => resolve();
+      });
+
+      try {
+         animating = true;
+         animStartTime = performance.now() * 0.001;
+         tiltCyclePrevPhase = null;
+         tiltCycleFrameCount = 0;
+         tiltCycleAccumSec = 0;
+         tiltCycleCompletedCount = 0;
+         requestRender();
+
+         recorder.start();
+         await delay(Math.ceil(TILT_ANIM_CYCLE_SEC * exportLoopCount * 1000) + 80);
+         if (recorder.state !== 'inactive') recorder.stop();
+         await stopped;
+
+         const blobType = recorder.mimeType || 'video/webm';
+         const blob = new Blob(chunks, { type: blobType });
+         if (blob.size === 0) return false;
+
+         const ext = blobType.includes('webm') ? 'webm' : 'mp4';
+         const baseName = makeExportBaseName(currentModelFilename);
+         const downloadUrl = URL.createObjectURL(blob);
+         const anchor = document.createElement('a');
+         anchor.href = downloadUrl;
+         anchor.download = `${baseName}-tilt-${exportLoopCount}loops-${Date.now()}.${ext}`;
+         document.body.appendChild(anchor);
+         anchor.click();
+         anchor.remove();
+         setTimeout(() => URL.revokeObjectURL(downloadUrl), 60_000);
+         return true;
+      } finally {
+         animating = prevAnimating;
+         animStartTime = prevAnimStartTime;
+         tiltCyclePrevPhase = prevTiltCyclePrevPhase;
+         tiltCycleFrameCount = prevTiltCycleFrameCount;
+         tiltCycleAccumSec = prevTiltCycleAccumSec;
+         tiltCycleCompletedCount = prevTiltCycleCompletedCount;
+         stream.getTracks().forEach((track) => track.stop());
+         requestRender();
+      }
+   }
+
    uiControls = buildUI(ui, {
       onReset() {
          targetRotX = 0; targetRotY = 0;
@@ -2132,6 +2289,7 @@ async function setupApp() {
          tiltCyclePrevPhase = null;
          tiltCycleFrameCount = 0;
          tiltCycleAccumSec = 0;
+         tiltCycleCompletedCount = 0;
          requestRender();
       },
       onTilt() {
@@ -2141,6 +2299,7 @@ async function setupApp() {
             tiltCyclePrevPhase = null;
             tiltCycleFrameCount = 0;
             tiltCycleAccumSec = 0;
+            tiltCycleCompletedCount = 0;
             tiltPreRenderRequested = false;
             tiltPreRenderReady = false;
             tiltPreRenderQueue = [];
@@ -2151,6 +2310,7 @@ async function setupApp() {
             tiltCyclePrevPhase = null;
             tiltCycleFrameCount = 0;
             tiltCycleAccumSec = 0;
+            tiltCycleCompletedCount = 0;
             tiltPreRenderRequested = false;
             tiltPreRenderReady = false;
             tiltPreRenderQueue = [];
@@ -2170,10 +2330,10 @@ async function setupApp() {
          requestRender();
       },
       onTiltAngleChanged(previousTiltDeg, nextTiltDeg) {
-         if (nextTiltDeg > previousTiltDeg + 1e-6) {
-            requestTiltPreRender();
-         }
          requestRender();
+      },
+      onExportTiltLoop() {
+         return exportTiltLoop();
       },
       onFileSelected(name, fileUrl) { loadModel(name, fileUrl); },
    });
@@ -2209,6 +2369,10 @@ async function setupApp() {
          targetRotY = quantizeOrientationAngle(targetRotY + dx);
          targetRotX = quantizeOrientationAngle(targetRotX + dy);
          lastX = ev.clientX; lastY = ev.clientY;
+      }
+      if (animating) {
+         const vTiltEl = panel.querySelector('#vTilt');
+         vTiltEl.click();
       }
       requestRender();
    });
@@ -2459,7 +2623,8 @@ async function setupApp() {
          const elapsed = time - animStartTime;
          const phase = ((elapsed % TILT_ANIM_CYCLE_SEC) + TILT_ANIM_CYCLE_SEC) % TILT_ANIM_CYCLE_SEC;
          if (tiltCyclePrevPhase !== null && phase < tiltCyclePrevPhase) {
-            if (tiltCycleAccumSec > 0) {
+            tiltCycleCompletedCount += 1;
+            if (tiltCycleAccumSec > 0 && tiltCycleCompletedCount >= 2) {
                tiltCycleAvgFps = tiltCycleFrameCount / tiltCycleAccumSec;
                if (tiltCycleAvgFps < TILT_PRERENDER_FPS_THRESHOLD && !tiltPreRenderRequested && !tiltPreRenderReady) {
                   requestTiltPreRender();
@@ -2473,13 +2638,10 @@ async function setupApp() {
          tiltCycleAccumSec += Math.max(dt, 0);
       } else {
          tiltCyclePrevPhase = null;
+         tiltCycleCompletedCount = 0;
       }
 
       const useTiltCache = animating && tiltPreRenderReady;
-
-      if (perfStatsVisible && fpsEl) {
-         // smoothed FPS is computed every frame for cache gating.
-      }
 
       const updateStartMs = performance.now();
       updateUniforms(time);

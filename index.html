@@ -100,6 +100,12 @@
             flex: 1;
             min-width: 0;
         }
+        #exportStatus {
+            margin-top: 6px;
+            font-size: 11px;
+            color: #aaa;
+            min-height: 1.2em;
+        }
         #fileNameEl { margin-top: 6px; font-size: 11px; color: #aaa; }
 
         /* ── Side panels (graph + facets) ───────────────────────────── */
@@ -346,6 +352,14 @@
         <!-- Right column: controls -->
         <div id="gemui">
             <h3>Gem Controls</h3>
+            <div class="row">
+                <label>Load File</label>
+                <div class="modes">
+                    <div class="mode" id="fileBtn" style="flex:1;cursor:pointer;">Choose File</div>
+                </div>
+                <div id="fileNameEl"></div>
+                <input type="file" id="uiFileInput" accept=".stl,.STL,.gem,.GEM,.gcs,.GCS" style="display:none">
+            </div>
 
             <div class="row">
                 <label>Gem Species</label>
@@ -425,13 +439,15 @@
             <hr class="divider">
 
             <div class="row">
-                <label>Load File</label>
+                <label>Export</label>
                 <div class="modes">
-                    <div class="mode" id="fileBtn" style="flex:1;cursor:pointer;">Choose File</div>
+                    <div class="mode" id="exportTiltBtn" style="flex:1;cursor:pointer;">Export Video</div>
                 </div>
-                <div id="fileNameEl"></div>
-                <input type="file" id="uiFileInput" accept=".stl,.STL,.gem,.GEM,.gcs,.GCS" style="display:none">
+                <div id="exportStatus"></div>
             </div>
+
+            <hr class="divider">
+
         </div><!-- #gemui -->
 
     </div><!-- #ui-shell -->
