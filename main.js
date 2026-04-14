@@ -782,6 +782,18 @@ function normalizeMesh(data) {
    return scale;
 }
 
+function computeMeshBoundsRadius(data) {
+   let maxRadiusSq = 0;
+   for (let i = 0; i < data.length; i += 7) {
+      const x = data[i + 0];
+      const y = data[i + 1];
+      const z = data[i + 2];
+      const radiusSq = x * x + y * y + z * z;
+      if (radiusSq > maxRadiusSq) maxRadiusSq = radiusSq;
+   }
+   return Math.sqrt(maxRadiusSq);
+}
+
 // ---------------------------------------------------------------------------
 // BVH Builder
 // Each triangle is stored as:
@@ -942,6 +954,7 @@ let animating = false, animStartTime = 0;
 
 // Current model GPU resources — replaced by loadModel()
 let renderBundle = null; // { bindGroup, graphBindGroups, vertexBuffer, triCount }
+let modelBoundsRadius = 1.0;
 
 // Reference to UI controls — set by setupApp(), used by loadModel()
 let uiControls = null;
@@ -975,6 +988,7 @@ const TILT_ANIM_CYCLE_SEC = TILT_ANIM_STEP_SEC * 2;
 const TILT_PRERENDER_SAMPLE_FPS = 60;
 const TILT_PRERENDER_FPS_THRESHOLD = 50;
 const TILT_PRERENDER_BUDGET_PER_FRAME = 2;
+const STONE_MARGIN_SCALE = 0.70;
 
 // ---------------------------------------------------------------------------
 // setupApp — one-time WebGPU + UI init; returns { loadModel }
@@ -1653,7 +1667,7 @@ async function setupApp() {
       const graphSweepStartMs = performance.now();
 
       // Graph renders at the currently selected focal length.
-      const SENSOR_HALF = 5 * Math.tan(Math.PI / 8); // ≈ 2.071 — same reference as main camera
+      const SENSOR_HALF = 5 * Math.tan(Math.PI / 8) * STONE_MARGIN_SCALE; // margin scales apparent framing
       const graphCamDist = ui.focalLength / 10;
       const graphFovY = 2 * Math.atan(SENSOR_HALF / graphCamDist);
       mat4.perspective(graphProjMat, graphFovY, GRAPH_SAMPLE_SIZE / GRAPH_SAMPLE_SIZE, 0.1, 200.0);
@@ -2076,6 +2090,7 @@ async function setupApp() {
          uiControls.setRI(stone.refractiveIndex);
 
       normalizeMesh(stone.vertexData);
+      modelBoundsRadius = Math.max(0.1, computeMeshBoundsRadius(stone.vertexData));
 
       const { nodeBuffer, triBuffer } = buildBVH(stone.vertexData, stone.triangleCount);
 
@@ -2134,12 +2149,14 @@ async function setupApp() {
             : `Facet notes are only available for .gem files`);
       }
       scheduleGraphUpdate('model load');
+      resize();
       requestRender();
    }
 
    // --- UI (built once; survives model swaps) ---
    let currentModelFilename = 'stone.gem';
    let framePending = false;
+   let exportFrameTap = null;
    const ROT_EPSILON = 1e-4;
 
    function shouldKeepRendering() {
@@ -2202,6 +2219,44 @@ async function setupApp() {
       return safe || 'stone';
    }
 
+   function computeStoneCropRect(srcWidth, srcHeight) {
+      const centerX = srcWidth * 0.5;
+      const centerY = srcHeight * 0.5;
+      const sensorHalf = 5 * Math.tan(Math.PI / 8) * STONE_MARGIN_SCALE;
+      const camDist = Math.max(0.2, ui.focalLength / 10);
+      const fitRadius = Math.max(0.1, modelBoundsRadius) * 1.12;
+      const depthFactor = camDist / Math.max(0.05, camDist - fitRadius);
+      const halfNdc = (fitRadius / sensorHalf) * depthFactor;
+      const halfPx = Math.max(24, halfNdc * srcHeight * 0.5);
+
+      let x = Math.floor(centerX - halfPx);
+      let y = Math.floor(centerY - halfPx);
+      let w = Math.ceil(halfPx * 2);
+      let h = Math.ceil(halfPx * 2);
+
+      if (x < 0) { w += x; x = 0; }
+      if (y < 0) { h += y; y = 0; }
+      w = Math.min(w, srcWidth - x);
+      h = Math.min(h, srcHeight - y);
+
+      if (w % 2 !== 0) w -= 1;
+      if (h % 2 !== 0) h -= 1;
+      w = Math.max(2, w);
+      h = Math.max(2, h);
+
+      return { x, y, w, h };
+   }
+
+   function fitEvenSize(width, height, maxLongEdge = 1280) {
+      const longEdge = Math.max(width, height);
+      const scale = longEdge > maxLongEdge ? (maxLongEdge / longEdge) : 1;
+      let outW = Math.max(2, Math.floor(width * scale));
+      let outH = Math.max(2, Math.floor(height * scale));
+      if (outW % 2 !== 0) outW -= 1;
+      if (outH % 2 !== 0) outH -= 1;
+      return { width: Math.max(2, outW), height: Math.max(2, outH) };
+   }
+
    async function exportTiltLoop() {
       if (!renderBundle) return false;
       if (typeof MediaRecorder === 'undefined' || typeof canvas.captureStream !== 'function') {
@@ -2222,7 +2277,29 @@ async function setupApp() {
       const prevTiltCycleCompletedCount = tiltCycleCompletedCount;
 
       const exportFps = TILT_PRERENDER_SAMPLE_FPS;
-      const stream = canvas.captureStream(exportFps);
+      const cropRect = computeStoneCropRect(canvas.width, canvas.height);
+      const exportSize = fitEvenSize(cropRect.w, cropRect.h, 1280);
+      const exportCanvas = document.createElement('canvas');
+      exportCanvas.width = exportSize.width;
+      exportCanvas.height = exportSize.height;
+      const exportCtx = exportCanvas.getContext('2d', { alpha: false });
+      if (!exportCtx) return false;
+      exportCtx.imageSmoothingEnabled = true;
+      exportCtx.imageSmoothingQuality = 'high';
+      const drawExportFrame = () => {
+         exportCtx.drawImage(
+            canvas,
+            cropRect.x,
+            cropRect.y,
+            cropRect.w,
+            cropRect.h,
+            0,
+            0,
+            exportCanvas.width,
+            exportCanvas.height,
+         );
+      };
+      const stream = exportCanvas.captureStream(exportFps);
       const mimeType = pickExportMimeType();
       const recorderOptions = mimeType
          ? { mimeType, videoBitsPerSecond: 8_000_000 }
@@ -2249,10 +2326,14 @@ async function setupApp() {
          tiltCycleCompletedCount = 0;
          requestRender();
 
+         drawExportFrame();
+         exportFrameTap = drawExportFrame;
+
          recorder.start();
          await delay(Math.ceil(TILT_ANIM_CYCLE_SEC * exportLoopCount * 1000) + 80);
          if (recorder.state !== 'inactive') recorder.stop();
          await stopped;
+         exportFrameTap = null;
 
          const blobType = recorder.mimeType || 'video/webm';
          const blob = new Blob(chunks, { type: blobType });
@@ -2276,6 +2357,7 @@ async function setupApp() {
          tiltCycleFrameCount = prevTiltCycleFrameCount;
          tiltCycleAccumSec = prevTiltCycleAccumSec;
          tiltCycleCompletedCount = prevTiltCycleCompletedCount;
+         exportFrameTap = null;
          stream.getTracks().forEach((track) => track.stop());
          requestRender();
       }
@@ -2322,6 +2404,7 @@ async function setupApp() {
          return animating;
       },
       onGraphParamsChanged() {
+         resize();
          scheduleGraphUpdate();
          requestRender();
       },
@@ -2586,7 +2669,7 @@ async function setupApp() {
       // Reference: fl=50mm → d=5 units, fov=45°. For other focal lengths:
       //   d = fl/10  (same angular size because fov narrows as d grows)
       //   fov = 2·atan(SENSOR_HALF / d)  where SENSOR_HALF = d_ref·tan(fov_ref/2)
-      const SENSOR_HALF = 5 * Math.tan(Math.PI / 8); // ≈ 2.071, constant across all fl
+      const SENSOR_HALF = 5 * Math.tan(Math.PI / 8) * STONE_MARGIN_SCALE; // margin scales apparent framing
       const camDist = ui.focalLength / 10;
       cameraPos[2] = camDist;
       mat4.lookAt(viewMat, [0, 0, camDist], [0, 0, 0], [0, 1, 0]);
@@ -2760,6 +2843,10 @@ async function setupApp() {
          device.queue.writeBuffer(uniformBuffer, 0, uniformScratch);
       }
 
+      if (exportFrameTap) {
+         exportFrameTap();
+      }
+
       if (perfStatsVisible) {
          frameCpuUpdateMsSmoothed = frameCpuUpdateMsSmoothed * 0.8 + (updateEndMs - updateStartMs) * 0.2;
          frameCpuDrawMsSmoothed = frameCpuDrawMsSmoothed * 0.8 + (drawEndMs - drawStartMs) * 0.2;
@@ -2799,12 +2886,31 @@ async function setupApp() {
    }
 
    // --- Resize ---
+   function computeFitCanvasCssSize(viewportWidth, viewportHeight) {
+      const side = Math.max(2, Math.floor(Math.min(viewportWidth, viewportHeight)));
+      return { width: side, height: side };
+   }
+
    function resize() {
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+      const fitCss = computeFitCanvasCssSize(viewportWidth, viewportHeight);
+
+      canvas.style.position = 'fixed';
+      canvas.style.width = `${fitCss.width}px`;
+      canvas.style.height = `${fitCss.height}px`;
+      canvas.style.left = `${Math.round((viewportWidth - fitCss.width) * 0.5)}px`;
+      canvas.style.top = `${Math.round((viewportHeight - fitCss.height) * 0.5)}px`;
+
       const dpr = Math.max(1, window.devicePixelRatio || 1);
-      const cssWidth = Math.max(1, canvas.clientWidth || window.innerWidth);
-      const cssHeight = Math.max(1, canvas.clientHeight || window.innerHeight);
-      const nextWidth = Math.max(1, Math.round(cssWidth * dpr));
-      const nextHeight = Math.max(1, Math.round(cssHeight * dpr));
+      const cssWidth = Math.max(1, fitCss.width);
+      const cssHeight = Math.max(1, fitCss.height);
+      let nextWidth = Math.max(1, Math.round(cssWidth * dpr));
+      let nextHeight = Math.max(1, Math.round(cssHeight * dpr));
+      if (nextWidth % 2 !== 0) nextWidth -= 1;
+      if (nextHeight % 2 !== 0) nextHeight -= 1;
+      nextWidth = Math.max(2, nextWidth);
+      nextHeight = Math.max(2, nextHeight);
 
       if (canvas.width === nextWidth && canvas.height === nextHeight) {
          return;
