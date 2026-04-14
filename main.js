@@ -1,4 +1,5 @@
-import { mat4, vec4 } from 'https://cdn.skypack.dev/gl-matrix';
+// import { mat4, vec4 } from 'https://cdn.skypack.dev/gl-matrix';
+import { mat4, vec4 } from './gl-matrix/esm/index.js';
 
 const shaderSource = await (await fetch('shaders.wgsl')).text();
 const computeShaderSource = await (await fetch('compute.wgsl')).text();
