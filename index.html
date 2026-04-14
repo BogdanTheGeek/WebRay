@@ -106,6 +106,21 @@
             color: #aaa;
             min-height: 1.2em;
         }
+        #exportProgress {
+            margin-top: 6px;
+            width: 100%;
+            height: 8px;
+            border-radius: 999px;
+            background: rgba(255,255,255,0.14);
+            overflow: hidden;
+            display: none;
+        }
+        #exportProgressFill {
+            width: 0%;
+            height: 100%;
+            background: #7eb8f7;
+            transition: width .12s linear;
+        }
         #fileNameEl { margin-top: 6px; font-size: 11px; color: #aaa; }
 
         /* ── Side panels (graph + facets) ───────────────────────────── */
@@ -440,10 +455,17 @@
 
             <div class="row">
                 <label>Export</label>
+                <select id="exportQualitySelect">
+                    <option value="400">400px 1 Mbps</option>
+                    <option value="800">800px 2 Mbps</option>
+                    <option value="1080" selected>1080px 12 Mbps</option>
+                    <option value="2160">2160px 24 Mbps</option>
+                </select>
                 <div class="modes">
                     <div class="mode" id="exportTiltBtn" style="flex:1;cursor:pointer;">Export Video</div>
                 </div>
                 <div id="exportStatus"></div>
+                <div id="exportProgress"><div id="exportProgressFill"></div></div>
             </div>
 
             <hr class="divider">
