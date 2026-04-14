@@ -1731,7 +1731,7 @@ async function setupApp() {
             view: graphDepthTexture.createView(),
             depthClearValue: 1.0,
             depthLoadOp: 'clear',
-            depthStoreOp: 'store',
+            depthStoreOp: 'discard',
          },
       });
       pass.setPipeline(graphPipeline);
@@ -2049,7 +2049,7 @@ async function setupApp() {
             view: depthTexture.createView(),
             depthClearValue: 1.0,
             depthLoadOp: 'clear',
-            depthStoreOp: 'store',
+            depthStoreOp: 'discard',
          },
       });
       renderPass.setPipeline(pipeline);
@@ -2848,7 +2848,7 @@ async function setupApp() {
                   view: exportDepthTexture.createView(),
                   depthClearValue: 1.0,
                   depthLoadOp: 'clear',
-                  depthStoreOp: 'store',
+                  depthStoreOp: 'discard',
                },
             });
             renderPass.setPipeline(pipeline);
@@ -3344,7 +3344,7 @@ async function setupApp() {
                   view: depthTexture.createView(),
                   depthClearValue: 1.0,
                   depthLoadOp: 'clear',
-                  depthStoreOp: 'store',
+                  depthStoreOp: 'discard',
                },
             };
             if (useGpuTimestampSample && frameTimestampQuerySet) {
