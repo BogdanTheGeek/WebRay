@@ -110,6 +110,7 @@ function buildUI(ui, cbs) {
          activeSwatch = el;
          ui.color = hexToRgb(hex);
          colorPicker.value = hex;
+         cbs.onRenderOutputChanged?.();
       });
       if (hex === '#ffffff') activeSwatch = el;
       swatchContainer.appendChild(el);
@@ -124,6 +125,7 @@ function buildUI(ui, cbs) {
       if (activeSwatch) activeSwatch.classList.remove('active');
       activeSwatch = null;
       ui.color = hexToRgb(colorPicker.value);
+      cbs.onRenderOutputChanged?.();
    });
    swatchContainer.appendChild(colorPicker);
 
@@ -135,6 +137,7 @@ function buildUI(ui, cbs) {
       riVal.textContent = ui.ri.toFixed(3);
       panel.querySelector('#gPreset').value = '-1';
       cbs.onGraphParamsChanged?.();
+      cbs.onRenderOutputChanged?.();
    });
 
    // --- COD slider ---
@@ -145,6 +148,7 @@ function buildUI(ui, cbs) {
       codVal.textContent = ui.cod.toFixed(3);
       panel.querySelector('#gPreset').value = '-1';
       cbs.onGraphParamsChanged?.();
+      cbs.onRenderOutputChanged?.();
    });
 
    // --- Preset dropdown ---
@@ -167,11 +171,13 @@ function buildUI(ui, cbs) {
       ui.color = hexToRgb(hex);
       colorPicker.value = hex;
       cbs.onGraphParamsChanged?.();
+      cbs.onRenderOutputChanged?.();
    });
 
    panel.querySelector('#exitColor').addEventListener('input', e => {
       ui.exitHighlight = hexToRgb(e.target.value);
       ui.exitStrength = 1.0; // Ensure it's visible when a colour is picked
+      cbs.onRenderOutputChanged?.();
    });
 
    // --- Light mode buttons ---
@@ -181,6 +187,7 @@ function buildUI(ui, cbs) {
       panel.querySelectorAll('#modes .mode').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       ui.lightMode = parseInt(btn.dataset.mode);
+      cbs.onRenderOutputChanged?.();
    });
 
    // --- Focal length slider ---
@@ -190,6 +197,7 @@ function buildUI(ui, cbs) {
       ui.focalLength = parseFloat(focalSlider.value);
       focalVal.textContent = `${ui.focalLength} mm`;
       cbs.onGraphParamsChanged?.();
+      cbs.onRenderOutputChanged?.();
    });
 
    // --- View buttons (Reset / Tilt) ---
@@ -207,8 +215,10 @@ function buildUI(ui, cbs) {
    const tiltSlider = panel.querySelector('#tiltAngle');
    const tiltVal = panel.querySelector('#tiltVal');
    tiltSlider.addEventListener('input', (e) => {
+      const prevTiltDeg = ui.tiltAngleDeg;
       ui.tiltAngleDeg = parseFloat(e.target.value);
       tiltVal.textContent = ui.tiltAngleDeg.toFixed(0);
+      cbs.onTiltAngleChanged?.(prevTiltDeg, ui.tiltAngleDeg);
    });
 
    // External API for model-loading to push updates into the live panel
@@ -919,6 +929,14 @@ const GRAPH_MODE_COUNT = GRAPH_MODES.length;
 const GRAPH_TILE_COUNT = GRAPH_TILT_COUNT * GRAPH_MODE_COUNT;
 const GRAPH_ATLAS_WIDTH = GRAPH_SAMPLE_SIZE * GRAPH_TILT_COUNT;
 const GRAPH_ATLAS_HEIGHT = GRAPH_SAMPLE_SIZE * GRAPH_MODE_COUNT;
+const ORIENTATION_CACHE_ANGLE_STEP_DEG = 0.05;
+const ORIENTATION_CACHE_MAX_ENTRIES = 1 / ORIENTATION_CACHE_ANGLE_STEP_DEG * 30 * 2; // 30° in each direction, both axes
+const ORIENTATION_CACHE_ANGLE_STEP_RAD = ORIENTATION_CACHE_ANGLE_STEP_DEG * Math.PI / 180.0;
+const TILT_ANIM_STEP_SEC = 1.2;
+const TILT_ANIM_CYCLE_SEC = TILT_ANIM_STEP_SEC * 2;
+const TILT_PRERENDER_SAMPLE_FPS = 60;
+const TILT_PRERENDER_FPS_THRESHOLD = 50;
+const TILT_PRERENDER_BUDGET_PER_FRAME = 2;
 
 // ---------------------------------------------------------------------------
 // setupApp — one-time WebGPU + UI init; returns { loadModel }
@@ -951,7 +969,56 @@ async function setupApp() {
 
    const context = canvas.getContext('webgpu');
    const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
-   context.configure({ device, format: canvasFormat, alphaMode: 'opaque' });
+
+   function bytesPerPixelForFormat(format) {
+      switch (format) {
+         case 'bgra8unorm':
+         case 'bgra8unorm-srgb':
+         case 'rgba8unorm':
+         case 'rgba8unorm-srgb':
+         case 'rgba8snorm':
+         case 'rgba8uint':
+         case 'rgba8sint':
+            return 4;
+         case 'rg16float':
+         case 'rg16uint':
+         case 'rg16sint':
+            return 4;
+         case 'rgba16float':
+         case 'rgba16uint':
+         case 'rgba16sint':
+            return 8;
+         case 'r16float':
+         case 'r16uint':
+         case 'r16sint':
+            return 2;
+         case 'r32float':
+         case 'r32uint':
+         case 'r32sint':
+            return 4;
+         case 'rg32float':
+         case 'rg32uint':
+         case 'rg32sint':
+            return 8;
+         case 'rgba32float':
+         case 'rgba32uint':
+         case 'rgba32sint':
+            return 16;
+         default:
+            return 4;
+      }
+   }
+   const cacheBytesPerPixel = bytesPerPixelForFormat(canvasFormat);
+
+   function estimateCacheTextureBytes(width, height, bytesPerPixel) {
+      return Math.max(0, Math.floor(width) * Math.floor(height) * bytesPerPixel);
+   }
+   context.configure({
+      device,
+      format: canvasFormat,
+      alphaMode: 'opaque',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
+   });
 
    // --- Pipeline (created once, reused for every model load) ---
    const shaderModule = device.createShaderModule({ code: shaderSource });
@@ -1692,6 +1759,265 @@ async function setupApp() {
       }, 150);
    }
 
+   const orientationFrameCache = new Map();
+   const orientationFrameCacheBytes = new Map();
+   let orientationCacheTotalBytes = 0;
+   let effectiveRenderRotX = 0;
+   let effectiveRenderRotY = 0;
+   const prewarmModelMat = mat4.create();
+   let tiltCyclePrevPhase = null;
+   let tiltCycleFrameCount = 0;
+   let tiltCycleAccumSec = 0;
+   let tiltCycleAvgFps = 0;
+   let tiltPreRenderRequested = false;
+   let tiltPreRenderReady = false;
+   let tiltPreRenderQueue = [];
+   let tiltPreRenderIndex = 0;
+   let tiltPreRenderBaseRotX = null;
+   let tiltPreRenderBaseRotY = null;
+   let prewarmOverlayEl = null;
+   let prewarmOverlayLabelEl = null;
+   let prewarmOverlayBarFillEl = null;
+
+   function ensurePrewarmOverlayElements() {
+      if (prewarmOverlayEl) return;
+      prewarmOverlayEl = document.createElement('div');
+      Object.assign(prewarmOverlayEl.style, {
+         position: 'fixed',
+         left: '16px',
+         top: '16px',
+         width: '148px',
+         padding: '7px 8px',
+         borderRadius: '6px',
+         background: 'rgba(0,0,0,0.62)',
+         color: '#e8e8e8',
+         font: '11px/1.2 system-ui, sans-serif',
+         zIndex: '205',
+         pointerEvents: 'none',
+         display: 'none',
+      });
+
+      prewarmOverlayLabelEl = document.createElement('div');
+      prewarmOverlayLabelEl.textContent = 'Prewarming';
+      prewarmOverlayLabelEl.style.marginBottom = '5px';
+      prewarmOverlayEl.appendChild(prewarmOverlayLabelEl);
+
+      const barBgEl = document.createElement('div');
+      Object.assign(barBgEl.style, {
+         width: '100%',
+         height: '6px',
+         borderRadius: '4px',
+         background: 'rgba(255,255,255,0.14)',
+         overflow: 'hidden',
+      });
+      prewarmOverlayBarFillEl = document.createElement('div');
+      Object.assign(prewarmOverlayBarFillEl.style, {
+         width: '0%',
+         height: '100%',
+         borderRadius: '4px',
+         background: '#7eb8f7',
+      });
+      barBgEl.appendChild(prewarmOverlayBarFillEl);
+      prewarmOverlayEl.appendChild(barBgEl);
+      document.body.appendChild(prewarmOverlayEl);
+   }
+
+   function updatePrewarmOverlay() {
+      ensurePrewarmOverlayElements();
+      if (!prewarmOverlayEl || !prewarmOverlayLabelEl || !prewarmOverlayBarFillEl) return;
+
+      const active = tiltPreRenderRequested && !tiltPreRenderReady;
+      if (!active) {
+         prewarmOverlayEl.style.display = 'none';
+         return;
+      }
+
+      const total = Math.max(1, tiltPreRenderQueue.length);
+      const done = Math.min(tiltPreRenderIndex, total);
+      const pct = (done / total) * 100;
+      prewarmOverlayLabelEl.textContent = `Prewarming ${done}/${total}`;
+      prewarmOverlayBarFillEl.style.width = `${pct.toFixed(1)}%`;
+
+      if (fpsEl && perfStatsVisible) {
+         prewarmOverlayEl.style.top = `${16 + fpsEl.offsetHeight + 8}px`;
+      } else {
+         prewarmOverlayEl.style.top = '16px';
+      }
+      prewarmOverlayEl.style.display = 'block';
+   }
+
+   function invalidateOrientationCache() {
+      for (const texture of orientationFrameCache.values()) {
+         texture.destroy();
+      }
+      orientationFrameCache.clear();
+      orientationFrameCacheBytes.clear();
+      orientationCacheTotalBytes = 0;
+      tiltPreRenderRequested = false;
+      tiltPreRenderReady = false;
+      tiltPreRenderQueue = [];
+      tiltPreRenderIndex = 0;
+      tiltPreRenderBaseRotX = null;
+      tiltPreRenderBaseRotY = null;
+      updatePrewarmOverlay();
+   }
+
+   function orientationCacheKey(rotX, rotY) {
+      const xDeg = rotX * 180.0 / Math.PI;
+      const yDeg = rotY * 180.0 / Math.PI;
+      const qx = Math.round(xDeg / ORIENTATION_CACHE_ANGLE_STEP_DEG) * ORIENTATION_CACHE_ANGLE_STEP_DEG;
+      const qy = Math.round(yDeg / ORIENTATION_CACHE_ANGLE_STEP_DEG) * ORIENTATION_CACHE_ANGLE_STEP_DEG;
+      return `${qx.toFixed(2)}:${qy.toFixed(2)}`;
+   }
+
+   function quantizeOrientationAngle(angleRad) {
+      return Math.round(angleRad / ORIENTATION_CACHE_ANGLE_STEP_RAD) * ORIENTATION_CACHE_ANGLE_STEP_RAD;
+   }
+
+   function sampleTiltAnimation(timeInCycleSec, ampRad) {
+      const cycle = ((timeInCycleSec % TILT_ANIM_CYCLE_SEC) + TILT_ANIM_CYCLE_SEC) % TILT_ANIM_CYCLE_SEC;
+      const step = Math.floor(cycle / TILT_ANIM_STEP_SEC);
+      const frac = (cycle % TILT_ANIM_STEP_SEC) / TILT_ANIM_STEP_SEC;
+      const bell = Math.sin(frac * Math.PI);
+      return {
+         x: step === 0 ? bell * ampRad : 0,
+         y: step === 1 ? bell * ampRad : 0,
+      };
+   }
+
+   function buildTiltPreRenderQueue(baseRotX, baseRotY, ampRad) {
+      const keys = new Set();
+      const queue = [];
+      const addFrame = (rotX, rotY) => {
+         const qx = quantizeOrientationAngle(rotX);
+         const qy = quantizeOrientationAngle(rotY);
+         const key = orientationCacheKey(qx, qy);
+         if (keys.has(key)) return;
+         keys.add(key);
+         queue.push({ key, rotX: qx, rotY: qy });
+      };
+
+      const frameCount = Math.max(1, Math.round(TILT_ANIM_CYCLE_SEC * TILT_PRERENDER_SAMPLE_FPS));
+      for (let i = 0; i <= frameCount; i++) {
+         const tCycle = (i / frameCount) * TILT_ANIM_CYCLE_SEC;
+         const animSample = sampleTiltAnimation(tCycle, ampRad);
+         addFrame(baseRotX + animSample.x, baseRotY + animSample.y);
+      }
+
+      return queue;
+   }
+
+   function requestTiltPreRender() {
+      if (!renderBundle) return;
+      const baseRotX = quantizeOrientationAngle(currentRotX);
+      const baseRotY = quantizeOrientationAngle(currentRotY);
+      tiltPreRenderBaseRotX = baseRotX;
+      tiltPreRenderBaseRotY = baseRotY;
+      const ampRad = ui.tiltAngleDeg * Math.PI / 180.0;
+      const fullQueue = buildTiltPreRenderQueue(baseRotX, baseRotY, ampRad);
+      const missingQueue = fullQueue.filter(item => !orientationFrameCache.has(item.key));
+      tiltPreRenderQueue = missingQueue;
+      tiltPreRenderIndex = 0;
+      tiltPreRenderRequested = missingQueue.length > 0;
+      tiltPreRenderReady = missingQueue.length === 0;
+      updatePrewarmOverlay();
+      requestRender();
+   }
+
+   function writeUniformsForOrientation(rotX, rotY, time) {
+      mat4.identity(prewarmModelMat);
+      mat4.rotateX(prewarmModelMat, prewarmModelMat, rotX);
+      mat4.rotateY(prewarmModelMat, prewarmModelMat, rotY);
+      packUniformData(
+         uniformScratch,
+         prewarmModelMat,
+         projMat,
+         time,
+         ui.lightMode,
+         0.0,
+         ui.lightMode === 4 ? 1.0 : 0.0,
+      );
+      device.queue.writeBuffer(uniformBuffer, 0, uniformScratch);
+   }
+
+   function renderOrientationToCache(cacheItem, time, bindGroup, vertexBuffer, triCount) {
+      const cacheTexture = device.createTexture({
+         size: [canvas.width, canvas.height],
+         format: canvasFormat,
+         usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+      });
+      const commandEncoder = device.createCommandEncoder();
+      const renderPass = commandEncoder.beginRenderPass({
+         colorAttachments: [{
+            view: cacheTexture.createView(),
+            clearValue: { r: 0.05, g: 0.05, b: 0.05, a: 1.0 },
+            loadOp: 'clear',
+            storeOp: 'store',
+         }],
+         depthStencilAttachment: {
+            view: depthTexture.createView(),
+            depthClearValue: 1.0,
+            depthLoadOp: 'clear',
+            depthStoreOp: 'store',
+         },
+      });
+      renderPass.setPipeline(pipeline);
+      renderPass.setBindGroup(0, bindGroup);
+      renderPass.setVertexBuffer(0, vertexBuffer);
+      renderPass.draw(triCount * 3);
+      renderPass.end();
+      device.queue.submit([commandEncoder.finish()]);
+
+      const cacheTextureBytes = estimateCacheTextureBytes(canvas.width, canvas.height, cacheBytesPerPixel);
+      putOrientationCache(cacheItem.key, cacheTexture, cacheTextureBytes);
+   }
+
+   function advanceTiltPreRender(time, bindGroup, vertexBuffer, triCount) {
+      if (!tiltPreRenderRequested || tiltPreRenderReady || !renderBundle) return;
+      if (tiltPreRenderIndex >= tiltPreRenderQueue.length) {
+         tiltPreRenderRequested = false;
+         tiltPreRenderReady = true;
+         updatePrewarmOverlay();
+         return;
+      }
+      let renderedCount = 0;
+      while (renderedCount < TILT_PRERENDER_BUDGET_PER_FRAME && tiltPreRenderIndex < tiltPreRenderQueue.length) {
+         const cacheItem = tiltPreRenderQueue[tiltPreRenderIndex++];
+         if (orientationFrameCache.has(cacheItem.key)) continue;
+         writeUniformsForOrientation(cacheItem.rotX, cacheItem.rotY, time);
+         renderOrientationToCache(cacheItem, time, bindGroup, vertexBuffer, triCount);
+         renderedCount++;
+      }
+      if (tiltPreRenderIndex >= tiltPreRenderQueue.length) {
+         tiltPreRenderRequested = false;
+         tiltPreRenderReady = true;
+      }
+      updatePrewarmOverlay();
+   }
+
+   function putOrientationCache(key, texture, bytes) {
+      const existing = orientationFrameCache.get(key);
+      if (existing) {
+         existing.destroy();
+         const prevBytes = orientationFrameCacheBytes.get(key) ?? 0;
+         orientationCacheTotalBytes = Math.max(0, orientationCacheTotalBytes - prevBytes);
+         orientationFrameCache.delete(key);
+         orientationFrameCacheBytes.delete(key);
+      }
+      orientationFrameCache.set(key, texture);
+      orientationFrameCacheBytes.set(key, bytes);
+      orientationCacheTotalBytes += bytes;
+      while (orientationFrameCache.size > ORIENTATION_CACHE_MAX_ENTRIES) {
+         const oldestKey = orientationFrameCache.keys().next().value;
+         const oldestTex = orientationFrameCache.get(oldestKey);
+         const oldestBytes = orientationFrameCacheBytes.get(oldestKey) ?? 0;
+         if (oldestTex) oldestTex.destroy();
+         orientationFrameCache.delete(oldestKey);
+         orientationFrameCacheBytes.delete(oldestKey);
+         orientationCacheTotalBytes = Math.max(0, orientationCacheTotalBytes - oldestBytes);
+      }
+   }
+
    // -------------------------------------------------------------------------
    // loadModel — swap mesh buffers; pipeline and UI are untouched.
    // -------------------------------------------------------------------------
@@ -1747,6 +2073,7 @@ async function setupApp() {
       }));
 
       renderBundle = { bindGroup, graphBindGroups, vertexBuffer, triCount: stone.triangleCount };
+      invalidateOrientationCache();
 
       // Push RI and filename into the live panel
       if (stone.refractiveIndex && stone.refractiveIndex > 1.0) {
@@ -1777,7 +2104,8 @@ async function setupApp() {
    function shouldKeepRendering() {
       const rotSettling = Math.abs(targetRotX - currentRotX) > ROT_EPSILON
          || Math.abs(targetRotY - currentRotY) > ROT_EPSILON;
-      return animating || dragPointerId !== null || rotSettling;
+      const prewarmPending = tiltPreRenderRequested && !tiltPreRenderReady;
+      return animating || dragPointerId !== null || rotSettling || prewarmPending;
    }
 
    function requestRender() {
@@ -1791,12 +2119,34 @@ async function setupApp() {
          targetRotX = 0; targetRotY = 0;
          currentRotX = 0; currentRotY = 0;
          animating = false;
+         tiltCyclePrevPhase = null;
+         tiltCycleFrameCount = 0;
+         tiltCycleAccumSec = 0;
          requestRender();
       },
       onTilt() {
          animating = !animating;
          if (animating) {
             animStartTime = performance.now() * 0.001;
+            tiltCyclePrevPhase = null;
+            tiltCycleFrameCount = 0;
+            tiltCycleAccumSec = 0;
+            tiltPreRenderRequested = false;
+            tiltPreRenderReady = false;
+            tiltPreRenderQueue = [];
+            tiltPreRenderIndex = 0;
+            tiltPreRenderBaseRotX = null;
+            tiltPreRenderBaseRotY = null;
+         } else {
+            tiltCyclePrevPhase = null;
+            tiltCycleFrameCount = 0;
+            tiltCycleAccumSec = 0;
+            tiltPreRenderRequested = false;
+            tiltPreRenderReady = false;
+            tiltPreRenderQueue = [];
+            tiltPreRenderIndex = 0;
+            tiltPreRenderBaseRotX = null;
+            tiltPreRenderBaseRotY = null;
          }
          requestRender();
          return animating;
@@ -1805,13 +2155,18 @@ async function setupApp() {
          scheduleGraphUpdate();
          requestRender();
       },
+      onRenderOutputChanged() {
+         invalidateOrientationCache();
+         requestRender();
+      },
+      onTiltAngleChanged(previousTiltDeg, nextTiltDeg) {
+         if (nextTiltDeg > previousTiltDeg + 1e-6) {
+            requestTiltPreRender();
+         }
+         requestRender();
+      },
       onFileSelected(name, fileUrl) { loadModel(name, fileUrl); },
    });
-
-   const uiPanel = document.getElementById('gemui');
-   uiPanel?.addEventListener('input', requestRender, { passive: true });
-   uiPanel?.addEventListener('change', requestRender, { passive: true });
-   uiPanel?.addEventListener('click', requestRender, { passive: true });
 
    // --- Pointer (canvas rotation) ---
    // setPointerCapture ensures move/up events are delivered even when the
@@ -1832,7 +2187,7 @@ async function setupApp() {
       dragPointerId = null;
       requestRender();
    }
-   gpuCanvas.addEventListener('pointerup',     endDrag);
+   gpuCanvas.addEventListener('pointerup', endDrag);
    gpuCanvas.addEventListener('pointercancel', endDrag);
 
    gpuCanvas.addEventListener('pointermove', (e) => {
@@ -1841,7 +2196,8 @@ async function setupApp() {
       for (const ev of events) {
          const dx = ((ev.clientX - lastX) / 500) * Math.PI;
          const dy = ((ev.clientY - lastY) / 500) * Math.PI * 0.5;
-         targetRotY += dx; targetRotX += dy;
+         targetRotY = quantizeOrientationAngle(targetRotY + dx);
+         targetRotX = quantizeOrientationAngle(targetRotX + dy);
          lastX = ev.clientX; lastY = ev.clientY;
       }
       requestRender();
@@ -1889,24 +2245,122 @@ async function setupApp() {
 
    // --- FPS overlay (debug only) ---
    const fpsEl = document.getElementById('fpsOverlay');
+   const FRAME_PLOT_WINDOW_SEC = 5.0;
+   const FRAME_PLOT_WIDTH = 180;
+   const FRAME_PLOT_HEIGHT = 48;
    let perfStatsVisible = false;
+   let perfStatsTextEl = null;
+   let perfStatsPlotCanvas = null;
+   let perfStatsPlotCtx = null;
+   const frameTimeHistory = [];
 
-   let fpsSmoothed = 0, lastFpsUpdate = 0, lastFrameTime = performance.now() * 0.001;
+   let fpsSmoothed = 60, lastFpsUpdate = 0, lastFrameTime = performance.now() * 0.001;
    let frameCpuTotalMsSmoothed = 0;
    let frameCpuUpdateMsSmoothed = 0;
    let frameCpuDrawMsSmoothed = 0;
    let frameCpuSubmitMsSmoothed = 0;
+   let cachePresentSubmitMsSmoothed = 0;
+   let shaderSubmitMsSmoothed = 0;
    let graphSweepMsSmoothed = 0;
    let frameGpuMsSmoothed = 0;
    let frameGpuReadPending = false;
    let lastGpuSampleTime = 0;
+   let refreshHzEstimate = 60;
 
    function setPerfStatsVisible(visible) {
       perfStatsVisible = visible;
       if (!fpsEl) return;
+      ensurePerfOverlayElements();
       fpsEl.style.display = perfStatsVisible ? 'block' : 'none';
-      if (!perfStatsVisible) fpsEl.textContent = '';
+      if (!perfStatsVisible) {
+         if (perfStatsTextEl) perfStatsTextEl.textContent = '';
+         if (perfStatsPlotCtx) {
+            perfStatsPlotCtx.clearRect(0, 0, FRAME_PLOT_WIDTH, FRAME_PLOT_HEIGHT);
+         }
+      }
+      updatePrewarmOverlay();
       lastFpsUpdate = performance.now() * 0.001;
+   }
+
+   function ensurePerfOverlayElements() {
+      if (!fpsEl) return;
+      if (!perfStatsTextEl) {
+         perfStatsTextEl = document.createElement('div');
+         fpsEl.appendChild(perfStatsTextEl);
+      }
+      if (!perfStatsPlotCanvas) {
+         perfStatsPlotCanvas = document.createElement('canvas');
+         perfStatsPlotCanvas.width = FRAME_PLOT_WIDTH;
+         perfStatsPlotCanvas.height = FRAME_PLOT_HEIGHT;
+         perfStatsPlotCanvas.style.display = 'block';
+         perfStatsPlotCanvas.style.marginTop = '6px';
+         perfStatsPlotCanvas.style.width = `${FRAME_PLOT_WIDTH}px`;
+         perfStatsPlotCanvas.style.height = `${FRAME_PLOT_HEIGHT}px`;
+         perfStatsPlotCanvas.style.borderRadius = '3px';
+         perfStatsPlotCanvas.style.background = 'rgba(255,255,255,0.04)';
+         fpsEl.appendChild(perfStatsPlotCanvas);
+         perfStatsPlotCtx = perfStatsPlotCanvas.getContext('2d');
+      }
+   }
+
+   function pushFrameTimeSample(timeSec, deltaSec) {
+      frameTimeHistory.push({ t: timeSec, ms: deltaSec * 1000.0 });
+      const cutoff = timeSec - FRAME_PLOT_WINDOW_SEC;
+      while (frameTimeHistory.length > 0 && frameTimeHistory[0].t < cutoff) {
+         frameTimeHistory.shift();
+      }
+   }
+
+   function drawFrameTimePlot(nowSec) {
+      if (!perfStatsPlotCtx || !perfStatsPlotCanvas) return;
+
+      const w = FRAME_PLOT_WIDTH;
+      const h = FRAME_PLOT_HEIGHT;
+      const ctx = perfStatsPlotCtx;
+      ctx.clearRect(0, 0, w, h);
+
+      if (frameTimeHistory.length < 2) return;
+
+      let maxMs = 0;
+      for (const s of frameTimeHistory) maxMs = Math.max(maxMs, s.ms);
+      const yMax = Math.max(16.7, Math.min(80.0, maxMs * 1.1));
+
+      const ms16 = 16.7;
+      const ms33 = 33.3;
+      ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+      ctx.lineWidth = 1;
+      if (ms16 <= yMax) {
+         const y16 = h - (ms16 / yMax) * h;
+         ctx.beginPath(); ctx.moveTo(0, y16); ctx.lineTo(w, y16); ctx.stroke();
+      }
+      if (ms33 <= yMax) {
+         const y33 = h - (ms33 / yMax) * h;
+         ctx.beginPath(); ctx.moveTo(0, y33); ctx.lineTo(w, y33); ctx.stroke();
+      }
+
+      const minT = nowSec - FRAME_PLOT_WINDOW_SEC;
+      const pointForSample = (sample) => ({
+         x: ((sample.t - minT) / FRAME_PLOT_WINDOW_SEC) * w,
+         y: h - (Math.min(sample.ms, yMax) / yMax) * h,
+      });
+
+      const colorForMs = (ms) => {
+         if (ms < 17) return '#59e35f';
+         if (ms < 34) return '#f5c842';
+         return '#ff5f5f';
+      };
+
+      ctx.lineWidth = 1.5;
+      for (let i = 1; i < frameTimeHistory.length; i++) {
+         const prev = pointForSample(frameTimeHistory[i - 1]);
+         const currSample = frameTimeHistory[i];
+         const curr = pointForSample(currSample);
+         ctx.strokeStyle = colorForMs(currSample.ms);
+         ctx.beginPath();
+         ctx.moveTo(prev.x, prev.y);
+         ctx.lineTo(curr.x, curr.y);
+         ctx.stroke();
+      }
    }
 
    if (DEBUG) {
@@ -1920,28 +2374,38 @@ async function setupApp() {
          });
       }
    }
+   updatePrewarmOverlay();
 
    // --- Uniforms ---
    function updateUniforms(time) {
       let animX = 0, animY = 0;
       if (animating) {
-         const STEP = 1.2;
-         const elapsed = time - animStartTime;
-         const cycle = elapsed % (STEP * 2);
-         const step = Math.floor(cycle / STEP);
-         const frac = (cycle % STEP) / STEP;
-         const bell = Math.sin(frac * Math.PI);
+         let elapsed = time - animStartTime;
+         if (tiltPreRenderReady) {
+            elapsed = Math.round(elapsed * TILT_PRERENDER_SAMPLE_FPS) / TILT_PRERENDER_SAMPLE_FPS;
+         }
+         const animSample = sampleTiltAnimation(elapsed, ui.tiltAngleDeg * Math.PI / 180.0);
          const amp = ui.tiltAngleDeg * Math.PI / 180.0;
-         animX = step === 0 ? bell * amp : 0;
-         animY = step === 1 ? bell * amp : 0;
+         animX = Math.min(Math.max(animSample.x, 0), amp);
+         animY = Math.min(Math.max(animSample.y, 0), amp);
       }
 
       currentRotX += (targetRotX - currentRotX) * 0.1;
       currentRotY += (targetRotY - currentRotY) * 0.1;
 
+      const baseRotX = (animating && tiltPreRenderReady && tiltPreRenderBaseRotX !== null)
+         ? tiltPreRenderBaseRotX
+         : currentRotX;
+      const baseRotY = (animating && tiltPreRenderReady && tiltPreRenderBaseRotY !== null)
+         ? tiltPreRenderBaseRotY
+         : currentRotY;
+
+      effectiveRenderRotX = quantizeOrientationAngle(baseRotX + animX);
+      effectiveRenderRotY = quantizeOrientationAngle(baseRotY + animY);
+
       mat4.identity(modelMat);
-      mat4.rotateX(modelMat, modelMat, currentRotX + animX);
-      mat4.rotateY(modelMat, modelMat, currentRotY + animY);
+      mat4.rotateX(modelMat, modelMat, effectiveRenderRotX);
+      mat4.rotateY(modelMat, modelMat, effectiveRenderRotY);
 
       const aspect = canvas.width / canvas.height;
       // Focal length: maintain stone size by scaling camera distance proportionally.
@@ -1973,10 +2437,38 @@ async function setupApp() {
       const frameStartMs = performance.now();
       const time = performance.now() * 0.001;
 
+      const dt = time - lastFrameTime;
+      lastFrameTime = time;
+      pushFrameTimeSample(time, dt);
+      const instantFps = dt > 0 ? (1 / dt) : refreshHzEstimate;
+      const clampedFps = Math.min(240, Math.max(10, instantFps));
+      fpsSmoothed = fpsSmoothed * 0.9 + clampedFps * 0.1;
+      refreshHzEstimate = Math.max(clampedFps, refreshHzEstimate * 0.995);
+
+      if (animating) {
+         const elapsed = time - animStartTime;
+         const phase = ((elapsed % TILT_ANIM_CYCLE_SEC) + TILT_ANIM_CYCLE_SEC) % TILT_ANIM_CYCLE_SEC;
+         if (tiltCyclePrevPhase !== null && phase < tiltCyclePrevPhase) {
+            if (tiltCycleAccumSec > 0) {
+               tiltCycleAvgFps = tiltCycleFrameCount / tiltCycleAccumSec;
+               if (tiltCycleAvgFps < TILT_PRERENDER_FPS_THRESHOLD && !tiltPreRenderRequested && !tiltPreRenderReady) {
+                  requestTiltPreRender();
+               }
+            }
+            tiltCycleFrameCount = 0;
+            tiltCycleAccumSec = 0;
+         }
+         tiltCyclePrevPhase = phase;
+         tiltCycleFrameCount += 1;
+         tiltCycleAccumSec += Math.max(dt, 0);
+      } else {
+         tiltCyclePrevPhase = null;
+      }
+
+      const useTiltCache = animating && tiltPreRenderReady;
+
       if (perfStatsVisible && fpsEl) {
-         const dt = time - lastFrameTime;
-         lastFrameTime = time;
-         fpsSmoothed = fpsSmoothed * 0.9 + (dt > 0 ? 1 / dt : 0) * 0.1;
+         // smoothed FPS is computed every frame for cache gating.
       }
 
       const updateStartMs = performance.now();
@@ -1990,62 +2482,110 @@ async function setupApp() {
       if (renderBundle) {
          const { bindGroup, vertexBuffer, triCount } = renderBundle;
          const canvasTexture = context.getCurrentTexture();
-         const commandEncoder = device.createCommandEncoder();
-         const useGpuTimestampSample = perfStatsVisible && hasGpuTimestamps
-            && !frameGpuReadPending
-            && (time - lastGpuSampleTime) >= 0.25;
-         const renderPassDescriptor = {
-            colorAttachments: [{
-               view: canvasTexture.createView(),
-               clearValue: { r: 0.05, g: 0.05, b: 0.05, a: 1.0 },
-               loadOp: 'clear',
-               storeOp: 'store',
-            }],
-            depthStencilAttachment: {
-               view: depthTexture.createView(),
-               depthClearValue: 1.0,
-               depthLoadOp: 'clear',
-               depthStoreOp: 'store',
-            },
-         };
-         if (useGpuTimestampSample && frameTimestampQuerySet) {
-            renderPassDescriptor.timestampWrites = {
-               querySet: frameTimestampQuerySet,
-               beginningOfPassWriteIndex: 0,
-               endOfPassWriteIndex: 1,
+         const cacheKey = useTiltCache ? orientationCacheKey(effectiveRenderRotX, effectiveRenderRotY) : null;
+         const cachedTexture = cacheKey ? orientationFrameCache.get(cacheKey) : null;
+
+         if (cachedTexture) {
+            const copyEncoder = device.createCommandEncoder();
+            copyEncoder.copyTextureToTexture(
+               { texture: cachedTexture },
+               { texture: canvasTexture },
+               [canvas.width, canvas.height, 1],
+            );
+            const submitStartMs = performance.now();
+            device.queue.submit([copyEncoder.finish()]);
+            const submitEndMs = performance.now();
+            const submitMs = submitEndMs - submitStartMs;
+            frameCpuSubmitMsSmoothed = frameCpuSubmitMsSmoothed * 0.8 + submitMs * 0.2;
+            cachePresentSubmitMsSmoothed = cachePresentSubmitMsSmoothed * 0.8 + submitMs * 0.2;
+         } else {
+            const commandEncoder = device.createCommandEncoder();
+            const useGpuTimestampSample = perfStatsVisible && hasGpuTimestamps
+               && !frameGpuReadPending
+               && (time - lastGpuSampleTime) >= 0.25;
+            const renderPassDescriptor = {
+               colorAttachments: [{
+                  view: canvasTexture.createView(),
+                  clearValue: { r: 0.05, g: 0.05, b: 0.05, a: 1.0 },
+                  loadOp: 'clear',
+                  storeOp: 'store',
+               }],
+               depthStencilAttachment: {
+                  view: depthTexture.createView(),
+                  depthClearValue: 1.0,
+                  depthLoadOp: 'clear',
+                  depthStoreOp: 'store',
+               },
             };
-         }
-         const renderPass = commandEncoder.beginRenderPass(renderPassDescriptor);
-         renderPass.setPipeline(pipeline);
-         renderPass.setBindGroup(0, bindGroup);
-         renderPass.setVertexBuffer(0, vertexBuffer);
-         renderPass.draw(triCount * 3);
-         renderPass.end();
+            if (useGpuTimestampSample && frameTimestampQuerySet) {
+               renderPassDescriptor.timestampWrites = {
+                  querySet: frameTimestampQuerySet,
+                  beginningOfPassWriteIndex: 0,
+                  endOfPassWriteIndex: 1,
+               };
+            }
+            const renderPass = commandEncoder.beginRenderPass(renderPassDescriptor);
+            renderPass.setPipeline(pipeline);
+            renderPass.setBindGroup(0, bindGroup);
+            renderPass.setVertexBuffer(0, vertexBuffer);
+            renderPass.draw(triCount * 3);
+            renderPass.end();
 
-         if (useGpuTimestampSample && frameTimestampQuerySet && frameTimestampResolveBuffer && frameTimestampReadbackBuffer) {
-            commandEncoder.resolveQuerySet(frameTimestampQuerySet, 0, 2, frameTimestampResolveBuffer, 0);
-            commandEncoder.copyBufferToBuffer(frameTimestampResolveBuffer, 0, frameTimestampReadbackBuffer, 0, 16);
+            if (cacheKey) {
+               const cacheTexture = device.createTexture({
+                  size: [canvas.width, canvas.height],
+                  format: canvasFormat,
+                  usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC,
+               });
+               const cacheTextureBytes = estimateCacheTextureBytes(canvas.width, canvas.height, cacheBytesPerPixel);
+               commandEncoder.copyTextureToTexture(
+                  { texture: canvasTexture },
+                  { texture: cacheTexture },
+                  [canvas.width, canvas.height, 1],
+               );
+               putOrientationCache(cacheKey, cacheTexture, cacheTextureBytes);
+            }
+
+            if (useGpuTimestampSample && frameTimestampQuerySet && frameTimestampResolveBuffer && frameTimestampReadbackBuffer) {
+               commandEncoder.resolveQuerySet(frameTimestampQuerySet, 0, 2, frameTimestampResolveBuffer, 0);
+               commandEncoder.copyBufferToBuffer(frameTimestampResolveBuffer, 0, frameTimestampReadbackBuffer, 0, 16);
+            }
+
+            const submitStartMs = performance.now();
+            device.queue.submit([commandEncoder.finish()]);
+            const submitEndMs = performance.now();
+            const submitMs = submitEndMs - submitStartMs;
+            frameCpuSubmitMsSmoothed = frameCpuSubmitMsSmoothed * 0.8 + submitMs * 0.2;
+            shaderSubmitMsSmoothed = shaderSubmitMsSmoothed * 0.8 + submitMs * 0.2;
+
+            if (useGpuTimestampSample && frameTimestampReadbackBuffer) {
+               frameGpuReadPending = true;
+               lastGpuSampleTime = time;
+               frameTimestampReadbackBuffer.mapAsync(GPUMapMode.READ).then(() => {
+                  const data = new BigUint64Array(frameTimestampReadbackBuffer.getMappedRange());
+                  const deltaTicks = Number(data[1] - data[0]);
+                  frameTimestampReadbackBuffer.unmap();
+                  const gpuMs = (deltaTicks * queueTimestampPeriod) / 1e6;
+                  frameGpuMsSmoothed = frameGpuMsSmoothed * 0.8 + gpuMs * 0.2;
+                  frameGpuReadPending = false;
+               }).catch(() => {
+                  frameGpuReadPending = false;
+               });
+            }
          }
 
-         const submitStartMs = performance.now();
-         device.queue.submit([commandEncoder.finish()]);
-         const submitEndMs = performance.now();
-         frameCpuSubmitMsSmoothed = frameCpuSubmitMsSmoothed * 0.8 + (submitEndMs - submitStartMs) * 0.2;
+         advanceTiltPreRender(time, bindGroup, vertexBuffer, triCount);
 
-         if (useGpuTimestampSample && frameTimestampReadbackBuffer) {
-            frameGpuReadPending = true;
-            lastGpuSampleTime = time;
-            frameTimestampReadbackBuffer.mapAsync(GPUMapMode.READ).then(() => {
-               const data = new BigUint64Array(frameTimestampReadbackBuffer.getMappedRange());
-               const deltaTicks = Number(data[1] - data[0]);
-               frameTimestampReadbackBuffer.unmap();
-               const gpuMs = (deltaTicks * queueTimestampPeriod) / 1e6;
-               frameGpuMsSmoothed = frameGpuMsSmoothed * 0.8 + gpuMs * 0.2;
-               frameGpuReadPending = false;
-            }).catch(() => {
-               frameGpuReadPending = false;
-            });
-         }
+         packUniformData(
+            uniformScratch,
+            modelMat,
+            projMat,
+            time,
+            ui.lightMode,
+            0.0,
+            ui.lightMode === 4 ? 1.0 : 0.0,
+         );
+         device.queue.writeBuffer(uniformBuffer, 0, uniformScratch);
       }
 
       if (perfStatsVisible) {
@@ -2058,15 +2598,26 @@ async function setupApp() {
          const gpuLabel = hasGpuTimestamps
             ? `${frameGpuMsSmoothed.toFixed(2)} ms`
             : 'n/a';
-         fpsEl.innerHTML = [
+         const cacheFill = (orientationFrameCache.size / ORIENTATION_CACHE_MAX_ENTRIES) * 100;
+         const cacheMiB = orientationCacheTotalBytes / (1024 * 1024);
+         ensurePerfOverlayElements();
+         perfStatsTextEl.innerHTML = [
             `FPS: ${Math.round(fpsSmoothed)}`,
+            `Refresh est: ${Math.round(refreshHzEstimate)}`,
             `CPU total: ${frameCpuTotalMsSmoothed.toFixed(2)} ms`,
             `CPU update: ${frameCpuUpdateMsSmoothed.toFixed(2)} ms`,
             `CPU axes: ${frameCpuDrawMsSmoothed.toFixed(2)} ms`,
             `CPU submit: ${frameCpuSubmitMsSmoothed.toFixed(2)} ms`,
+            `Cache present: ${cachePresentSubmitMsSmoothed.toFixed(2)} ms`,
+            `Shader submit: ${shaderSubmitMsSmoothed.toFixed(2)} ms`,
             `GPU render: ${gpuLabel}`,
             `Graph sweep: ${graphSweepMsSmoothed.toFixed(1)} ms`,
+            `Cache fill: ${orientationFrameCache.size}/${ORIENTATION_CACHE_MAX_ENTRIES} (${cacheFill.toFixed(1)}%)`,
+            `Cache memory (raw est.): ${cacheMiB.toFixed(1)} MiB`,
+            `Tilt cycle avg: ${tiltCycleAvgFps.toFixed(1)} FPS`,
+            `Tilt prewarm: ${tiltPreRenderReady ? 'ready' : (tiltPreRenderRequested ? `${tiltPreRenderIndex}/${tiltPreRenderQueue.length}` : 'idle')}`,
          ].join('<br>');
+         drawFrameTimePlot(time);
          lastFpsUpdate = time;
       }
 
@@ -2079,6 +2630,7 @@ async function setupApp() {
    function resize() {
       canvas.width = window.innerWidth;
       canvas.height = window.innerHeight;
+      invalidateOrientationCache();
       depthTexture = device.createTexture({
          size: [canvas.width, canvas.height],
          format: 'depth24plus',
