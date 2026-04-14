@@ -1059,6 +1059,9 @@ async function setupApp() {
 
    const context = canvas.getContext('webgpu');
    const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+   const tiltPreRenderSampleFps = TILT_PRERENDER_SAMPLE_FPS;
+   const tiltPreRenderBudgetPerFrame = 1;
+   const orientationCacheMaxEntries = ORIENTATION_CACHE_MAX_ENTRIES;
 
    function bytesPerPixelForFormat(format) {
       switch (format) {
@@ -1869,21 +1872,25 @@ async function setupApp() {
    let prewarmOverlayEl = null;
    let prewarmOverlayLabelEl = null;
    let prewarmOverlayBarFillEl = null;
+   let prewarmOverlayLastUiUpdateMs = 0;
+   let prewarmOverlayLastDone = -1;
+   let prewarmOverlayLastTotal = -1;
+   let prewarmYieldFlip = false;
 
    function ensurePrewarmOverlayElements() {
       if (prewarmOverlayEl) return;
       prewarmOverlayEl = document.createElement('div');
       Object.assign(prewarmOverlayEl.style, {
          position: 'fixed',
-         left: '16px',
-         top: '16px',
+         left: isMobileDevice ? '12px' : '16px',
+         top: 'calc(env(safe-area-inset-top, 0px) + 16px)',
          width: '148px',
          padding: '7px 8px',
          borderRadius: '6px',
          background: 'rgba(0,0,0,0.62)',
          color: '#e8e8e8',
          font: '11px/1.2 system-ui, sans-serif',
-         zIndex: '205',
+         zIndex: '260',
          pointerEvents: 'none',
          display: 'none',
       });
@@ -1913,26 +1920,37 @@ async function setupApp() {
       document.body.appendChild(prewarmOverlayEl);
    }
 
-   function updatePrewarmOverlay() {
+   function updatePrewarmOverlay(force = false) {
       ensurePrewarmOverlayElements();
       if (!prewarmOverlayEl || !prewarmOverlayLabelEl || !prewarmOverlayBarFillEl) return;
 
       const active = tiltPreRenderRequested && !tiltPreRenderReady;
       if (!active) {
          prewarmOverlayEl.style.display = 'none';
+         prewarmOverlayLastDone = -1;
+         prewarmOverlayLastTotal = -1;
          return;
       }
 
       const total = Math.max(1, tiltPreRenderQueue.length);
       const done = Math.min(tiltPreRenderIndex, total);
+      const nowMs = performance.now();
+      const sameProgress = done === prewarmOverlayLastDone && total === prewarmOverlayLastTotal;
+      if (!force && sameProgress && (nowMs - prewarmOverlayLastUiUpdateMs) < 100) {
+         return;
+      }
+
       const pct = (done / total) * 100;
-      prewarmOverlayLabelEl.textContent = `Prewarming ${done}/${total}`;
+      prewarmOverlayLabelEl.textContent = `Prewarming ${done}/${total} (${pct.toFixed(0)}%)`;
       prewarmOverlayBarFillEl.style.width = `${pct.toFixed(1)}%`;
+      prewarmOverlayLastDone = done;
+      prewarmOverlayLastTotal = total;
+      prewarmOverlayLastUiUpdateMs = nowMs;
 
       if (fpsEl && perfStatsVisible) {
-         prewarmOverlayEl.style.top = `${16 + fpsEl.offsetHeight + 8}px`;
+         prewarmOverlayEl.style.top = `calc(env(safe-area-inset-top, 0px) + ${16 + fpsEl.offsetHeight + 8}px)`;
       } else {
-         prewarmOverlayEl.style.top = '16px';
+         prewarmOverlayEl.style.top = 'calc(env(safe-area-inset-top, 0px) + 16px)';
       }
       prewarmOverlayEl.style.display = 'block';
    }
@@ -1988,7 +2006,7 @@ async function setupApp() {
          queue.push({ key, rotX: qx, rotY: qy });
       };
 
-      const frameCount = Math.max(1, Math.round(TILT_ANIM_CYCLE_SEC * TILT_PRERENDER_SAMPLE_FPS));
+      const frameCount = Math.max(1, Math.round(TILT_ANIM_CYCLE_SEC * tiltPreRenderSampleFps));
       for (let i = 0; i <= frameCount; i++) {
          const tCycle = (i / frameCount) * TILT_ANIM_CYCLE_SEC;
          const animSample = sampleTiltAnimation(tCycle, ampRad);
@@ -2011,7 +2029,8 @@ async function setupApp() {
       tiltPreRenderIndex = 0;
       tiltPreRenderRequested = missingQueue.length > 0;
       tiltPreRenderReady = missingQueue.length === 0;
-      updatePrewarmOverlay();
+      prewarmYieldFlip = false;
+      updatePrewarmOverlay(true);
       requestRender();
    }
 
@@ -2065,14 +2084,21 @@ async function setupApp() {
 
    function advanceTiltPreRender(time, bindGroup, vertexBuffer, triCount) {
       if (!tiltPreRenderRequested || tiltPreRenderReady || !renderBundle) return;
+      if (isMobileDevice) {
+         prewarmYieldFlip = !prewarmYieldFlip;
+         if (prewarmYieldFlip) {
+            updatePrewarmOverlay();
+            return;
+         }
+      }
       if (tiltPreRenderIndex >= tiltPreRenderQueue.length) {
          tiltPreRenderRequested = false;
          tiltPreRenderReady = true;
-         updatePrewarmOverlay();
+         updatePrewarmOverlay(true);
          return;
       }
       let renderedCount = 0;
-      while (renderedCount < TILT_PRERENDER_BUDGET_PER_FRAME && tiltPreRenderIndex < tiltPreRenderQueue.length) {
+      while (renderedCount < tiltPreRenderBudgetPerFrame && tiltPreRenderIndex < tiltPreRenderQueue.length) {
          const cacheItem = tiltPreRenderQueue[tiltPreRenderIndex++];
          if (orientationFrameCache.has(cacheItem.key)) continue;
          writeUniformsForOrientation(cacheItem.rotX, cacheItem.rotY, time);
@@ -2098,7 +2124,7 @@ async function setupApp() {
       orientationFrameCache.set(key, texture);
       orientationFrameCacheBytes.set(key, bytes);
       orientationCacheTotalBytes += bytes;
-      while (orientationFrameCache.size > ORIENTATION_CACHE_MAX_ENTRIES) {
+      while (orientationFrameCache.size > orientationCacheMaxEntries) {
          const oldestKey = orientationFrameCache.keys().next().value;
          const oldestTex = orientationFrameCache.get(oldestKey);
          const oldestBytes = orientationFrameCacheBytes.get(oldestKey) ?? 0;
@@ -2963,6 +2989,9 @@ async function setupApp() {
             tiltPreRenderIndex = 0;
             tiltPreRenderBaseRotX = null;
             tiltPreRenderBaseRotY = null;
+            if (isMobileDevice) {
+               requestTiltPreRender();
+            }
          } else {
             tiltCyclePrevPhase = null;
             tiltCycleFrameCount = 0;
@@ -3214,7 +3243,7 @@ async function setupApp() {
       if (animating) {
          let elapsed = time - animStartTime;
          if (tiltPreRenderReady) {
-            elapsed = Math.round(elapsed * TILT_PRERENDER_SAMPLE_FPS) / TILT_PRERENDER_SAMPLE_FPS;
+            elapsed = Math.round(elapsed * tiltPreRenderSampleFps) / tiltPreRenderSampleFps;
          }
          const animSample = sampleTiltAnimation(elapsed, ui.tiltAngleDeg * Math.PI / 180.0);
          const amp = ui.tiltAngleDeg * Math.PI / 180.0;
@@ -3428,7 +3457,7 @@ async function setupApp() {
          const gpuLabel = hasGpuTimestamps
             ? `${frameGpuMsSmoothed.toFixed(2)} ms`
             : 'n/a';
-         const cacheFill = (orientationFrameCache.size / ORIENTATION_CACHE_MAX_ENTRIES) * 100;
+         const cacheFill = (orientationFrameCache.size / orientationCacheMaxEntries) * 100;
          const cacheMiB = orientationCacheTotalBytes / (1024 * 1024);
          ensurePerfOverlayElements();
          perfStatsTextEl.innerHTML = [
@@ -3442,7 +3471,7 @@ async function setupApp() {
             `Shader submit: ${shaderSubmitMsSmoothed.toFixed(2)} ms`,
             `GPU render: ${gpuLabel}`,
             `Graph sweep: ${graphSweepMsSmoothed.toFixed(1)} ms`,
-            `Cache fill: ${orientationFrameCache.size}/${ORIENTATION_CACHE_MAX_ENTRIES} (${cacheFill.toFixed(1)}%)`,
+            `Cache fill: ${orientationFrameCache.size}/${orientationCacheMaxEntries} (${cacheFill.toFixed(1)}%)`,
             `Cache memory (raw est.): ${cacheMiB.toFixed(1)} MiB`,
             `Tilt cycle avg: ${tiltCycleAvgFps.toFixed(1)} FPS`,
             `Tilt prewarm: ${tiltPreRenderReady ? 'ready' : (tiltPreRenderRequested ? `${tiltPreRenderIndex}/${tiltPreRenderQueue.length}` : 'idle')}`,
