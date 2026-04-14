@@ -90,7 +90,16 @@
             border: 1px solid rgba(255,255,255,.15); border-radius: 6px;
             padding: 4px 6px; font-size: 12px;
         }
-        #gemui #exitColor { width: 100%; height: 28px; border-radius: 6px; border: none; cursor: pointer; }
+        #gemui #exitColor,
+        #gemui #headShadowColor { width: 100%; height: 28px; border-radius: 6px; border: none; cursor: pointer; }
+        #gemui .colorRow {
+            display: flex;
+            gap: 8px;
+        }
+        #gemui .colorRow .colorCol {
+            flex: 1;
+            min-width: 0;
+        }
         #fileNameEl { margin-top: 6px; font-size: 11px; color: #aaa; }
 
         /* ── Side panels (graph + facets) ───────────────────────────── */
@@ -360,9 +369,15 @@
                 <div class="swatches" id="swatches"><!-- populated by JS --></div>
             </div>
 
-            <div class="row">
-                <label>Windowing Highlight</label>
-                <input type="color" id="exitColor" value="#000000">
+            <div class="row colorRow">
+                <div class="colorCol">
+                    <label>Windowing</label>
+                    <input type="color" id="exitColor">
+                </div>
+                <div class="colorCol">
+                    <label>Head Shadow</label>
+                    <input type="color" id="headShadowColor">
+                </div>
             </div>
 
             <div class="row">

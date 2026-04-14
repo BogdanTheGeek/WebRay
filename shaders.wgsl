@@ -25,9 +25,9 @@ struct Uniforms {
     exitHighlight:        vec3<f32>,    // 240
     exitStrength:         f32,          // 252
     flatShading:          f32,          // 256
-    _pad1:                f32,          // 260
-    _pad2:                f32,          // 264
-    _pad3:                f32,          // 268
+    headShadowR:          f32,          // 260
+    headShadowG:          f32,          // 264
+    headShadowB:          f32,          // 268
 };
 
 @group(0) @binding(0) var<uniform>       uniforms:  Uniforms;
@@ -134,9 +134,11 @@ fn sample_env(dir: vec3<f32>) -> vec3<f32> {
     let mode = uniforms.lightMode;
     let graphOnly = uniforms.graphMode > 0.5;
 
-    // Head shadow — dark circle directly above stone (viewer's head)
-    var shadow = 1.0;
-    if (!graphOnly && d.z > 0.9397) { shadow = 0.08; } // cos(20°)
+    // Head shadow — coloured circle directly above stone (viewer's head)
+    var shadowTint = vec3<f32>(1.0);
+    if (!graphOnly && d.z > 0.9397) {
+        shadowTint = vec3<f32>(uniforms.headShadowR, uniforms.headShadowG, uniforms.headShadowB);
+    } // cos(20°)
 
     var intensity = 0.0;
 
@@ -171,7 +173,7 @@ fn sample_env(dir: vec3<f32>) -> vec3<f32> {
         }
     }
 
-    intensity *= shadow;
+    let envLight = vec3<f32>(intensity) * shadowTint;
 
     // Stone colour tint — modulates transmitted light so the body colour
     // of coloured gems (ruby, sapphire, emerald) comes through correctly.
@@ -190,7 +192,7 @@ fn sample_env(dir: vec3<f32>) -> vec3<f32> {
         !graphOnly,
     );
 
-    return tint * intensity + tableAmbient;
+    return tint * envLight + tableAmbient;
 }
 
 fn aces_tonemap(x: vec3<f32>) -> vec3<f32> {

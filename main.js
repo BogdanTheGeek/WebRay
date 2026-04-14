@@ -49,6 +49,9 @@ function buildUI(ui, cbs) {
    panel.querySelector('#tiltVal').textContent = ui.tiltAngleDeg;
    panel.querySelector('#focalSlider').value = ui.focalLength;
    panel.querySelector('#focalVal').textContent = `${ui.focalLength} mm`;
+   panel.querySelector('#exitColor').value = '#000000';
+   panel.querySelector('#headShadowColor').value = '#ffbf66';
+   ui.headShadowColor = [1.0, 0.75, 0.4];
 
    // Sync active light-mode button with ui.lightMode
    panel.querySelectorAll('#modes .mode').forEach(b =>
@@ -177,6 +180,11 @@ function buildUI(ui, cbs) {
    panel.querySelector('#exitColor').addEventListener('input', e => {
       ui.exitHighlight = hexToRgb(e.target.value);
       ui.exitStrength = 1.0; // Ensure it's visible when a colour is picked
+      cbs.onRenderOutputChanged?.();
+   });
+
+   panel.querySelector('#headShadowColor').addEventListener('input', e => {
+      ui.headShadowColor = hexToRgb(e.target.value);
       cbs.onRenderOutputChanged?.();
    });
 
@@ -888,6 +896,7 @@ const ui = {
    lightMode: 3,
    color: [1, 1, 1],
    exitHighlight: [0, 0, 0],
+   headShadowColor: [0.5, 0.5, 0.5],
    exitStrength: 0.0,
    tiltAngleDeg: 10,
    focalLength: 200,
@@ -1058,7 +1067,7 @@ async function setupApp() {
    //   208: time / ri / cod / mode  (16 b)
    //   224: stoneColor + graphMode  (16 b)
    //   240: exitHighlight + str     (16 b)
-   //   256: flatShading + pad        (16 b)
+   //   256: flatShading + headShadow RGB (16 b)
    const uniformBuffer = device.createBuffer({
       size: 272,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -1521,9 +1530,9 @@ async function setupApp() {
       out[63] = ui.exitStrength;
 
       out[64] = flatShading;
-      out[65] = 0.0;
-      out[66] = 0.0;
-      out[67] = 0.0;
+      out[65] = ui.headShadowColor[0];
+      out[66] = ui.headShadowColor[1];
+      out[67] = ui.headShadowColor[2];
    }
 
    function writeUniformsToBuffer(buffer, modelMatrix, projectionMatrix, time, lightMode, graphMode = 0.0) {
