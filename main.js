@@ -2628,8 +2628,18 @@ async function setupApp() {
 
    // --- Resize ---
    function resize() {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      const cssWidth = Math.max(1, canvas.clientWidth || window.innerWidth);
+      const cssHeight = Math.max(1, canvas.clientHeight || window.innerHeight);
+      const nextWidth = Math.max(1, Math.round(cssWidth * dpr));
+      const nextHeight = Math.max(1, Math.round(cssHeight * dpr));
+
+      if (canvas.width === nextWidth && canvas.height === nextHeight) {
+         return;
+      }
+
+      canvas.width = nextWidth;
+      canvas.height = nextHeight;
       invalidateOrientationCache();
       depthTexture = device.createTexture({
          size: [canvas.width, canvas.height],
