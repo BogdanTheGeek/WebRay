@@ -1059,6 +1059,7 @@ async function setupApp() {
 
    const context = canvas.getContext('webgpu');
    const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+   const mobileRenderDprCap = 1.25;
    const tiltPreRenderSampleFps = TILT_PRERENDER_SAMPLE_FPS;
    const tiltPreRenderBudgetPerFrame = 1;
    const orientationCacheMaxEntries = ORIENTATION_CACHE_MAX_ENTRIES;
@@ -3459,10 +3460,14 @@ async function setupApp() {
             : 'n/a';
          const cacheFill = (orientationFrameCache.size / orientationCacheMaxEntries) * 100;
          const cacheMiB = orientationCacheTotalBytes / (1024 * 1024);
+         const cssW = Math.max(1, Math.round(canvas.clientWidth || parseFloat(canvas.style.width) || 0));
+         const cssH = Math.max(1, Math.round(canvas.clientHeight || parseFloat(canvas.style.height) || 0));
+         const effectiveDpr = cssW > 0 ? (canvas.width / cssW) : 1;
          ensurePerfOverlayElements();
          perfStatsTextEl.innerHTML = [
             `FPS: ${Math.round(fpsSmoothed)}`,
             `Refresh est: ${Math.round(refreshHzEstimate)}`,
+            `Render res: ${canvas.width}×${canvas.height} (${effectiveDpr.toFixed(2)}x DPR, CSS ${cssW}×${cssH})`,
             `CPU total: ${frameCpuTotalMsSmoothed.toFixed(2)} ms`,
             `CPU update: ${frameCpuUpdateMsSmoothed.toFixed(2)} ms`,
             `CPU axes: ${frameCpuDrawMsSmoothed.toFixed(2)} ms`,
@@ -3502,7 +3507,10 @@ async function setupApp() {
       canvas.style.left = `${Math.round((viewportWidth - fitCss.width) * 0.5)}px`;
       canvas.style.top = `${Math.round((viewportHeight - fitCss.height) * 0.5)}px`;
 
-      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      const deviceDpr = Math.max(1, window.devicePixelRatio || 1);
+      const dpr = isMobileDevice
+         ? Math.min(deviceDpr, mobileRenderDprCap)
+         : deviceDpr;
       const cssWidth = Math.max(1, fitCss.width);
       const cssHeight = Math.max(1, fitCss.height);
       let nextWidth = Math.max(1, Math.round(cssWidth * dpr));
