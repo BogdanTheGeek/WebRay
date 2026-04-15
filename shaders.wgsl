@@ -94,36 +94,6 @@ fn rnd_sky(d: vec3<f32>) -> f32 {
     return mix(mix(a, b, sf.x), mix(c, dd, sf.x), sf.y);
 }
 
-fn hash31(p: vec3<f32>) -> f32 {
-    var q = fract(p * vec3<f32>(0.1031, 0.11369, 0.13787));
-    q += dot(q, q.yzx + 19.19);
-    return fract((q.x + q.y) * q.z);
-}
-
-fn jitter_direction(dir: vec3<f32>, pos: vec3<f32>, roughness: f32, salt: f32) -> vec3<f32> {
-    let n = normalize(dir);
-    let seed1 = hash31(pos * 18.0 + n * (2.7 + salt));
-    let seed2 = hash31(pos.zxy * 21.0 + n.yzx * (4.1 + salt * 1.7));
-    let phi = 6.28318530718 * seed1;
-    let radius = roughness * sqrt(seed2);
-
-    var tangent = cross(vec3<f32>(0.0, 0.0, 1.0), n);
-    if (dot(tangent, tangent) < 1e-5) {
-        tangent = cross(vec3<f32>(0.0, 1.0, 0.0), n);
-    }
-    tangent = normalize(tangent);
-    let bitangent = normalize(cross(n, tangent));
-    return normalize(n + tangent * cos(phi) * radius + bitangent * sin(phi) * radius);
-}
-
-fn frosted_env(dir: vec3<f32>, pos: vec3<f32>, roughness: f32) -> vec3<f32> {
-    let d0 = jitter_direction(dir, pos + vec3<f32>(0.13, 0.29, 0.47), roughness, 0.0);
-    let d1 = jitter_direction(dir, pos + vec3<f32>(0.61, 0.17, 0.23), roughness, 1.0);
-    let d2 = jitter_direction(dir, pos + vec3<f32>(0.41, 0.73, 0.19), roughness, 2.0);
-    let d3 = jitter_direction(dir, pos + vec3<f32>(0.07, 0.37, 0.83), roughness, 3.0);
-    return 0.25 * (sample_env(d0) + sample_env(d1) + sample_env(d2) + sample_env(d3));
-}
-
 // ─────────────────────────────────────────────────
 // Environment sampler
 // Implements all four raytracer.cpp light models.
@@ -203,10 +173,6 @@ fn sample_env(dirWorld: vec3<f32>) -> vec3<f32> {
 fn aces_tonemap(x: vec3<f32>) -> vec3<f32> {
     let a = 2.51; let b = 0.03; let c = 2.43; let d = 0.59; let e = 0.14;
     return clamp((x*(a*x+b))/(x*(c*x+d)+e), vec3<f32>(0.0), vec3<f32>(1.0));
-}
-
-fn dir_local_to_view(dirLocal: vec3<f32>) -> vec3<f32> {
-    return (uniforms.viewMatrix * uniforms.modelMatrix * vec4<f32>(dirLocal, 0.0)).xyz;
 }
 
 // ─────────────────────────────────────────────────
@@ -336,7 +302,8 @@ struct TraceResult { light: vec3<f32>, window: vec3<f32> };
 // the small dispersion angle, so they hit the same facet — a valid approximation
 // for all common gem materials (Δangle < 0.5° even for high-dispersion CZ).
 fn trace_internal(rd_r: vec3<f32>, rd_g: vec3<f32>, rd_b: vec3<f32>,
-                  origin_in: vec3<f32>, eta: vec3<f32>) -> TraceResult {
+                  origin_in: vec3<f32>, eta: vec3<f32>,
+                  mvMatrix: mat4x4<f32>, modelNZ: vec3<f32>) -> TraceResult {
     var r      = rd_r;
     var g      = rd_g;
     var b      = rd_b;
@@ -353,9 +320,9 @@ fn trace_internal(rd_r: vec3<f32>, rd_g: vec3<f32>, rd_b: vec3<f32>,
         if (hit.t < 0.0) {
             // All channels escaped — sample environment per direction
             accumulated += throughput * vec3<f32>(
-                sample_env_view(dir_local_to_view(r)).r,
-                sample_env_view(dir_local_to_view(g)).g,
-                sample_env_view(dir_local_to_view(b)).b,
+                sample_env_view((mvMatrix * vec4<f32>(r, 0.0)).xyz).r,
+                sample_env_view((mvMatrix * vec4<f32>(g, 0.0)).xyz).g,
+                sample_env_view((mvMatrix * vec4<f32>(b, 0.0)).xyz).b,
             );
             break;
         }
@@ -368,66 +335,40 @@ fn trace_internal(rd_r: vec3<f32>, rd_g: vec3<f32>, rd_b: vec3<f32>,
             let glow = mix(vec3<f32>(0.82, 0.84, 0.86), uniforms.stoneColor, 0.30);
             let diffuse = max(0.0, n_world.z);
             let refl = reflect(g, n);
-            let reflected = sample_env_view(dir_local_to_view(refl)) * mix(vec3<f32>(1.0), uniforms.stoneColor, 0.18) * 0.32;
+            let reflected = sample_env_view((mvMatrix * vec4<f32>(refl, 0.0)).xyz) * mix(vec3<f32>(1.0), uniforms.stoneColor, 0.18) * 0.32;
             accumulated += throughput * (glow * (0.54 + 0.24 * diffuse) + reflected);
             break;
         }
 
-        // Per-channel cos(θ_i) from each ray's slight angular deviation
-        let cosR = max(0.0, dot(-r, n));
-        let cosG = max(0.0, dot(-g, n));
-        let cosB = max(0.0, dot(-b, n));
+        // Per-channel cos(θ_i) — vectorised across R/G/B
+        let cosI = vec3<f32>(max(0.0, dot(-r, n)), max(0.0, dot(-g, n)), max(0.0, dot(-b, n)));
 
         // sin²(θ_t) = eta² · sin²(θ_i)  —  Snell gem→air
-        let st_r = (1.0 - cosR * cosR) * eta.x * eta.x;
-        let st_g = (1.0 - cosG * cosG) * eta.y * eta.y;
-        let st_b = (1.0 - cosB * cosB) * eta.z * eta.z;
+        let st = (1.0 - cosI * cosI) * eta * eta;
 
-        // Per-channel Fresnel (TIR = 1.0 when sin²θ_t ≥ 1)
-        var fresnel = vec3<f32>(1.0);
-        if (st_r < 1.0) {
-            let ct = sqrt(1.0 - st_r);
-            let rs = (eta.x * cosR - ct) / (eta.x * cosR + ct);
-            let rp = (cosR - eta.x * ct) / (cosR + eta.x * ct);
-            fresnel.x = 0.5 * (rs * rs + rp * rp);
-        }
-        if (st_g < 1.0) {
-            let ct = sqrt(1.0 - st_g);
-            let rs = (eta.y * cosG - ct) / (eta.y * cosG + ct);
-            let rp = (cosG - eta.y * ct) / (cosG + eta.y * ct);
-            fresnel.y = 0.5 * (rs * rs + rp * rp);
-        }
-        if (st_b < 1.0) {
-            let ct = sqrt(1.0 - st_b);
-            let rs = (eta.z * cosB - ct) / (eta.z * cosB + ct);
-            let rp = (cosB - eta.z * ct) / (cosB + eta.z * ct);
-            fresnel.z = 0.5 * (rs * rs + rp * rp);
-        }
+        // Vectorised Fresnel (TIR = 1.0 when sin²θ_t ≥ 1)
+        let tir     = st >= vec3<f32>(1.0);
+        let ct      = sqrt(clamp(1.0 - st, vec3<f32>(0.0), vec3<f32>(1.0)));
+        let rs      = (eta * cosI - ct) / (eta * cosI + ct);
+        let rp      = (cosI - eta * ct) / (cosI + eta * ct);
+        let fresnel = select(0.5 * (rs * rs + rp * rp), vec3<f32>(1.0), tir);
 
-        // Window detection (shared normal, un-flipped)
-        let outZ = (uniforms.modelMatrix * vec4<f32>(hit.normal, 0.0)).z;
+        // Window detection — dot-product extracts z without full mat4×vec4
+        let outZ = dot(modelNZ, hit.normal);
         if (outZ < -0.1) {
             windowLeak += throughput * (1.0 - fresnel) * max(0.0, -outZ);
         }
 
         // Refracted escape contribution per channel
-        if (st_r < 1.0) {
-            let esc = refract(r, n, eta.x);
-            if (length(esc) > 0.1) {
-                accumulated.x += throughput.x * sample_env_view(dir_local_to_view(esc)).r * (1.0 - fresnel.x);
-            }
+        // length() guard is redundant: refract() is only called when st < 1 (no TIR)
+        if (st.x < 1.0) {
+            accumulated.x += throughput.x * sample_env_view((mvMatrix * vec4<f32>(refract(r, n, eta.x), 0.0)).xyz).r * (1.0 - fresnel.x);
         }
-        if (st_g < 1.0) {
-            let esc = refract(g, n, eta.y);
-            if (length(esc) > 0.1) {
-                accumulated.y += throughput.y * sample_env_view(dir_local_to_view(esc)).g * (1.0 - fresnel.y);
-            }
+        if (st.y < 1.0) {
+            accumulated.y += throughput.y * sample_env_view((mvMatrix * vec4<f32>(refract(g, n, eta.y), 0.0)).xyz).g * (1.0 - fresnel.y);
         }
-        if (st_b < 1.0) {
-            let esc = refract(b, n, eta.z);
-            if (length(esc) > 0.1) {
-                accumulated.z += throughput.z * sample_env_view(dir_local_to_view(esc)).b * (1.0 - fresnel.z);
-            }
+        if (st.z < 1.0) {
+            accumulated.z += throughput.z * sample_env_view((mvMatrix * vec4<f32>(refract(b, n, eta.z), 0.0)).xyz).b * (1.0 - fresnel.z);
         }
 
         // Advance origin along green ray; reflect all three channels
@@ -531,8 +472,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let refr_rd_g = refract(V_local, N_local, 1.0 / ri_g);
     let refr_rd_b = refract(V_local, N_local, 1.0 / ri_b);
 
+    // Precompute model-view matrix once — shared across all bounce env samples (up to 60× per fragment).
+    let mvMatrix = uniforms.viewMatrix * uniforms.modelMatrix;
+    // Z-row of modelMatrix for fast outZ extraction via dot product.
+    let modelNZ  = vec3<f32>(uniforms.modelMatrix[0][2], uniforms.modelMatrix[1][2], uniforms.modelMatrix[2][2]);
+
     let entry = input.localPos;
-    let tr    = trace_internal(refr_rd_r, refr_rd_g, refr_rd_b, entry, ri);
+    let tr    = trace_internal(refr_rd_r, refr_rd_g, refr_rd_b, entry, ri, mvMatrix, modelNZ);
 
     // Brilliance: light reflected back up through the crown
     let baseColor = reflection
