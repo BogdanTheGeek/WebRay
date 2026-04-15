@@ -447,6 +447,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let mCol2   = uniforms.modelMatrix[2].xyz;
     let V_local = normalize(vec3<f32>(dot(V_world, mCol0), dot(V_world, mCol1), dot(V_world, mCol2)));
     let N_local = normalize(vec3<f32>(dot(N_world, mCol0), dot(N_world, mCol1), dot(N_world, mCol2)));
+    let faceDx = dpdx(input.localPos);
+    let faceDy = dpdy(input.localPos);
+    let faceN = normalize(cross(faceDx, faceDy));
+    let tableMask = select(0.0, 1.0, abs(faceN.z) > 0.995);
 
     if (input.frosted > 0.5) {
         let upLight = max(0.0, N_world.z);
@@ -459,7 +463,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let frostColor = frostDiffuse + frostRefl;
         if (uniforms.graphMode > 0.5) {
             let rawLuminance = dot(frostColor, vec3<f32>(0.2126, 0.7152, 0.0722));
-            return vec4<f32>(rawLuminance, rawLuminance, rawLuminance, 1.0);
+            return vec4<f32>(rawLuminance, rawLuminance * tableMask, tableMask, 1.0);
         }
         return vec4<f32>(aces_tonemap(frostColor), 0.98);
     }
@@ -496,7 +500,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // artistic scintillation boost used in the normal display path.
     if (uniforms.graphMode > 0.5) {
         let rawLuminance = dot(baseColor, vec3<f32>(0.2126, 0.7152, 0.0722));
-        return vec4<f32>(rawLuminance, rawLuminance, rawLuminance, 1.0);
+        return vec4<f32>(rawLuminance, rawLuminance * tableMask, tableMask, 1.0);
     }
 
     var finalColor = baseColor;

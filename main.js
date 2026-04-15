@@ -340,7 +340,9 @@ let uiControls = null;
 const GRAPH_SAMPLE_SIZE = 64;
 const GRAPH_COLOR_FORMAT = 'rgba16float';
 const GRAPH_REDUCE_SUM_SCALE = 65536;
+const GRAPH_REDUCE_CELL_U32_COUNT = 4;
 const GRAPH_VALUE_SCALE = 100;
+const TABLE_FACET_MAX_ANGLE_DEG = 1.5;
 const GRAPH_TILT_MIN = -30;
 const GRAPH_TILT_MAX = 30;
 const GRAPH_TILT_STEP = 1;
@@ -432,6 +434,34 @@ function escapeHtml(text) {
 function computeFacetAngleDeg(normal) {
    const nz = Math.max(-1, Math.min(1, Math.abs(normal[2] ?? 0)));
    return Math.acos(nz) * 180 / Math.PI;
+}
+
+function computeFacetAngleFromUpDeg(normal) {
+   const x = normal[0] ?? 0;
+   const y = normal[1] ?? 0;
+   const z = normal[2] ?? 0;
+   const len = Math.hypot(x, y, z);
+   if (len <= 1e-8) return 180;
+   const nz = Math.max(-1, Math.min(1, z / len));
+   return Math.acos(nz) * 180 / Math.PI;
+}
+
+function hasUniqueTableFacet(facets = []) {
+   let zeroDegFacetCount = 0;
+   let namedTableFacetCount = 0;
+   for (const facet of facets) {
+      const name = String(facet?.name || '').trim().toUpperCase();
+      if (/^T\d*$/.test(name)) {
+         namedTableFacetCount += 1;
+      }
+      const angle = computeFacetAngleFromUpDeg(facet?.normal || [0, 0, 0]);
+      if (angle <= TABLE_FACET_MAX_ANGLE_DEG) {
+         zeroDegFacetCount += 1;
+      }
+   }
+
+   if (namedTableFacetCount > 0) return true;
+   return zeroDegFacetCount > 0;
 }
 
 function computeFacetGearIndex(normal) {
@@ -706,11 +736,11 @@ async function setupApp() {
    ]);
    graphAtlasParamsBuffer.unmap();
    const graphReduceBuffer = device.createBuffer({
-      size: GRAPH_TILE_COUNT * 8,
+      size: GRAPH_TILE_COUNT * GRAPH_REDUCE_CELL_U32_COUNT * 4,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST,
    });
    const graphReduceReadbackBuffer = device.createBuffer({
-      size: GRAPH_TILE_COUNT * 8,
+      size: GRAPH_TILE_COUNT * GRAPH_REDUCE_CELL_U32_COUNT * 4,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
    });
 
@@ -764,6 +794,7 @@ async function setupApp() {
    let graphCanvasHeight = 220;
    let latestGraphSeries = null;
    let latestFacetInfo = [];
+   let modelHasTableFacet = false;
 
    function resizeGraphCanvas() {
       const nextWidth = Math.max(220, Math.round(graphCanvas.clientWidth || graphBodyEl.clientWidth));
@@ -1042,7 +1073,8 @@ async function setupApp() {
 
       for (const series of seriesList) {
          graphCtx.strokeStyle = series.color;
-         graphCtx.lineWidth = 2;
+         graphCtx.lineWidth = series.dashed ? 1.5 : 2;
+         graphCtx.setLineDash(series.dashed ? [6, 4] : []);
          graphCtx.beginPath();
          series.points.forEach((p, i) => {
             const px = padL + ((p.tilt - GRAPH_TILT_MIN) / (GRAPH_TILT_MAX - GRAPH_TILT_MIN)) * plotW;
@@ -1051,6 +1083,7 @@ async function setupApp() {
             else graphCtx.lineTo(px, py);
          });
          graphCtx.stroke();
+         graphCtx.setLineDash([]);
       }
 
       graphCtx.textAlign = 'left';
@@ -1058,10 +1091,12 @@ async function setupApp() {
       seriesList.forEach((series, i) => {
          const y = padT + 8 + i * 16;
          graphCtx.strokeStyle = series.color;
+         graphCtx.setLineDash(series.dashed ? [6, 4] : []);
          graphCtx.beginPath();
          graphCtx.moveTo(W - padR - 82, y);
          graphCtx.lineTo(W - padR - 54, y);
          graphCtx.stroke();
+          graphCtx.setLineDash([]);
          graphCtx.fillStyle = '#ddd';
          graphCtx.fillText(series.label, W - padR - 48, y);
       });
@@ -1150,23 +1185,44 @@ async function setupApp() {
       );
       reducePass.end();
 
-      encoder.copyBufferToBuffer(graphReduceBuffer, 0, graphReduceReadbackBuffer, 0, GRAPH_TILE_COUNT * 8);
+      encoder.copyBufferToBuffer(
+         graphReduceBuffer,
+         0,
+         graphReduceReadbackBuffer,
+         0,
+         GRAPH_TILE_COUNT * GRAPH_REDUCE_CELL_U32_COUNT * 4,
+      );
 
       device.queue.submit([encoder.finish()]);
       await graphReduceReadbackBuffer.mapAsync(GPUMapMode.READ);
       const reduced = new Uint32Array(graphReduceReadbackBuffer.getMappedRange());
 
-      const seriesList = GRAPH_MODES.map((mode, modeIndex) => {
+      const seriesList = GRAPH_MODES.flatMap((mode, modeIndex) => {
          const points = GRAPH_TILT_VALUES.map((tilt, tiltIndex) => {
             const tileIndex = modeIndex * GRAPH_TILT_COUNT + tiltIndex;
-            const valueSum = reduced[tileIndex * 2 + 0];
-            const count = reduced[tileIndex * 2 + 1];
+            const base = tileIndex * GRAPH_REDUCE_CELL_U32_COUNT;
+            const valueSum = reduced[base + 0];
+            const count = reduced[base + 1];
             const value = count > 0
                ? (valueSum / (count * GRAPH_REDUCE_SUM_SCALE)) * GRAPH_VALUE_SCALE
                : 0;
             return { tilt, value };
          });
-         return { label: mode.label, color: mode.color, points };
+         const output = [{ label: mode.label, color: mode.color, points }];
+         if (modelHasTableFacet) {
+            const tablePoints = GRAPH_TILT_VALUES.map((tilt, tiltIndex) => {
+               const tileIndex = modeIndex * GRAPH_TILT_COUNT + tiltIndex;
+               const base = tileIndex * GRAPH_REDUCE_CELL_U32_COUNT;
+               const tableValueSum = reduced[base + 2];
+               const tableCount = reduced[base + 3];
+               const value = tableCount > 0
+                  ? (tableValueSum / (tableCount * GRAPH_REDUCE_SUM_SCALE)) * GRAPH_VALUE_SCALE
+                  : 0;
+               return { tilt, value };
+            });
+            output.push({ label: `${mode.label} table`, color: mode.color, points: tablePoints, dashed: true });
+         }
+         return output;
       });
 
       graphReduceReadbackBuffer.unmap();
@@ -1572,6 +1628,7 @@ async function setupApp() {
       }
 
       uiControls.setFileName(filename);
+      modelHasTableFacet = hasUniqueTableFacet(stone.facets || []);
       if (Array.isArray(stone.facets) && stone.facets.length > 0) {
          renderFacetInfo(stone.facets);
          setFacetStatus(`${stone.facets.length} facets parsed from ${filename}`);

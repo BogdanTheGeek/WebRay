@@ -10,6 +10,8 @@
 struct GraphReduceCell {
     sum:   atomic<u32>,
     count: atomic<u32>,
+    tableSum: atomic<u32>,
+    tableCount: atomic<u32>,
 };
 
 struct GraphAtlasParams {
@@ -39,4 +41,10 @@ fn cs_reduce_graph(@builtin(global_invocation_id) gid: vec3<u32>) {
     let scaled    = u32(clamp(texel.r * 65536.0, 0.0, 4294967295.0));
     atomicAdd(&graphReduce[tileIndex].sum,   scaled);
     atomicAdd(&graphReduce[tileIndex].count, 1u);
+
+    if (texel.b > 0.5) {
+        let tableScaled = u32(clamp(texel.g * 65536.0, 0.0, 4294967295.0));
+        atomicAdd(&graphReduce[tileIndex].tableSum, tableScaled);
+        atomicAdd(&graphReduce[tileIndex].tableCount, 1u);
+    }
 }
