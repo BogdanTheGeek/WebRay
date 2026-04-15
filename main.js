@@ -1,6 +1,6 @@
 // import { mat4, vec4 } from 'https://cdn.skypack.dev/gl-matrix';
 import { mat4, vec4 } from './gl-matrix/esm/index.js';
-import { loadSTL, loadGCS, loadGEM, normalizeMesh, computeMeshBoundsRadius, buildBVH } from './loaders.js';
+import { loadSTL, loadGCS, loadGEM, convertGCSTextToGEMBuffer, normalizeMesh, computeMeshBoundsRadius, buildBVH } from './loaders.js';
 import { exportInProgress, setupExporter } from './video.js';
 
 const shaderSource = await (await fetch('shaders.wgsl')).text();
@@ -31,6 +31,9 @@ const toggleBtn = document.getElementById('gemui-toggle');
 const uiFileInput = document.getElementById('uiFileInput');
 const fileBtn = document.getElementById('fileBtn');
 const fileNameEl = document.getElementById('fileNameEl');
+const gcsConvertBtn = document.getElementById('gcsConvertBtn');
+const gcsConvertInput = document.getElementById('gcsConvertInput');
+const convertStatusEl = document.getElementById('convertStatus');
 
 // --- UI (built once; survives model swaps) ---
 let currentModelFilename = 'stone.gem';
@@ -58,6 +61,10 @@ function rgbToHex(rgb) {
 
 function applyBodyBackground(ui) {
    document.body.style.backgroundColor = rgbToHex(ui.backgroundColor);
+}
+
+function setConvertStatus(message) {
+   if (convertStatusEl) convertStatusEl.textContent = message;
 }
 // ---------------------------------------------------------------------------
 // UI panel — markup and CSS live in index.html; this function wires up
@@ -127,6 +134,33 @@ function buildUI(ui, cbs) {
       fileNameEl.textContent = f.name;
       const url = URL.createObjectURL(f);
       cbs.onFileSelected?.(f.name, url);
+   });
+
+   gcsConvertBtn?.addEventListener('click', () => gcsConvertInput?.click());
+   gcsConvertInput?.addEventListener('change', async (ev) => {
+      const f = ev.target.files?.[0];
+      if (!f) return;
+      try {
+         setConvertStatus('Converting…');
+         const text = await f.text();
+         const gemBuffer = convertGCSTextToGEMBuffer(text);
+         const outName = f.name.replace(/\.gcs$/i, '.gem');
+         const blob = new Blob([gemBuffer], { type: 'application/octet-stream' });
+         const url = URL.createObjectURL(blob);
+         const anchor = document.createElement('a');
+         anchor.href = url;
+         anchor.download = outName;
+         document.body.appendChild(anchor);
+         anchor.click();
+         document.body.removeChild(anchor);
+         URL.revokeObjectURL(url);
+         setConvertStatus(`Saved ${outName}`);
+      } catch (err) {
+         console.error(err);
+         setConvertStatus('Convert failed');
+      } finally {
+         ev.target.value = '';
+      }
    });
 
    // --- Colour swatches ---

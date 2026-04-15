@@ -181,6 +181,159 @@ async function loadGCS(url) {
    return new StoneData(vertexData, triCount, facets, refractiveIndex, dispersion);
 }
 
+function convertGCSTextToGEMBuffer(gcsText) {
+   const parser = new DOMParser();
+   const doc = parser.parseFromString(String(gcsText || ''), 'application/xml');
+   if (doc.querySelector('parsererror')) {
+      throw new Error('GCS: XML parse error');
+   }
+
+   class BinaryWriter {
+      constructor(initialSize = 1024) {
+         this.buffer = new ArrayBuffer(initialSize);
+         this.view = new DataView(this.buffer);
+         this.offset = 0;
+      }
+
+      ensure(size) {
+         if (this.offset + size <= this.buffer.byteLength) return;
+         let nextSize = this.buffer.byteLength;
+         while (this.offset + size > nextSize) nextSize *= 2;
+         const nextBuffer = new ArrayBuffer(nextSize);
+         new Uint8Array(nextBuffer).set(new Uint8Array(this.buffer));
+         this.buffer = nextBuffer;
+         this.view = new DataView(this.buffer);
+      }
+
+      writeFloat64(v) {
+         this.ensure(8);
+         this.view.setFloat64(this.offset, v, true);
+         this.offset += 8;
+      }
+
+      writeInt32(v) {
+         this.ensure(4);
+         this.view.setInt32(this.offset, v, true);
+         this.offset += 4;
+      }
+
+      writeUint8(v) {
+         this.ensure(1);
+         this.view.setUint8(this.offset, v);
+         this.offset += 1;
+      }
+
+      writeBytes(bytes) {
+         this.ensure(bytes.length);
+         new Uint8Array(this.buffer, this.offset, bytes.length).set(bytes);
+         this.offset += bytes.length;
+      }
+
+      finish() {
+         return this.buffer.slice(0, this.offset);
+      }
+   }
+
+   const writer = new BinaryWriter();
+   const encoder = new TextEncoder();
+   const SILLY = -99999.0;
+   const EPSILON = 1e-9;
+
+   const indexEl = doc.querySelector('index');
+   const symmetry = parseInt(indexEl?.getAttribute('symmetry') || '0', 10) || 0;
+   const mirror = parseInt(indexEl?.getAttribute('mirror') || '0', 10) || 0;
+   const gear = parseInt(indexEl?.getAttribute('gear') || '0', 10) || 0;
+
+   let refractiveIndex = 1.76;
+   const renderEl = doc.querySelector('render');
+   if (renderEl) {
+      const ri = parseFloat(renderEl.getAttribute('refractive_index'));
+      if (isFinite(ri)) refractiveIndex = ri;
+   }
+
+   for (const tierEl of doc.querySelectorAll('tier')) {
+      const tierName = (tierEl.getAttribute('name') || '').trim();
+      const tierInst = (tierEl.getAttribute('instructions') || '').trim();
+      const normalizedTier = normalizeFacetMetadata(tierName, tierInst);
+
+      for (const facetEl of tierEl.querySelectorAll('facet')) {
+         const vertEls = Array.from(facetEl.querySelectorAll('vertex'));
+         if (vertEls.length < 3) continue;
+
+         const verts = vertEls.map((v) => [
+            parseFloat(v.getAttribute('x') || '0'),
+            parseFloat(v.getAttribute('y') || '0'),
+            parseFloat(v.getAttribute('z') || '0'),
+         ]);
+
+         let nx = parseFloat(facetEl.getAttribute('nx') || '0');
+         let ny = parseFloat(facetEl.getAttribute('ny') || '0');
+         let nz = parseFloat(facetEl.getAttribute('nz') || '0');
+         const nLen = Math.hypot(nx, ny, nz);
+         if (!isFinite(nLen) || nLen < EPSILON) continue;
+         nx /= nLen;
+         ny /= nLen;
+         nz /= nLen;
+
+         let cx = 0;
+         let cy = 0;
+         let cz = 0;
+         for (const [x, y, z] of verts) {
+            cx += x;
+            cy += y;
+            cz += z;
+         }
+         cx /= verts.length;
+         cy /= verts.length;
+         cz /= verts.length;
+
+         let d0 = nx * cx + ny * cy + nz * cz;
+         if (d0 < 0) {
+            nx = -nx;
+            ny = -ny;
+            nz = -nz;
+            d0 = -d0;
+         }
+         if (!isFinite(d0) || d0 < EPSILON) continue;
+
+         const rawLen = 0.9 / d0;
+         const aRaw = nx * rawLen;
+         const bRaw = ny * rawLen;
+         const cRaw = nz * rawLen;
+
+         writer.writeFloat64(aRaw);
+         writer.writeFloat64(bRaw);
+         writer.writeFloat64(cRaw);
+         writer.writeInt32(0);
+
+         const labelParts = [];
+         if (normalizedTier.name) labelParts.push(normalizedTier.name);
+         let label = labelParts.join('');
+         if (normalizedTier.instructions) label = `${label}\t${normalizedTier.instructions}`;
+         const labelBytes = encoder.encode(label);
+         const safeLabelBytes = labelBytes.length > 255 ? labelBytes.slice(0, 255) : labelBytes;
+         writer.writeUint8(safeLabelBytes.length);
+         writer.writeBytes(safeLabelBytes);
+
+         for (const [x, y, z] of verts) {
+            writer.writeInt32(1);
+            writer.writeFloat64(x);
+            writer.writeFloat64(y);
+            writer.writeFloat64(z);
+         }
+         writer.writeInt32(0);
+      }
+   }
+
+   writer.writeFloat64(SILLY);
+   writer.writeInt32(symmetry);
+   writer.writeInt32(mirror);
+   writer.writeInt32(gear);
+   writer.writeFloat64(refractiveIndex);
+
+   return writer.finish();
+}
+
 // ---------------------------------------------------------------------------
 // GemCad .gem binary format loader — derived from stone.cpp::readGemFile()
 //
@@ -650,5 +803,5 @@ function buildBVH(vertexData, triangleCount) {
    return { nodeBuffer, triBuffer: sortedTris, nodeCount };
 }
 
-export { loadSTL, loadGCS, loadGEM, normalizeMesh, computeMeshBoundsRadius, buildBVH };
+export { loadSTL, loadGCS, loadGEM, convertGCSTextToGEMBuffer, normalizeMesh, computeMeshBoundsRadius, buildBVH };
 
