@@ -129,8 +129,8 @@ fn frosted_env(dir: vec3<f32>, pos: vec3<f32>, roughness: f32) -> vec3<f32> {
 // Implements all four raytracer.cpp light models.
 // Head shadow matches C++ coshead = cos(20°) ≈ 0.9397
 // ─────────────────────────────────────────────────
-fn sample_env(dir: vec3<f32>) -> vec3<f32> {
-    let d    = normalize(dir);
+fn sample_env_view(dirView: vec3<f32>) -> vec3<f32> {
+    let d    = normalize(dirView);
     let mode = uniforms.lightMode;
     let graphOnly = uniforms.graphMode > 0.5;
 
@@ -188,16 +188,25 @@ fn sample_env(dir: vec3<f32>) -> vec3<f32> {
     // Matches the raytracer's background "leak" colour
     let tableAmbient = select(
         vec3<f32>(0.0),
-        vec3<f32>(0.06, 0.07, 0.10) * max(0.0, -d.z + 0.25),
+        vec3<f32>(0.06, 0.06, 0.06) * max(0.0, -d.z + 0.25),
         !graphOnly,
     );
 
     return tint * envLight + tableAmbient;
 }
 
+fn sample_env(dirWorld: vec3<f32>) -> vec3<f32> {
+    let dView = (uniforms.viewMatrix * vec4<f32>(normalize(dirWorld), 0.0)).xyz;
+    return sample_env_view(dView);
+}
+
 fn aces_tonemap(x: vec3<f32>) -> vec3<f32> {
     let a = 2.51; let b = 0.03; let c = 2.43; let d = 0.59; let e = 0.14;
     return clamp((x*(a*x+b))/(x*(c*x+d)+e), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+fn dir_local_to_view(dirLocal: vec3<f32>) -> vec3<f32> {
+    return (uniforms.viewMatrix * uniforms.modelMatrix * vec4<f32>(dirLocal, 0.0)).xyz;
 }
 
 // ─────────────────────────────────────────────────
@@ -344,9 +353,9 @@ fn trace_internal(rd_r: vec3<f32>, rd_g: vec3<f32>, rd_b: vec3<f32>,
         if (hit.t < 0.0) {
             // All channels escaped — sample environment per direction
             accumulated += throughput * vec3<f32>(
-                sample_env(r).r,
-                sample_env(g).g,
-                sample_env(b).b,
+                sample_env_view(dir_local_to_view(r)).r,
+                sample_env_view(dir_local_to_view(g)).g,
+                sample_env_view(dir_local_to_view(b)).b,
             );
             break;
         }
@@ -355,10 +364,11 @@ fn trace_internal(rd_r: vec3<f32>, rd_g: vec3<f32>, rd_b: vec3<f32>,
         if (dot(g, n) > 0.0) { n = -n; }
 
         if (hit.frosted > 0.5) {
+            let n_world = normalize((uniforms.modelMatrix * vec4<f32>(n, 0.0)).xyz);
             let glow = mix(vec3<f32>(0.82, 0.84, 0.86), uniforms.stoneColor, 0.30);
-            let diffuse = max(0.0, n.z);
+            let diffuse = max(0.0, n_world.z);
             let refl = reflect(g, n);
-            let reflected = sample_env(refl) * mix(vec3<f32>(1.0), uniforms.stoneColor, 0.18) * 0.32;
+            let reflected = sample_env_view(dir_local_to_view(refl)) * mix(vec3<f32>(1.0), uniforms.stoneColor, 0.18) * 0.32;
             accumulated += throughput * (glow * (0.54 + 0.24 * diffuse) + reflected);
             break;
         }
@@ -395,7 +405,7 @@ fn trace_internal(rd_r: vec3<f32>, rd_g: vec3<f32>, rd_b: vec3<f32>,
         }
 
         // Window detection (shared normal, un-flipped)
-        let outZ = hit.normal.z;
+        let outZ = (uniforms.modelMatrix * vec4<f32>(hit.normal, 0.0)).z;
         if (outZ < -0.1) {
             windowLeak += throughput * (1.0 - fresnel) * max(0.0, -outZ);
         }
@@ -404,19 +414,19 @@ fn trace_internal(rd_r: vec3<f32>, rd_g: vec3<f32>, rd_b: vec3<f32>,
         if (st_r < 1.0) {
             let esc = refract(r, n, eta.x);
             if (length(esc) > 0.1) {
-                accumulated.x += throughput.x * sample_env(esc).r * (1.0 - fresnel.x);
+                accumulated.x += throughput.x * sample_env_view(dir_local_to_view(esc)).r * (1.0 - fresnel.x);
             }
         }
         if (st_g < 1.0) {
             let esc = refract(g, n, eta.y);
             if (length(esc) > 0.1) {
-                accumulated.y += throughput.y * sample_env(esc).g * (1.0 - fresnel.y);
+                accumulated.y += throughput.y * sample_env_view(dir_local_to_view(esc)).g * (1.0 - fresnel.y);
             }
         }
         if (st_b < 1.0) {
             let esc = refract(b, n, eta.z);
             if (length(esc) > 0.1) {
-                accumulated.z += throughput.z * sample_env(esc).b * (1.0 - fresnel.z);
+                accumulated.z += throughput.z * sample_env_view(dir_local_to_view(esc)).b * (1.0 - fresnel.z);
             }
         }
 
@@ -453,6 +463,8 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     if (uniforms.flatShading > 0.5) {
         let NdotV = max(0.0, dot(-V_world, N_world));
 
+        let N_view = normalize((uniforms.viewMatrix * vec4<f32>(N_world, 0.0)).xyz);
+
         // Four area-spread key lights — directions, diffuse weights, specular exponent
         let L0 = normalize(vec3<f32>( 0.6,  0.4,  0.7)); // front-right top  (warm key)
         let L1 = normalize(vec3<f32>(-0.5,  0.3,  0.8)); // front-left top   (fill)
@@ -460,21 +472,22 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let L3 = normalize(vec3<f32>(-0.2,  0.8,  0.3)); // left rim         (edge)
 
         // Diffuse — wider falloff (pow 1 = Lambert)
-        let d0 = max(0.0, dot(N_world, L0));
-        let d1 = max(0.0, dot(N_world, L1)) * 0.55;
-        let d2 = max(0.0, dot(N_world, L2)) * 0.35;
-        let d3 = max(0.0, dot(N_world, L3)) * 0.25;
+        let d0 = max(0.0, dot(N_view, L0));
+        let d1 = max(0.0, dot(N_view, L1)) * 0.55;
+        let d2 = max(0.0, dot(N_view, L2)) * 0.35;
+        let d3 = max(0.0, dot(N_view, L3)) * 0.25;
         let diffuse = 0.04 + d0 + d1 + d2 + d3 - 0.25;
 
         // Specular — lower exponent = wider/softer highlight per light
-        let H0 = normalize(L0 - V_world);
-        let H1 = normalize(L1 - V_world);
-        let H2 = normalize(L2 - V_world);
-        let H3 = normalize(L3 - V_world);
-        let s0 = pow(max(0.0, dot(N_world, H0)), 22.0) * 0.55;
-        let s1 = pow(max(0.0, dot(N_world, H1)), 18.0) * 0.35;
-        let s2 = pow(max(0.0, dot(N_world, H2)), 14.0) * 0.20;
-        let s3 = pow(max(0.0, dot(N_world, H3)), 10.0) * 0.15;
+        let V_view = normalize((uniforms.viewMatrix * vec4<f32>(V_world, 0.0)).xyz);
+        let H0 = normalize(L0 - V_view);
+        let H1 = normalize(L1 - V_view);
+        let H2 = normalize(L2 - V_view);
+        let H3 = normalize(L3 - V_view);
+        let s0 = pow(max(0.0, dot(N_view, H0)), 22.0) * 0.55;
+        let s1 = pow(max(0.0, dot(N_view, H1)), 18.0) * 0.35;
+        let s2 = pow(max(0.0, dot(N_view, H2)), 14.0) * 0.20;
+        let s3 = pow(max(0.0, dot(N_view, H3)), 10.0) * 0.15;
         let spec = s0 + s1 + s2 + s3;
 
         // Silhouette rim
