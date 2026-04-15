@@ -3213,15 +3213,24 @@ async function setupApp() {
       };
 
       ctx.lineWidth = 1.5;
+      // Batch segments by color into 3 paths to avoid ~300 separate draw calls
+      const paths = {
+         '#59e35f': new Path2D(),
+         '#f5c842': new Path2D(),
+         '#ff5f5f': new Path2D(),
+      };
       for (let i = 1; i < frameTimeHistory.length; i++) {
          const prev = pointForSample(frameTimeHistory[i - 1]);
          const currSample = frameTimeHistory[i];
          const curr = pointForSample(currSample);
-         ctx.strokeStyle = colorForMs(currSample.ms);
+         const p = paths[colorForMs(currSample.ms)];
+         p.moveTo(prev.x, prev.y);
+         p.lineTo(curr.x, curr.y);
+      }
+      for (const [color, path] of Object.entries(paths)) {
+         ctx.strokeStyle = color;
          ctx.beginPath();
-         ctx.moveTo(prev.x, prev.y);
-         ctx.lineTo(curr.x, curr.y);
-         ctx.stroke();
+         ctx.stroke(path);
       }
    }
 
@@ -3301,7 +3310,7 @@ async function setupApp() {
 
       const dt = time - lastFrameTime;
       lastFrameTime = time;
-      pushFrameTimeSample(time, dt);
+      if (perfStatsVisible) pushFrameTimeSample(time, dt);
       const instantFps = dt > 0 ? (1 / dt) : refreshHzEstimate;
       const clampedFps = Math.min(240, Math.max(10, instantFps));
       fpsSmoothed = fpsSmoothed * 0.9 + clampedFps * 0.1;
