@@ -1,5 +1,7 @@
 // import { mat4, vec4 } from 'https://cdn.skypack.dev/gl-matrix';
 import { mat4, vec4 } from './gl-matrix/esm/index.js';
+import { loadSTL, loadGCS, loadGEM, normalizeMesh, computeMeshBoundsRadius, buildBVH } from './loaders.js';
+import { exportInProgress, setupExporter } from './video.js';
 
 const shaderSource = await (await fetch('shaders.wgsl')).text();
 const computeShaderSource = await (await fetch('compute.wgsl')).text();
@@ -29,33 +31,18 @@ const toggleBtn = document.getElementById('gemui-toggle');
 const uiFileInput = document.getElementById('uiFileInput');
 const fileBtn = document.getElementById('fileBtn');
 const fileNameEl = document.getElementById('fileNameEl');
-const exportTiltBtn = document.getElementById('exportTiltBtn');
-const exportStatusEl = document.getElementById('exportStatus');
-const exportProgressEl = document.getElementById('exportProgress');
-const exportProgressFillEl = document.getElementById('exportProgressFill');
-const exportQualitySelect = document.getElementById('exportQualitySelect');
 
-const EXPORT_QUALITY_PRESETS = {
-   400: { maxLongEdge: 400, bitrate: 1_000_000 },
-   800: { maxLongEdge: 800, bitrate: 2_000_000 },
-   1080: { maxLongEdge: 1080, bitrate: 12_000_000 },
-   2160: { maxLongEdge: 2160, bitrate: 24_000_000 },
-};
+// --- UI (built once; survives model swaps) ---
+let currentModelFilename = 'stone.gem';
+let framePending = false;
+let frame = () => { }; // Replaced by setupApp() return value; declared here to avoid closure issues with requestRender()
+const ROT_EPSILON = 1e-4;
 
-function setExportProgress(progress, { visible = true } = {}) {
-   if (!exportProgressEl || !exportProgressFillEl) return;
-   if (!visible) {
-      exportProgressEl.style.display = 'none';
-      exportProgressFillEl.style.width = '0%';
-      return;
-   }
-   const clamped = Math.max(0, Math.min(1, progress));
-   exportProgressEl.style.display = 'block';
-   exportProgressFillEl.style.width = `${(clamped * 100).toFixed(1)}%`;
+function requestRender() {
+   if (framePending) return;
+   framePending = true;
+   requestAnimationFrame(frame);
 }
-
-
-
 // ---------------------------------------------------------------------------
 // UI panel — markup and CSS live in index.html; this function wires up
 // event listeners and initialises values from the ui state object.
@@ -75,7 +62,6 @@ function buildUI(ui, cbs) {
    panel.querySelector('#tiltVal').textContent = ui.tiltAngleDeg;
    panel.querySelector('#focalSlider').value = ui.focalLength;
    panel.querySelector('#focalVal').textContent = `${ui.focalLength} mm`;
-   if (exportQualitySelect) exportQualitySelect.value = String(ui.exportQualityPx);
    panel.querySelector('#exitColor').value = '#000000';
    panel.querySelector('#headShadowColor').value = '#ffbf66';
    ui.headShadowColor = [1.0, 0.75, 0.4];
@@ -113,45 +99,6 @@ function buildUI(ui, cbs) {
       cbs.onFileSelected?.(f.name, url);
    });
 
-   exportQualitySelect?.addEventListener('change', () => {
-      const parsed = parseInt(exportQualitySelect.value, 10);
-      if (EXPORT_QUALITY_PRESETS[parsed]) {
-         ui.exportQualityPx = parsed;
-      }
-   });
-
-   exportTiltBtn?.addEventListener('click', async () => {
-      if (exportTiltBtn.dataset.busy === '1') return;
-      exportTiltBtn.dataset.busy = '1';
-      exportTiltBtn.style.pointerEvents = 'none';
-      exportTiltBtn.textContent = 'Exporting…';
-      if (exportStatusEl) exportStatusEl.textContent = 'Preparing export…';
-      setExportProgress(0.02, { visible: true });
-      try {
-         const ok = await cbs.onExportTiltLoop?.((progress, statusText) => {
-            setExportProgress(progress, { visible: true });
-            if (exportStatusEl && statusText) exportStatusEl.textContent = statusText;
-         });
-         if (exportStatusEl) {
-            exportStatusEl.textContent = ok ? 'Export complete.' : 'Export failed.';
-            setExportProgress(ok ? 1 : 0, { visible: true });
-            setTimeout(() => {
-               if (exportStatusEl.textContent === 'Export complete.' || exportStatusEl.textContent === 'Export failed.') {
-                  exportStatusEl.textContent = '';
-               }
-               setExportProgress(0, { visible: false });
-            }, 2500);
-         }
-      } catch (error) {
-         if (exportStatusEl) exportStatusEl.textContent = error?.message || 'Export failed.';
-         setExportProgress(0, { visible: false });
-      } finally {
-         exportTiltBtn.dataset.busy = '0';
-         exportTiltBtn.style.pointerEvents = '';
-         exportTiltBtn.textContent = 'Export Video';
-      }
-   });
-
    // --- Colour swatches ---
    const gemColours = [
       '#ffffff', '#e8253a', '#1a5fd4',
@@ -159,13 +106,6 @@ function buildUI(ui, cbs) {
       '#ff6090', '#b8e0ff',
    ];
    const swatchContainer = panel.querySelector('#swatches');
-
-   function hexToRgb(hex) {
-      const r = parseInt(hex.slice(1, 3), 16) / 255;
-      const g = parseInt(hex.slice(3, 5), 16) / 255;
-      const b = parseInt(hex.slice(5, 7), 16) / 255;
-      return [r, g, b];
-   }
 
    let activeSwatch = null;
    gemColours.forEach(hex => {
@@ -289,10 +229,9 @@ function buildUI(ui, cbs) {
    const tiltSlider = panel.querySelector('#tiltAngle');
    const tiltVal = panel.querySelector('#tiltVal');
    tiltSlider.addEventListener('input', (e) => {
-      const prevTiltDeg = ui.tiltAngleDeg;
       ui.tiltAngleDeg = parseFloat(e.target.value);
       tiltVal.textContent = ui.tiltAngleDeg.toFixed(0);
-      cbs.onTiltAngleChanged?.(prevTiltDeg, ui.tiltAngleDeg);
+      requestRender();
    });
 
    // External API for model-loading to push updates into the live panel
@@ -313,656 +252,6 @@ function buildUI(ui, cbs) {
          panel.querySelector('#gPreset').value = '-1';
       },
    };
-}
-
-class StoneData {
-   constructor(vertexData, triangleCount, facets = [], refractiveIndex = null, dispersion = null) {
-      this.vertexData = vertexData;
-      this.triangleCount = triangleCount;
-      this.facets = facets;
-      this.refractiveIndex = refractiveIndex;
-      this.dispersion = dispersion;
-   }
-}
-
-async function loadSTL(url) {
-   const response = await fetch(url);
-   const buffer = await response.arrayBuffer();
-
-   const countView = new DataView(buffer, 80, 4);
-   const triangleCount = countView.getUint32(0, true);
-
-   const entrySize = 50;
-   const verticesPerTriangle = 3;
-   const floatsPerVertex = 7;
-
-   const vertexData = new Float32Array(triangleCount * verticesPerTriangle * floatsPerVertex);
-   const dataView = new DataView(buffer, 84);
-
-   for (let i = 0; i < triangleCount; i++) {
-      const offset = i * entrySize;
-      const nx = dataView.getFloat32(offset + 0, true);
-      const ny = dataView.getFloat32(offset + 4, true);
-      const nz = dataView.getFloat32(offset + 8, true);
-
-      for (let v = 0; v < 3; v++) {
-         const vOffset = offset + 12 + (v * 12);
-         const writeIdx = (i * 3 + v) * floatsPerVertex;
-         vertexData[writeIdx + 0] = dataView.getFloat32(vOffset + 0, true);
-         vertexData[writeIdx + 1] = dataView.getFloat32(vOffset + 4, true);
-         vertexData[writeIdx + 2] = dataView.getFloat32(vOffset + 8, true);
-         vertexData[writeIdx + 3] = nx;
-         vertexData[writeIdx + 4] = ny;
-         vertexData[writeIdx + 5] = nz;
-         vertexData[writeIdx + 6] = 0.0;
-      }
-   }
-
-   return new StoneData(vertexData, triangleCount);
-}
-
-function normalizeFacetMetadata(name, instructions) {
-   const rawName = String(name || '').trim();
-   const rawInstructions = String(instructions || '').trim();
-   const hasFrostedInstruction = /\bfrosted\b/i.test(rawInstructions);
-   const trailingFMatch = rawName.match(/^(.*\d)f$/i);
-   const normalizedName = trailingFMatch ? trailingFMatch[1] : rawName;
-   const frosted = hasFrostedInstruction || Boolean(trailingFMatch);
-   const normalizedInstructions = frosted && !hasFrostedInstruction
-      ? (rawInstructions ? `${rawInstructions} FROSTED` : 'FROSTED')
-      : rawInstructions;
-   return {
-      name: normalizedName,
-      instructions: normalizedInstructions,
-      frosted,
-   };
-}
-
-// ---------------------------------------------------------------------------
-// GemCut Studio .gcs XML format loader
-//
-// Structure:
-//   <GemCutStudio version="...">
-//     <index gear="..." symmetry="..." mirror="..."/>
-//     <tier angle="..." depth="..." name="T1" instructions="..." ...>
-//       <facet nx="..." ny="..." nz="..." index_angle="...">
-//         <vertex x="..." y="..." z="..."/>
-//         ...
-//       </facet>
-//       ...
-//     </tier>
-//     ...
-//     <render material="..." refractive_index="1.76" dispersion="0.044" ...>
-//       <color r="1" g="1" b="1"/>
-//     </render>
-//   </GemCutStudio>
-//
-// Vertices are pre-computed — no plane intersection needed.
-// Facets with < 3 vertices are skipped. Fan triangulation from vertex 0.
-// Y axis is negated (same GemCad convention as .gem loader).
-// ---------------------------------------------------------------------------
-async function loadGCS(url) {
-   const response = await fetch(url);
-   const text = await response.text();
-   const parser = new DOMParser();
-   const doc = parser.parseFromString(text, 'application/xml');
-
-   if (doc.querySelector('parsererror')) {
-      throw new Error('GCS: XML parse error');
-   }
-
-   // Refractive index + dispersion
-   let refractiveIndex = 1.76;
-   let dispersion = 0.044;
-   const renderEl = doc.querySelector('render');
-   if (renderEl) {
-      const ri = parseFloat(renderEl.getAttribute('refractive_index'));
-      if (isFinite(ri)) refractiveIndex = ri;
-      const disp = parseFloat(renderEl.getAttribute('dispersion'));
-      if (isFinite(disp)) dispersion = disp;
-   }
-
-   const floatsPerVertex = 7;
-   const triangles = [];
-   const facets = [];
-
-   for (const tierEl of doc.querySelectorAll('tier')) {
-      const tierName = (tierEl.getAttribute('name') || '').trim();
-      const tierInst = (tierEl.getAttribute('instructions') || '').trim();
-
-      for (const facetEl of tierEl.querySelectorAll('facet')) {
-         const nx = parseFloat(facetEl.getAttribute('nx') || '0');
-         const ny = parseFloat(facetEl.getAttribute('ny') || '0');
-         const nz = parseFloat(facetEl.getAttribute('nz') || '0');
-         // Re-normalise (tiny floating-point noise in source)
-         const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
-         const normal = [nx / len, ny / len, nz / len];
-
-         const vertEls = facetEl.querySelectorAll('vertex');
-         if (vertEls.length < 3) continue;
-
-         // GCS vertices are in CW order from outside — swap v1↔v2 in the fan
-         // to restore CCW (front-face) winding. No Y-flip needed: GCS uses the
-         // same coordinate convention as the renderer (Z = table = up).
-         const verts = Array.from(vertEls).map(v => [
-            parseFloat(v.getAttribute('x') || '0'),
-            parseFloat(v.getAttribute('y') || '0'),
-            parseFloat(v.getAttribute('z') || '0'),
-         ]);
-
-         const normalized = normalizeFacetMetadata(tierName, tierInst);
-
-         const triangleCount = verts.length - 2;
-         facets.push({
-            name: normalized.name,
-            instructions: normalized.instructions,
-            frosted: normalized.frosted,
-            normal,
-            vertexCount: verts.length,
-            triangleCount,
-         });
-
-         // GCS vertices are listed CW from outside; swap v1↔v2 to get CCW (front face).
-         for (let i = 1; i < verts.length - 1; i++) {
-            triangles.push({
-               v0: verts[0],
-               v1: verts[i + 1], // swapped
-               v2: verts[i],     // swapped
-               normal,
-               frosted: normalized.frosted,
-            });
-         }
-      }
-   }
-
-   const triCount = triangles.length;
-   const vertexData = new Float32Array(triCount * 3 * floatsPerVertex);
-
-   for (let i = 0; i < triCount; i++) {
-      const { v0, v1, v2, normal, frosted } = triangles[i];
-      const vs = [v0, v1, v2];
-      for (let v = 0; v < 3; v++) {
-         const idx = (i * 3 + v) * floatsPerVertex;
-         vertexData[idx + 0] = vs[v][0];
-         vertexData[idx + 1] = vs[v][1];
-         vertexData[idx + 2] = vs[v][2];
-         vertexData[idx + 3] = normal[0];
-         vertexData[idx + 4] = normal[1];
-         vertexData[idx + 5] = normal[2];
-         vertexData[idx + 6] = frosted ? 1.0 : 0.0;
-      }
-   }
-
-   return new StoneData(vertexData, triCount, facets, refractiveIndex, dispersion);
-}
-
-// ---------------------------------------------------------------------------
-// GemCad .gem binary format loader — derived from stone.cpp::readGemFile()
-//
-// The format is NOT a fixed-record binary. It is a flat stream of float64s:
-//
-//   FACET LOOP (repeat until sentinel):
-//     a, b, c   — float64 * 3  (raw plane normal, NOT yet unit length)
-//                 sentinel: a == -99999.0 ends the loop
-//     int32     — 4 bytes, unused padding (read and discarded)
-//     nameLen   — 1 byte: 0 = no name, else number of chars that follow
-//     nameChars — nameLen bytes (tab-delimited: "name\tcutting_instructions")
-//
-//     VERTEX LOOP for this facet (repeat until tag != 1):
-//       tag      — int32: 1 = vertex follows, anything else = end of vertices
-//       x, y, z  — float64 * 3  (only present when tag == 1)
-//
-//   TAIL (optional, may be absent in older files):
-//     nsym        — int32
-//     mirror_sym  — int32  (0 or 1)
-//     igear       — int32
-//     r_i         — float64  ← refractive index
-//
-// Key insight from stone.cpp lines 1583-1647:
-//   - a,b,c are read raw then normalised: len=sqrt(a²+b²+c²), d=0.9/len
-//   - The normalised (a/len, b/len, c/len, d) defines a half-space: ax+by+cz=d
-//   - Vertices are reconstructed by intersecting ALL combinations of 3 planes
-//   - Each facet's vertices are the intersection points that satisfy ALL planes
-//   - The vertex data in the file is ignored (it's a cache GemCad writes for
-//     its own use); stone.cpp discards it too (reads but never stores x,y,z)
-//
-// So we must reconstruct vertices ourselves by plane intersection, exactly
-// as stone.cpp::newFacet() does via half-space clipping of a convex hull.
-// ---------------------------------------------------------------------------
-async function loadGEM(url) {
-   const response = await fetch(url);
-   const buffer = await response.arrayBuffer();
-   const view = new DataView(buffer);
-   let offset = 0;
-   const SILLY = -99999.0;
-   const F64 = 8;
-   const I32 = 4;
-
-   // ── 1. Parse plane records ───────────────────────────────────────────────
-   const planes = []; // each: { a, b, c, d, name, instructions }  (unit normal, d = 0.9/|abc|)
-
-   function readFacetLabel(byteLength) {
-      const safeLength = Math.max(0, Math.min(byteLength, buffer.byteLength - offset));
-      const bytes = new Uint8Array(buffer, offset, safeLength);
-      offset += safeLength;
-
-      let name = '';
-      let instructions = '';
-      let active = '';
-      let hasSplit = false;
-
-      for (let i = 0; i < bytes.length; i++) {
-         const ch = String.fromCharCode(bytes[i]);
-         if (ch === '\n' || ch === '\0') break;
-         if (ch === '\t' && !hasSplit) {
-            name = active;
-            active = '';
-            hasSplit = true;
-            continue;
-         }
-         active += ch;
-      }
-
-      if (hasSplit) instructions = active;
-      else name = active;
-
-      return {
-         name: name.trim(),
-         instructions: instructions.trim(),
-      };
-   }
-
-   while (offset + F64 <= buffer.byteLength) {
-      const a_raw = view.getFloat64(offset, true); offset += F64;
-      if (a_raw === SILLY) break;
-
-      if (offset + F64 * 2 > buffer.byteLength) break;
-      const b_raw = view.getFloat64(offset, true); offset += F64;
-      const c_raw = view.getFloat64(offset, true); offset += F64;
-
-      const len = Math.sqrt(a_raw * a_raw + b_raw * b_raw + c_raw * c_raw);
-      if (len === 0) continue; // zero-length normal, skip plane
-
-      const plane = {
-         a: a_raw / len,
-         b: b_raw / len,
-         c: c_raw / len,
-         d: 0.9 / len,   // matches stone.cpp: d = 1/len * 0.9
-         name: '',
-         instructions: '',
-         frosted: false,
-      };
-      planes.push(plane);
-
-      // discard the int32 pad
-      offset += I32;
-
-      // read name (1-byte length prefix)
-      if (offset >= buffer.byteLength) break;
-      const nameLen = view.getUint8(offset); offset += 1;
-      if (nameLen > 0) {
-         const label = readFacetLabel(nameLen);
-         const normalized = normalizeFacetMetadata(label.name, label.instructions);
-         plane.name = normalized.name;
-         plane.instructions = normalized.instructions;
-         plane.frosted = normalized.frosted;
-      }
-
-      // skip cached vertex data: read int32 tags until tag != 1
-      while (offset + I32 <= buffer.byteLength) {
-         const tag = view.getInt32(offset, true); offset += I32;
-         if (tag !== 1) break;
-         offset += F64 * 3; // skip x, y, z
-      }
-   }
-
-   // ── 2. Read optional tail ────────────────────────────────────────────────
-   let refractiveIndex = 1.77; // default: corundum, reasonable fallback
-   if (offset + I32 * 3 + F64 <= buffer.byteLength) {
-      offset += I32; // nsym
-      offset += I32; // mirror_sym
-      offset += I32; // igear
-      refractiveIndex = view.getFloat64(offset, true);
-   }
-
-   // ── 3. Reconstruct vertices by 3-plane intersection ──────────────────────
-   // For a convex polyhedron defined by half-spaces ax+by+cz <= d, every
-   // vertex is the intersection of exactly 3 planes. We try all C(n,3)
-   // combinations and keep points that satisfy ALL planes (within epsilon).
-   const EPSILON = 1e-8;
-   const VERTEX_EPS = 1e-6; // deduplicate tolerance
-
-   function intersect3Planes(p0, p1, p2) {
-      // Solve: [p0; p1; p2] * [x,y,z]^T = [d0, d1, d2]^T
-      const { a: a0, b: b0, c: c0, d: d0 } = p0;
-      const { a: a1, b: b1, c: c1, d: d1 } = p1;
-      const { a: a2, b: b2, c: c2, d: d2 } = p2;
-
-      const det = a0 * (b1 * c2 - b2 * c1) - b0 * (a1 * c2 - a2 * c1) + c0 * (a1 * b2 - a2 * b1);
-      if (Math.abs(det) < EPSILON) return null; // parallel/degenerate
-
-      const x = (d0 * (b1 * c2 - b2 * c1) - b0 * (d1 * c2 - d2 * c1) + c0 * (d1 * b2 - d2 * b1)) / det;
-      const y = (a0 * (d1 * c2 - d2 * c1) - d0 * (a1 * c2 - a2 * c1) + c0 * (a1 * d2 - a2 * d1)) / det;
-      const z = (a0 * (b1 * d2 - b2 * d1) - b0 * (a1 * d2 - a2 * d1) + d0 * (a1 * b2 - a2 * b1)) / det;
-      return [x, y, z];
-   }
-
-   function insideAllPlanes(pt) {
-      const [x, y, z] = pt;
-      for (const p of planes) {
-         if (p.a * x + p.b * y + p.c * z > p.d + EPSILON) return false;
-      }
-      return true;
-   }
-
-   // Collect unique vertices
-   const allVerts = [];
-   function addVertex(pt) {
-      for (const v of allVerts) {
-         if (Math.abs(v[0] - pt[0]) + Math.abs(v[1] - pt[1]) + Math.abs(v[2] - pt[2]) < VERTEX_EPS)
-            return allVerts.indexOf(v);
-      }
-      allVerts.push(pt);
-      return allVerts.length - 1;
-   }
-
-   // For each plane, collect which vertices lie on it (within epsilon)
-   const n = planes.length;
-   const facetVerts = planes.map(() => []); // facetVerts[planeIdx] = [vertIdx, ...]
-
-   for (let i = 0; i < n - 2; i++) {
-      for (let j = i + 1; j < n - 1; j++) {
-         for (let k = j + 1; k < n; k++) {
-            const pt = intersect3Planes(planes[i], planes[j], planes[k]);
-            if (!pt || !insideAllPlanes(pt)) continue;
-
-            const vi = addVertex(pt);
-
-            // This vertex belongs to planes i, j, k
-            for (const pi of [i, j, k]) {
-               if (!facetVerts[pi].includes(vi))
-                  facetVerts[pi].push(vi);
-            }
-         }
-      }
-   }
-
-   // ── 4. Order each facet's vertices in CCW winding ────────────────────────
-   // Project onto the facet plane and sort by angle around centroid.
-   function orderFacetVerts(planeIdx, vindices) {
-      if (vindices.length < 3) return vindices;
-      const p = planes[planeIdx];
-      const normal = [p.a, p.b, p.c];
-
-      // Centroid
-      let cx = 0, cy = 0, cz = 0;
-      for (const vi of vindices) {
-         cx += allVerts[vi][0];
-         cy += allVerts[vi][1];
-         cz += allVerts[vi][2];
-      }
-      cx /= vindices.length;
-      cy /= vindices.length;
-      cz /= vindices.length;
-
-      // Build two tangent vectors in the plane
-      let t0 = [1, 0, 0];
-      if (Math.abs(normal[0]) > 0.9) t0 = [0, 1, 0];
-      // t1 = normal × t0
-      const t1 = [
-         normal[1] * t0[2] - normal[2] * t0[1],
-         normal[2] * t0[0] - normal[0] * t0[2],
-         normal[0] * t0[1] - normal[1] * t0[0],
-      ];
-      // t0 = t1 × normal  (orthogonalise)
-      const tu = [
-         t1[1] * normal[2] - t1[2] * normal[1],
-         t1[2] * normal[0] - t1[0] * normal[2],
-         t1[0] * normal[1] - t1[1] * normal[0],
-      ];
-
-      const angles = vindices.map(vi => {
-         const dx = allVerts[vi][0] - cx;
-         const dy = allVerts[vi][1] - cy;
-         const dz = allVerts[vi][2] - cz;
-         const u = dx * tu[0] + dy * tu[1] + dz * tu[2];
-         const v = dx * t1[0] + dy * t1[1] + dz * t1[2];
-         return { vi, angle: Math.atan2(v, u) };
-      });
-
-      angles.sort((a, b) => a.angle - b.angle);
-      return angles.map(a => a.vi);
-   }
-
-   // ── 5. Tessellate and pack ────────────────────────────────────────────────
-   const triangles = [];
-   const facets = [];
-
-   for (let pi = 0; pi < n; pi++) {
-      const verts = orderFacetVerts(pi, facetVerts[pi]);
-      if (verts.length < 3) continue;
-
-      const p = planes[pi];
-      const nx = p.a, ny = p.b, nz = p.c;
-      const triangleCount = verts.length - 2;
-      facets.push({
-         index: pi + 1,
-         name: p.name,
-         instructions: p.instructions,
-         frosted: Boolean(p.frosted),
-         normal: [nx, ny, nz],
-         d: p.d,
-         vertexCount: verts.length,
-         triangleCount,
-      });
-
-      // Fan triangulation from first vertex
-      for (let i = 1; i < verts.length - 1; i++) {
-         triangles.push({
-            v0: allVerts[verts[0]],
-            v1: allVerts[verts[i]],
-            v2: allVerts[verts[i + 1]],
-            normal: [nx, ny, nz],
-            frosted: Boolean(p.frosted),
-         });
-      }
-   }
-
-   // Pack into flat Float32Array matching loadSTL output format.
-   // GemCad's Y axis is inverted relative to the renderer's convention,
-   // so negate Y on both positions and normals. Swapping v1↔v2 restores
-   // the CCW winding that the negation would otherwise flip.
-   const triCount = triangles.length;
-   const floatsPerVertex = 7;
-   const vertexData = new Float32Array(triCount * 3 * floatsPerVertex);
-
-   for (let i = 0; i < triCount; i++) {
-      const { v0, v1, v2, normal, frosted } = triangles[i];
-      const vs = [v0, v2, v1]; // swap v1↔v2 to fix winding after Y-flip
-      for (let v = 0; v < 3; v++) {
-         const idx = (i * 3 + v) * floatsPerVertex;
-         vertexData[idx + 0] = vs[v][0];
-         vertexData[idx + 1] = -vs[v][1]; // flip Y
-         vertexData[idx + 2] = vs[v][2];
-         vertexData[idx + 3] = normal[0];
-         vertexData[idx + 4] = -normal[1]; // flip Y
-         vertexData[idx + 5] = normal[2];
-         vertexData[idx + 6] = frosted ? 1.0 : 0.0;
-      }
-   }
-
-   return new StoneData(vertexData, triCount, facets, refractiveIndex, null);
-}
-
-function normalizeMesh(data) {
-   let min = [Infinity, Infinity, Infinity];
-   let max = [-Infinity, -Infinity, -Infinity];
-
-   for (let i = 0; i < data.length; i += 7) {
-      for (let a = 0; a < 3; a++) {
-         if (data[i + a] < min[a]) min[a] = data[i + a];
-         if (data[i + a] > max[a]) max[a] = data[i + a];
-      }
-   }
-
-   const center = min.map((v, i) => (v + max[i]) / 2);
-   const size = min.map((v, i) => max[i] - v);
-   const maxDimension = Math.max(...size);
-   const scale = 2.0 / maxDimension;
-
-   for (let i = 0; i < data.length; i += 7) {
-      data[i] = (data[i] - center[0]) * scale;
-      data[i + 1] = (data[i + 1] - center[1]) * scale;
-      data[i + 2] = (data[i + 2] - center[2]) * scale;
-   }
-
-   return scale;
-}
-
-function computeMeshBoundsRadius(data) {
-   let maxRadiusSq = 0;
-   for (let i = 0; i < data.length; i += 7) {
-      const x = data[i + 0];
-      const y = data[i + 1];
-      const z = data[i + 2];
-      const radiusSq = x * x + y * y + z * z;
-      if (radiusSq > maxRadiusSq) maxRadiusSq = radiusSq;
-   }
-   return Math.sqrt(maxRadiusSq);
-}
-
-// ---------------------------------------------------------------------------
-// BVH Builder
-// Each triangle is stored as:
-// [v0x,v0y,v0z, v1x,v1y,v1z, v2x,v2y,v2z, nx,ny,nz, frosted]
-// = 13 floats per triangle → triangleBuffer (storage buffer)
-//
-// BVH node layout (8 floats each, aligned for GPU):
-//   [aabbMinX, aabbMinY, aabbMinZ, leftOrTriIdx,
-//    aabbMaxX, aabbMaxY, aabbMaxZ, triCountOrRight]
-//
-//   Leaf:  triCountOrRight > 0  → triCount triangles starting at leftOrTriIdx
-//   Inner: triCountOrRight == 0 → left child = leftOrTriIdx, right = leftOrTriIdx+1
-// ---------------------------------------------------------------------------
-
-function buildBVH(vertexData, triangleCount) {
-   const floatsPerVertex = 7;
-   const floatsPerTriangle = 13;
-   // Pack triangles into flat array: 13 floats each
-   const tris = new Float32Array(triangleCount * floatsPerTriangle);
-   for (let i = 0; i < triangleCount; i++) {
-      const base = i * 3 * floatsPerVertex;
-      const t = i * floatsPerTriangle;
-      // v0
-      tris[t + 0] = vertexData[base + 0];
-      tris[t + 1] = vertexData[base + 1];
-      tris[t + 2] = vertexData[base + 2];
-      // v1
-      tris[t + 3] = vertexData[base + 7];
-      tris[t + 4] = vertexData[base + 8];
-      tris[t + 5] = vertexData[base + 9];
-      // v2
-      tris[t + 6] = vertexData[base + 14];
-      tris[t + 7] = vertexData[base + 15];
-      tris[t + 8] = vertexData[base + 16];
-      // face normal
-      tris[t + 9] = vertexData[base + 3];
-      tris[t + 10] = vertexData[base + 4];
-      tris[t + 11] = vertexData[base + 5];
-      tris[t + 12] = vertexData[base + 6];
-   }
-
-   // Centroid per triangle for splitting
-   const centroids = new Float32Array(triangleCount * 3);
-   for (let i = 0; i < triangleCount; i++) {
-      const t = i * floatsPerTriangle;
-      centroids[i * 3 + 0] = (tris[t + 0] + tris[t + 3] + tris[t + 6]) / 3;
-      centroids[i * 3 + 1] = (tris[t + 1] + tris[t + 4] + tris[t + 7]) / 3;
-      centroids[i * 3 + 2] = (tris[t + 2] + tris[t + 5] + tris[t + 8]) / 3;
-   }
-
-   // Triangle index array — we'll reorder this during BVH build
-   const triIndices = new Int32Array(triangleCount);
-   for (let i = 0; i < triangleCount; i++) triIndices[i] = i;
-
-   const nodes = []; // will hold {minX,minY,minZ,maxX,maxY,maxZ,left,right,triStart,triCount}
-
-   function computeAABB(start, count) {
-      let minX = Infinity, minY = Infinity, minZ = Infinity;
-      let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
-      for (let i = start; i < start + count; i++) {
-         const ti = triIndices[i] * floatsPerTriangle;
-         for (let v = 0; v < 3; v++) {
-            const x = tris[ti + v * 3 + 0];
-            const y = tris[ti + v * 3 + 1];
-            const z = tris[ti + v * 3 + 2];
-            if (x < minX) minX = x; if (x > maxX) maxX = x;
-            if (y < minY) minY = y; if (y > maxY) maxY = y;
-            if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
-         }
-      }
-      return { minX, minY, minZ, maxX, maxY, maxZ };
-   }
-
-   const LEAF_MAX = 4; // max triangles per leaf
-
-   function buildNode(start, count) {
-      const nodeIdx = nodes.length;
-      nodes.push(null); // placeholder
-
-      const aabb = computeAABB(start, count);
-
-      if (count <= LEAF_MAX) {
-         nodes[nodeIdx] = { ...aabb, triStart: start, triCount: count, left: -1, right: -1 };
-         return nodeIdx;
-      }
-
-      // Choose longest axis
-      const dx = aabb.maxX - aabb.minX;
-      const dy = aabb.maxY - aabb.minY;
-      const dz = aabb.maxZ - aabb.minZ;
-      const axis = dx >= dy && dx >= dz ? 0 : dy >= dz ? 1 : 2;
-
-      // Sort by centroid along axis
-      const sub = triIndices.subarray(start, start + count);
-      sub.sort((a, b) => centroids[a * 3 + axis] - centroids[b * 3 + axis]);
-
-      const mid = Math.floor(count / 2);
-      const left = buildNode(start, mid);
-      const right = buildNode(start + mid, count - mid);
-
-      nodes[nodeIdx] = { ...aabb, triStart: -1, triCount: 0, left, right };
-      return nodeIdx;
-   }
-
-   buildNode(0, triangleCount);
-
-   // Pack nodes into Float32Array: 8 floats per node
-   // [minX, minY, minZ, leftOrTriStart,  maxX, maxY, maxZ, triCountOrZero]
-   const nodeCount = nodes.length;
-   const nodeBuffer = new Float32Array(nodeCount * 8);
-   for (let i = 0; i < nodeCount; i++) {
-      const n = nodes[i];
-      const b = i * 8;
-      nodeBuffer[b + 0] = n.minX;
-      nodeBuffer[b + 1] = n.minY;
-      nodeBuffer[b + 2] = n.minZ;
-      nodeBuffer[b + 3] = n.triCount > 0 ? n.triStart : n.left; // leaf: triStart, inner: left child
-      nodeBuffer[b + 4] = n.maxX;
-      nodeBuffer[b + 5] = n.maxY;
-      nodeBuffer[b + 6] = n.maxZ;
-      nodeBuffer[b + 7] = n.triCount > 0 ? n.triCount : -(n.right + 1); // leaf: triCount>0, inner: -rightIdx
-   }
-
-   // Reorder triangle buffer by triIndices so leaves are contiguous
-   const sortedTris = new Float32Array(triangleCount * floatsPerTriangle);
-   for (let i = 0; i < triangleCount; i++) {
-      const src = triIndices[i] * floatsPerTriangle;
-      const dst = i * floatsPerTriangle;
-      for (let j = 0; j < floatsPerTriangle; j++) sortedTris[dst + j] = tris[src + j];
-   }
-
-   return { nodeBuffer, triBuffer: sortedTris, nodeCount };
 }
 
 // ---------------------------------------------------------------------------
@@ -1029,6 +318,169 @@ const TILT_PRERENDER_BUDGET_PER_FRAME = 2;
 const STONE_MARGIN_SCALE = 0.70;
 
 // ---------------------------------------------------------------------------
+// Pure utilities — no closure deps, safe at module scope
+// ---------------------------------------------------------------------------
+function hexToRgb(hex) {
+   const r = parseInt(hex.slice(1, 3), 16) / 255;
+   const g = parseInt(hex.slice(3, 5), 16) / 255;
+   const b = parseInt(hex.slice(5, 7), 16) / 255;
+   return [r, g, b];
+}
+
+function bytesPerPixelForFormat(format) {
+   switch (format) {
+      case 'bgra8unorm':
+      case 'bgra8unorm-srgb':
+      case 'rgba8unorm':
+      case 'rgba8unorm-srgb':
+      case 'rgba8snorm':
+      case 'rgba8uint':
+      case 'rgba8sint':
+         return 4;
+      case 'rg16float':
+      case 'rg16uint':
+      case 'rg16sint':
+         return 4;
+      case 'rgba16float':
+      case 'rgba16uint':
+      case 'rgba16sint':
+         return 8;
+      case 'r16float':
+      case 'r16uint':
+      case 'r16sint':
+         return 2;
+      case 'r32float':
+      case 'r32uint':
+      case 'r32sint':
+         return 4;
+      case 'rg32float':
+      case 'rg32uint':
+      case 'rg32sint':
+         return 8;
+      case 'rgba32float':
+      case 'rgba32uint':
+      case 'rgba32sint':
+         return 16;
+      default:
+         return 4;
+   }
+}
+
+function estimateCacheTextureBytes(width, height, bytesPerPixel) {
+   return Math.max(0, Math.floor(width) * Math.floor(height) * bytesPerPixel);
+}
+
+function escapeHtml(text) {
+   return String(text)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+}
+
+function computeFacetAngleDeg(normal) {
+   const nz = Math.max(-1, Math.min(1, Math.abs(normal[2] ?? 0)));
+   return Math.acos(nz) * 180 / Math.PI;
+}
+
+function computeFacetGearIndex(normal) {
+   const x = normal[0] ?? 0;
+   const y = normal[1] ?? 0;
+   if (Math.abs(x) < 1e-6 && Math.abs(y) < 1e-6) return 'Table';
+
+   const turns = Math.atan2(x, y) / (Math.PI * 2);
+   let gear = Math.round(turns * 96);
+   gear = ((gear % 96) + 96) % 96;
+   if (gear === 0) gear = 96;
+   return String(gear).padStart(2, '0');
+}
+
+function getFacetSection(name) {
+   const prefix = String(name || '').trim().charAt(0).toUpperCase();
+   if (prefix === 'P' || prefix === 'G') return 'PAVILION';
+   if (prefix === 'C' || prefix === 'T') return 'CROWN';
+   return 'OTHER';
+}
+
+function groupFacetInfo(facets = []) {
+   const sections = new Map([
+      ['PAVILION', []],
+      ['CROWN', []],
+      ['OTHER', []],
+   ]);
+   const grouped = new Map();
+
+   for (const facet of facets) {
+      const name = (facet.name || '').trim() || '?';
+      const instructions = (facet.instructions || '').trim();
+      const angle = computeFacetAngleDeg(facet.normal || [0, 0, 1]);
+      const angleKey = angle.toFixed(2);
+      const key = `${angleKey}\u0000${instructions}`;
+      let entry = grouped.get(key);
+      if (!entry) {
+         entry = {
+            section: getFacetSection(name),
+            name,
+            angle,
+            angleLabel: `${angleKey}°`,
+            indexes: [],
+            instructions,
+         };
+         grouped.set(key, entry);
+         sections.get(entry.section)?.push(entry);
+      } else if ((entry.name === '?' || !entry.name) && name !== '?') {
+         const nextSection = getFacetSection(name);
+         if (entry.section !== nextSection) {
+            const currentEntries = sections.get(entry.section);
+            const currentIndex = currentEntries?.indexOf(entry) ?? -1;
+            if (currentIndex >= 0) currentEntries.splice(currentIndex, 1);
+            sections.get(nextSection)?.push(entry);
+            entry.section = nextSection;
+         }
+         entry.name = name;
+      }
+      entry.indexes.push(computeFacetGearIndex(facet.normal || [0, 0, 1]));
+   }
+
+   for (const entries of sections.values()) {
+      entries.forEach((entry) => {
+         const numeric = [];
+         const text = [];
+         for (const index of entry.indexes) {
+            if (/^\d+$/.test(index)) numeric.push(parseInt(index, 10));
+            else text.push(index);
+         }
+         numeric.sort((a, b) => a - b);
+         text.sort((a, b) => a.localeCompare(b));
+         entry.indexes = [
+            ...numeric.map((value) => String(value).padStart(2, '0')),
+            ...text,
+         ];
+      });
+
+      entries.sort((a, b) => {
+         const nameCmp = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+         if (nameCmp !== 0) return nameCmp;
+         return a.angle - b.angle;
+      });
+   }
+
+   return sections;
+}
+
+function formatFacetIndexLines(indexes) {
+   if (!indexes.length) return ['\u2014'];
+   const lines = [];
+   for (let i = 0; i < indexes.length; i += 6) {
+      const chunk = indexes.slice(i, i + 6);
+      const hasMore = i + 6 < indexes.length;
+      lines.push(chunk.join('-') + (hasMore ? '-' : ''));
+   }
+   return lines;
+}
+
+// ---------------------------------------------------------------------------
 // setupApp — one-time WebGPU + UI init; returns { loadModel }
 // ---------------------------------------------------------------------------
 async function setupApp() {
@@ -1064,49 +516,8 @@ async function setupApp() {
    const tiltPreRenderBudgetPerFrame = 1;
    const orientationCacheMaxEntries = ORIENTATION_CACHE_MAX_ENTRIES;
 
-   function bytesPerPixelForFormat(format) {
-      switch (format) {
-         case 'bgra8unorm':
-         case 'bgra8unorm-srgb':
-         case 'rgba8unorm':
-         case 'rgba8unorm-srgb':
-         case 'rgba8snorm':
-         case 'rgba8uint':
-         case 'rgba8sint':
-            return 4;
-         case 'rg16float':
-         case 'rg16uint':
-         case 'rg16sint':
-            return 4;
-         case 'rgba16float':
-         case 'rgba16uint':
-         case 'rgba16sint':
-            return 8;
-         case 'r16float':
-         case 'r16uint':
-         case 'r16sint':
-            return 2;
-         case 'r32float':
-         case 'r32uint':
-         case 'r32sint':
-            return 4;
-         case 'rg32float':
-         case 'rg32uint':
-         case 'rg32sint':
-            return 8;
-         case 'rgba32float':
-         case 'rgba32uint':
-         case 'rgba32sint':
-            return 16;
-         default:
-            return 4;
-      }
-   }
    const cacheBytesPerPixel = bytesPerPixelForFormat(canvasFormat);
 
-   function estimateCacheTextureBytes(width, height, bytesPerPixel) {
-      return Math.max(0, Math.floor(width) * Math.floor(height) * bytesPerPixel);
-   }
    context.configure({
       device,
       format: canvasFormat,
@@ -1208,6 +619,7 @@ async function setupApp() {
       format: 'depth24plus',
       usage: GPUTextureUsage.RENDER_ATTACHMENT,
    });
+   let depthTextureView = depthTexture.createView(); // cached; recreated only on resize
 
    const graphColorTexture = device.createTexture({
       size: [GRAPH_ATLAS_WIDTH, GRAPH_ATLAS_HEIGHT],
@@ -1311,117 +723,6 @@ async function setupApp() {
    // DOM is the source of truth for collapsed state — no separate JS flags.
    let graphExpandedSize = { width: 420, height: 320 };
    let facetExpandedSize = { width: 420, height: 260 };
-
-   function escapeHtml(text) {
-      return String(text)
-         .replaceAll('&', '&amp;')
-         .replaceAll('<', '&lt;')
-         .replaceAll('>', '&gt;')
-         .replaceAll('"', '&quot;')
-         .replaceAll("'", '&#39;');
-   }
-
-
-   function computeFacetAngleDeg(normal) {
-      const nz = Math.max(-1, Math.min(1, Math.abs(normal[2] ?? 0)));
-      return Math.acos(nz) * 180 / Math.PI;
-   }
-
-   function computeFacetGearIndex(normal) {
-      const x = normal[0] ?? 0;
-      const y = normal[1] ?? 0;
-      if (Math.abs(x) < 1e-6 && Math.abs(y) < 1e-6) return 'Table';
-
-      const turns = Math.atan2(x, y) / (Math.PI * 2);
-      let gear = Math.round(turns * 96);
-      gear = ((gear % 96) + 96) % 96;
-      if (gear === 0) gear = 96;
-      return String(gear).padStart(2, '0');
-   }
-
-   function getFacetSection(name) {
-      const prefix = String(name || '').trim().charAt(0).toUpperCase();
-      if (prefix === 'P' || prefix === 'G') return 'PAVILION';
-      if (prefix === 'C' || prefix === 'T') return 'CROWN';
-      return 'OTHER';
-   }
-
-   function groupFacetInfo(facets = []) {
-      const sections = new Map([
-         ['PAVILION', []],
-         ['CROWN', []],
-         ['OTHER', []],
-      ]);
-      const grouped = new Map();
-
-      for (const facet of facets) {
-         const name = (facet.name || '').trim() || '?';
-         const instructions = (facet.instructions || '').trim();
-         const angle = computeFacetAngleDeg(facet.normal || [0, 0, 1]);
-         const angleKey = angle.toFixed(2);
-         const key = `${angleKey}\u0000${instructions}`;
-         let entry = grouped.get(key);
-         if (!entry) {
-            entry = {
-               section: getFacetSection(name),
-               name,
-               angle,
-               angleLabel: `${angleKey}°`,
-               indexes: [],
-               instructions,
-            };
-            grouped.set(key, entry);
-            sections.get(entry.section)?.push(entry);
-         } else if ((entry.name === '?' || !entry.name) && name !== '?') {
-            const nextSection = getFacetSection(name);
-            if (entry.section !== nextSection) {
-               const currentEntries = sections.get(entry.section);
-               const currentIndex = currentEntries?.indexOf(entry) ?? -1;
-               if (currentIndex >= 0) currentEntries.splice(currentIndex, 1);
-               sections.get(nextSection)?.push(entry);
-               entry.section = nextSection;
-            }
-            entry.name = name;
-         }
-         entry.indexes.push(computeFacetGearIndex(facet.normal || [0, 0, 1]));
-      }
-
-      for (const entries of sections.values()) {
-         entries.forEach((entry) => {
-            const numeric = [];
-            const text = [];
-            for (const index of entry.indexes) {
-               if (/^\d+$/.test(index)) numeric.push(parseInt(index, 10));
-               else text.push(index);
-            }
-            numeric.sort((a, b) => a - b);
-            text.sort((a, b) => a.localeCompare(b));
-            entry.indexes = [
-               ...numeric.map((value) => String(value).padStart(2, '0')),
-               ...text,
-            ];
-         });
-
-         entries.sort((a, b) => {
-            const nameCmp = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
-            if (nameCmp !== 0) return nameCmp;
-            return a.angle - b.angle;
-         });
-      }
-
-      return sections;
-   }
-
-   function formatFacetIndexLines(indexes) {
-      if (!indexes.length) return ['—'];
-      const lines = [];
-      for (let i = 0; i < indexes.length; i += 6) {
-         const chunk = indexes.slice(i, i + 6);
-         const hasMore = i + 6 < indexes.length;
-         lines.push(chunk.join('-') + (hasMore ? '-' : ''));
-      }
-      return lines;
-   }
 
    function setFacetStatus(text) {
       facetStatusEl.textContent = text;
@@ -2066,7 +1367,7 @@ async function setupApp() {
             storeOp: 'store',
          }],
          depthStencilAttachment: {
-            view: depthTexture.createView(),
+            view: depthTextureView,
             depthClearValue: 1.0,
             depthLoadOp: 'clear',
             depthStoreOp: 'discard',
@@ -2195,6 +1496,8 @@ async function setupApp() {
       renderBundle = { bindGroup, graphBindGroups, vertexBuffer, triCount: stone.triangleCount };
       invalidateOrientationCache();
 
+      setupExporter(ui, renderBundle);
+
       // Push RI and filename into the live panel
       if (stone.refractiveIndex && stone.refractiveIndex > 1.0) {
          uiControls.setRI(stone.refractiveIndex);
@@ -2218,751 +1521,12 @@ async function setupApp() {
       requestRender();
    }
 
-   // --- UI (built once; survives model swaps) ---
-   let currentModelFilename = 'stone.gem';
-   let framePending = false;
-   let exportInProgress = false;
-   const ROT_EPSILON = 1e-4;
-
    function shouldKeepRendering() {
       if (exportInProgress) return false;
       const rotSettling = Math.abs(targetRotX - currentRotX) > ROT_EPSILON
          || Math.abs(targetRotY - currentRotY) > ROT_EPSILON;
       const prewarmPending = tiltPreRenderRequested && !tiltPreRenderReady;
       return animating || dragPointerId !== null || rotSettling || prewarmPending;
-   }
-
-   function requestRender() {
-      if (framePending) return;
-      framePending = true;
-      requestAnimationFrame(frame);
-   }
-
-   function waitForCondition(predicate, timeoutMs = 15000) {
-      return new Promise((resolve, reject) => {
-         const start = performance.now();
-         const tick = () => {
-            if (predicate()) {
-               resolve();
-               return;
-            }
-            if (performance.now() - start > timeoutMs) {
-               reject(new Error('Timed out waiting for condition'));
-               return;
-            }
-            requestRender();
-            requestAnimationFrame(tick);
-         };
-         tick();
-      });
-   }
-
-   function makeMp4Box(type, ...payloads) {
-      let payloadSize = 0;
-      for (const payload of payloads) payloadSize += payload.byteLength;
-      const out = new Uint8Array(8 + payloadSize);
-      const view = new DataView(out.buffer);
-      view.setUint32(0, out.byteLength, false);
-      out[4] = type.charCodeAt(0);
-      out[5] = type.charCodeAt(1);
-      out[6] = type.charCodeAt(2);
-      out[7] = type.charCodeAt(3);
-      let offset = 8;
-      for (const payload of payloads) {
-         out.set(payload, offset);
-         offset += payload.byteLength;
-      }
-      return out;
-   }
-
-   function makeMp4U8(size) {
-      return new Uint8Array(size);
-   }
-
-   function makeMp4Ftyp() {
-      const payload = makeMp4U8(24);
-      payload.set([0x69, 0x73, 0x6f, 0x6d], 0); // isom
-      payload.set([0, 0, 0, 1], 4);
-      payload.set([0x69, 0x73, 0x6f, 0x6d], 8);
-      payload.set([0x69, 0x73, 0x6f, 0x36], 12);
-      payload.set([0x61, 0x76, 0x63, 0x31], 16);
-      payload.set([0x6d, 0x70, 0x34, 0x31], 20);
-      return makeMp4Box('ftyp', payload);
-   }
-
-   function makeMp4Mvhd(timescale, duration, creationTime) {
-      const payload = makeMp4U8(100);
-      const view = new DataView(payload.buffer);
-      view.setUint32(0, 0, false);
-      view.setUint32(4, creationTime, false);
-      view.setUint32(8, creationTime, false);
-      view.setUint32(12, timescale >>> 0, false);
-      view.setUint32(16, duration >>> 0, false);
-      view.setUint32(20, 0x00010000, false);
-      view.setUint16(24, 0x0100, false);
-      view.setUint16(26, 0, false);
-      view.setUint32(28, 0, false);
-      view.setUint32(32, 0, false);
-      view.setInt32(36, 0x00010000, false);
-      view.setInt32(40, 0, false);
-      view.setInt32(44, 0, false);
-      view.setInt32(48, 0, false);
-      view.setInt32(52, 0x00010000, false);
-      view.setInt32(56, 0, false);
-      view.setInt32(60, 0, false);
-      view.setInt32(64, 0, false);
-      view.setInt32(68, 0x40000000, false);
-      view.setUint32(72, 0, false);
-      view.setUint32(76, 0, false);
-      view.setUint32(80, 0, false);
-      view.setUint32(84, 0, false);
-      view.setUint32(88, 0, false);
-      view.setUint32(92, 0, false);
-      view.setUint32(96, 2, false);
-      return makeMp4Box('mvhd', payload);
-   }
-
-   function makeMp4Tkhd(trackId, duration, width, height, creationTime) {
-      const payload = makeMp4U8(84);
-      const view = new DataView(payload.buffer);
-      view.setUint32(0, 0x00000007, false);
-      view.setUint32(4, creationTime, false);
-      view.setUint32(8, creationTime, false);
-      view.setUint32(12, trackId >>> 0, false);
-      view.setUint32(16, 0, false);
-      view.setUint32(20, duration >>> 0, false);
-      view.setUint32(24, 0, false);
-      view.setUint32(28, 0, false);
-      view.setUint16(32, 0, false);
-      view.setUint16(34, 0, false);
-      view.setUint16(36, 0, false);
-      view.setUint16(38, 0, false);
-      view.setInt32(40, 0x00010000, false);
-      view.setInt32(44, 0, false);
-      view.setInt32(48, 0, false);
-      view.setInt32(52, 0, false);
-      view.setInt32(56, 0x00010000, false);
-      view.setInt32(60, 0, false);
-      view.setInt32(64, 0, false);
-      view.setInt32(68, 0, false);
-      view.setInt32(72, 0x40000000, false);
-      view.setUint32(76, (width << 16) >>> 0, false);
-      view.setUint32(80, (height << 16) >>> 0, false);
-      return makeMp4Box('tkhd', payload);
-   }
-
-   function makeMp4Mdhd(timescale, duration, creationTime) {
-      const payload = makeMp4U8(24);
-      const view = new DataView(payload.buffer);
-      view.setUint32(0, 0, false);
-      view.setUint32(4, creationTime, false);
-      view.setUint32(8, creationTime, false);
-      view.setUint32(12, timescale >>> 0, false);
-      view.setUint32(16, duration >>> 0, false);
-      view.setUint16(20, 0x55c4, false); // und
-      view.setUint16(22, 0, false);
-      return makeMp4Box('mdhd', payload);
-   }
-
-   function makeMp4Hdlr() {
-      const name = new TextEncoder().encode('VideoHandler\u0000');
-      const payload = makeMp4U8(24 + name.byteLength);
-      const view = new DataView(payload.buffer);
-      view.setUint32(0, 0, false);
-      view.setUint32(4, 0, false);
-      payload.set([0x76, 0x69, 0x64, 0x65], 8); // vide
-      view.setUint32(12, 0, false);
-      view.setUint32(16, 0, false);
-      view.setUint32(20, 0, false);
-      payload.set(name, 24);
-      return makeMp4Box('hdlr', payload);
-   }
-
-   function makeMp4Vmhd() {
-      const payload = makeMp4U8(12);
-      const view = new DataView(payload.buffer);
-      view.setUint32(0, 0x00000001, false);
-      view.setUint16(4, 0, false);
-      view.setUint16(6, 0, false);
-      view.setUint16(8, 0, false);
-      view.setUint16(10, 0, false);
-      return makeMp4Box('vmhd', payload);
-   }
-
-   function makeMp4Dinf() {
-      const urlPayload = makeMp4U8(4);
-      new DataView(urlPayload.buffer).setUint32(0, 0x00000001, false);
-      const url = makeMp4Box('url ', urlPayload);
-
-      const drefPayload = makeMp4U8(8);
-      const drefView = new DataView(drefPayload.buffer);
-      drefView.setUint32(0, 0, false);
-      drefView.setUint32(4, 1, false);
-      const dref = makeMp4Box('dref', drefPayload, url);
-      return makeMp4Box('dinf', dref);
-   }
-
-   function makeMp4Avc1(width, height, avcC) {
-      const payload = makeMp4U8(78);
-      const view = new DataView(payload.buffer);
-      view.setUint32(0, 0, false);
-      view.setUint16(4, 0, false);
-      view.setUint16(6, 1, false);
-      view.setUint16(8, 0, false);
-      view.setUint16(10, 0, false);
-      view.setUint32(12, 0, false);
-      view.setUint32(16, 0, false);
-      view.setUint32(20, 0, false);
-      view.setUint16(24, width, false);
-      view.setUint16(26, height, false);
-      view.setUint32(28, 0x00480000, false);
-      view.setUint32(32, 0x00480000, false);
-      view.setUint32(36, 0, false);
-      view.setUint16(40, 1, false);
-      payload[42] = 0;
-      for (let i = 43; i < 74; i++) payload[i] = 0;
-      view.setUint16(74, 0x0018, false);
-      view.setUint16(76, 0xffff, false);
-      const avcCBox = makeMp4Box('avcC', avcC);
-      return makeMp4Box('avc1', payload, avcCBox);
-   }
-
-   function makeMp4Stts(sampleCount, sampleDuration) {
-      const payload = makeMp4U8(16);
-      const view = new DataView(payload.buffer);
-      view.setUint32(0, 0, false);
-      view.setUint32(4, 1, false);
-      view.setUint32(8, sampleCount >>> 0, false);
-      view.setUint32(12, sampleDuration >>> 0, false);
-      return makeMp4Box('stts', payload);
-   }
-
-   function makeMp4Stsc(sampleCount) {
-      const payload = makeMp4U8(20);
-      const view = new DataView(payload.buffer);
-      view.setUint32(0, 0, false);
-      view.setUint32(4, 1, false);
-      view.setUint32(8, 1, false);
-      view.setUint32(12, sampleCount >>> 0, false);
-      view.setUint32(16, 1, false);
-      return makeMp4Box('stsc', payload);
-   }
-
-   function makeMp4Stsz(sampleSizes) {
-      const payload = makeMp4U8(12 + sampleSizes.length * 4);
-      const view = new DataView(payload.buffer);
-      view.setUint32(0, 0, false);
-      view.setUint32(4, 0, false);
-      view.setUint32(8, sampleSizes.length >>> 0, false);
-      let offset = 12;
-      for (const size of sampleSizes) {
-         view.setUint32(offset, size >>> 0, false);
-         offset += 4;
-      }
-      return makeMp4Box('stsz', payload);
-   }
-
-   function makeMp4Stco(dataOffset) {
-      const payload = makeMp4U8(12);
-      const view = new DataView(payload.buffer);
-      view.setUint32(0, 0, false);
-      view.setUint32(4, 1, false);
-      view.setUint32(8, dataOffset >>> 0, false);
-      return makeMp4Box('stco', payload);
-   }
-
-   function makeMp4Stss(syncSampleNumbers) {
-      const payload = makeMp4U8(8 + syncSampleNumbers.length * 4);
-      const view = new DataView(payload.buffer);
-      view.setUint32(0, 0, false);
-      view.setUint32(4, syncSampleNumbers.length >>> 0, false);
-      let offset = 8;
-      for (const sampleNumber of syncSampleNumbers) {
-         view.setUint32(offset, sampleNumber >>> 0, false);
-         offset += 4;
-      }
-      return makeMp4Box('stss', payload);
-   }
-
-   function makeMp4Moov({ width, height, timescale, duration, sampleCount, sampleDuration, sampleSizes, syncSampleNumbers, avcC, mdatDataOffset, creationTime }) {
-      const mvhd = makeMp4Mvhd(timescale, duration, creationTime);
-      const tkhd = makeMp4Tkhd(1, duration, width, height, creationTime);
-      const mdhd = makeMp4Mdhd(timescale, duration, creationTime);
-      const hdlr = makeMp4Hdlr();
-      const vmhd = makeMp4Vmhd();
-      const dinf = makeMp4Dinf();
-
-      const stsdHeader = makeMp4U8(8);
-      const stsdView = new DataView(stsdHeader.buffer);
-      stsdView.setUint32(0, 0, false);
-      stsdView.setUint32(4, 1, false);
-      const avc1 = makeMp4Avc1(width, height, avcC);
-      const stsd = makeMp4Box('stsd', stsdHeader, avc1);
-      const stts = makeMp4Stts(sampleCount, sampleDuration);
-      const stsc = makeMp4Stsc(sampleCount);
-      const stsz = makeMp4Stsz(sampleSizes);
-      const stco = makeMp4Stco(mdatDataOffset);
-      const stss = makeMp4Stss(syncSampleNumbers);
-
-      const stbl = makeMp4Box('stbl', stsd, stts, stsc, stsz, stco, stss);
-      const minf = makeMp4Box('minf', vmhd, dinf, stbl);
-      const mdia = makeMp4Box('mdia', mdhd, hdlr, minf);
-      const trak = makeMp4Box('trak', tkhd, mdia);
-      return makeMp4Box('moov', mvhd, trak);
-   }
-
-   function makeMp4FromAvcSamples({ width, height, timescale, sampleDuration, sampleData, syncSampleNumbers, avcC }) {
-      const sampleCount = sampleData.length;
-      const sampleSizes = sampleData.map(s => s.byteLength);
-      const totalSampleBytes = sampleSizes.reduce((sum, size) => sum + size, 0);
-
-      const creationTime = Math.floor((Date.now() / 1000) + 2082844800);
-      const duration = (sampleCount * sampleDuration) >>> 0;
-      const ftyp = makeMp4Ftyp();
-
-      let moov = makeMp4Moov({
-         width,
-         height,
-         timescale,
-         duration,
-         sampleCount,
-         sampleDuration,
-         sampleSizes,
-         syncSampleNumbers,
-         avcC,
-         mdatDataOffset: 0,
-         creationTime,
-      });
-
-      const mdatDataOffset = ftyp.byteLength + moov.byteLength + 8;
-      moov = makeMp4Moov({
-         width,
-         height,
-         timescale,
-         duration,
-         sampleCount,
-         sampleDuration,
-         sampleSizes,
-         syncSampleNumbers,
-         avcC,
-         mdatDataOffset,
-         creationTime,
-      });
-
-      const mdat = makeMp4U8(8 + totalSampleBytes);
-      const mdatView = new DataView(mdat.buffer);
-      mdatView.setUint32(0, mdat.byteLength, false);
-      mdat[4] = 0x6d; // m
-      mdat[5] = 0x64; // d
-      mdat[6] = 0x61; // a
-      mdat[7] = 0x74; // t
-      let mdatOffset = 8;
-      for (const sample of sampleData) {
-         mdat.set(sample, mdatOffset);
-         mdatOffset += sample.byteLength;
-      }
-
-      return new Blob([ftyp, moov, mdat], { type: 'video/mp4' });
-   }
-
-   async function pickVideoEncoderConfig(width, height, fps, bitrate) {
-      if (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') {
-         return null;
-      }
-      const codecCandidates = [
-         'avc1.640034',
-         'avc1.640033',
-         'avc1.640032',
-         'avc1.640028',
-         'avc1.4d4028',
-         'avc1.4d401f',
-         'avc1.42e01f',
-      ];
-      const fpsCandidates = Array.from(new Set([
-         Math.max(1, Math.round(fps)),
-         30,
-         24,
-      ]));
-      const bitrateCandidates = Array.from(new Set([
-         Math.max(600_000, Math.round(bitrate)),
-         Math.max(600_000, Math.round(bitrate * 0.8)),
-         Math.max(600_000, Math.round(bitrate * 0.65)),
-      ]));
-
-      for (const framerate of fpsCandidates) {
-         for (const targetBitrate of bitrateCandidates) {
-            for (const codec of codecCandidates) {
-               const baseConfig = {
-                  codec,
-                  width,
-                  height,
-                  bitrate: targetBitrate,
-                  framerate,
-                  hardwareAcceleration: 'prefer-hardware',
-                  latencyMode: 'realtime',
-                  avc: { format: 'avc' },
-               };
-               try {
-                  const support = await VideoEncoder.isConfigSupported(baseConfig);
-                  if (support?.supported) {
-                     return {
-                        config: support.config,
-                        framerate,
-                        bitrate: targetBitrate,
-                        codec,
-                     };
-                  }
-               } catch {
-               }
-            }
-         }
-      }
-      return null;
-   }
-
-   function makeExportBaseName(filename) {
-      const safe = String(filename || 'stone.gem')
-         .trim()
-         .replace(/^.*[\\/]/, '')
-         .replace(/\.[^.]*$/, '')
-         .replace(/[^a-zA-Z0-9._-]+/g, '-');
-      return safe || 'stone';
-   }
-
-   function computeStoneCropRect(srcWidth, srcHeight) {
-      const centerX = srcWidth * 0.5;
-      const centerY = srcHeight * 0.5;
-      const sensorHalf = 5 * Math.tan(Math.PI / 8) * STONE_MARGIN_SCALE;
-      const camDist = Math.max(0.2, ui.focalLength / 10);
-      const fitRadius = Math.max(0.1, modelBoundsRadius) * 1.12;
-      const depthFactor = camDist / Math.max(0.05, camDist - fitRadius);
-      const halfNdc = (fitRadius / sensorHalf) * depthFactor;
-      const halfPx = Math.max(24, halfNdc * srcHeight * 0.5);
-
-      let x = Math.floor(centerX - halfPx);
-      let y = Math.floor(centerY - halfPx);
-      let w = Math.ceil(halfPx * 2);
-      let h = Math.ceil(halfPx * 2);
-
-      if (x < 0) { w += x; x = 0; }
-      if (y < 0) { h += y; y = 0; }
-      w = Math.min(w, srcWidth - x);
-      h = Math.min(h, srcHeight - y);
-
-      if (w % 2 !== 0) w -= 1;
-      if (h % 2 !== 0) h -= 1;
-      w = Math.max(2, w);
-      h = Math.max(2, h);
-
-      return { x, y, w, h };
-   }
-
-   function fitEvenSize(width, height, targetLongEdge = 1280) {
-      const srcW = Math.max(1, Math.floor(width));
-      const srcH = Math.max(1, Math.floor(height));
-      const target = Math.max(2, Math.floor(targetLongEdge));
-      let outW = srcW >= srcH
-         ? target
-         : Math.max(2, Math.round(target * (srcW / srcH)));
-      let outH = srcH > srcW
-         ? target
-         : Math.max(2, Math.round(target * (srcH / srcW)));
-      if (outW % 2 !== 0) outW -= 1;
-      if (outH % 2 !== 0) outH -= 1;
-      return { width: Math.max(2, outW), height: Math.max(2, outH) };
-   }
-
-   function getExportQualityPreset(qualityPx) {
-      return EXPORT_QUALITY_PRESETS[qualityPx] || EXPORT_QUALITY_PRESETS[1080];
-   }
-
-   async function exportTiltLoop(onProgress) {
-      if (!renderBundle) return false;
-      if (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') {
-         return false;
-      }
-      const reportProgress = (progress, statusText = '') => {
-         onProgress?.(progress, statusText);
-      };
-
-      const exportLoopCount = 3;
-      const RENDER_PROGRESS_START = 0.05;
-      const RENDER_PROGRESS_END = 0.90;
-      reportProgress(RENDER_PROGRESS_START, 'Preparing export…');
-
-      // Export renders every frame directly to the export canvas; orientation
-      // prewarm is for interactive viewport playback and only adds startup lag.
-      if (tiltPreRenderRequested) {
-         tiltPreRenderRequested = false;
-         tiltPreRenderQueue = [];
-         tiltPreRenderIndex = 0;
-         updatePrewarmOverlay();
-      }
-
-      const prevAnimating = animating;
-      const prevAnimStartTime = animStartTime;
-      const prevTiltCyclePrevPhase = tiltCyclePrevPhase;
-      const prevTiltCycleFrameCount = tiltCycleFrameCount;
-      const prevTiltCycleAccumSec = tiltCycleAccumSec;
-      const prevTiltCycleCompletedCount = tiltCycleCompletedCount;
-      const prevExportInProgress = exportInProgress;
-
-      const desiredExportFps = TILT_PRERENDER_SAMPLE_FPS;
-      const exportQuality = getExportQualityPreset(ui.exportQualityPx);
-      const maxTexDim = device?.limits?.maxTextureDimension2D ?? exportQuality.maxLongEdge;
-      const targetLongEdge = Math.min(exportQuality.maxLongEdge, maxTexDim);
-      const exportSize = fitEvenSize(canvas.width, canvas.height, targetLongEdge);
-      const targetBitrate = exportQuality.bitrate;
-      reportProgress(RENDER_PROGRESS_START, `Rendering ${exportSize.width}×${exportSize.height} frames…`);
-      const encoderSelection = await pickVideoEncoderConfig(
-         exportSize.width,
-         exportSize.height,
-         desiredExportFps,
-         targetBitrate,
-      );
-      if (!encoderSelection) {
-         throw new Error('No supported H.264 profile/fps for this export size.');
-      }
-      const encoderConfig = encoderSelection.config;
-      const exportFps = encoderSelection.framerate;
-      reportProgress(
-         RENDER_PROGRESS_START,
-         `Rendering ${exportSize.width}×${exportSize.height} @ ${exportFps}fps · ${(encoderSelection.bitrate / 1_000_000).toFixed(1)} Mbps`,
-      );
-
-      const exportCanvas = document.createElement('canvas');
-      exportCanvas.width = exportSize.width;
-      exportCanvas.height = exportSize.height;
-      const exportContext = exportCanvas.getContext('webgpu');
-      if (!exportContext) return false;
-      exportContext.configure({
-         device,
-         format: canvasFormat,
-         alphaMode: 'opaque',
-         usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST,
-      });
-      const exportDepthTexture = device.createTexture({
-         size: [exportCanvas.width, exportCanvas.height],
-         format: 'depth24plus',
-         usage: GPUTextureUsage.RENDER_ATTACHMENT,
-      });
-
-      const sampleData = [];
-      const syncSampleNumbers = [];
-      let avcDecoderDescription = null;
-      let encodedChunkCount = 0;
-      let renderedFrameCount = 0;
-
-      const exportStartMs = performance.now();
-      const formatDuration = (seconds) => {
-         if (!isFinite(seconds) || seconds < 0) return '--:--';
-         const totalSec = Math.max(0, Math.round(seconds));
-         const mins = Math.floor(totalSec / 60);
-         const secs = totalSec % 60;
-         return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
-      };
-
-      const updateRenderStatus = (progress) => {
-         const elapsedSec = Math.max(0.001, (performance.now() - exportStartMs) / 1000);
-         const frameFrac = renderedFrames > 0 ? (renderedFrameCount / renderedFrames) : 0;
-         const encodeFps = renderedFrameCount / elapsedSec;
-         const etaSec = encodeFps > 0.001
-            ? Math.max(0, (renderedFrames - renderedFrameCount) / encodeFps)
-            : Infinity;
-         const pct = Math.round(Math.max(0, Math.min(1, frameFrac)) * 100);
-         reportProgress(
-            progress,
-            `Rendering frame ${renderedFrameCount}/${renderedFrames} (${pct}%) · ${encodeFps.toFixed(1)} fps · ETA ${formatDuration(etaSec)} · queue ${encoder.encodeQueueSize} · packets ${encodedChunkCount}`,
-         );
-      };
-
-      const frameDurationUs = Math.round(1_000_000 / exportFps);
-      const renderedLoopCount = 1;
-      const renderedFrames = Math.max(1, Math.round(renderedLoopCount * TILT_ANIM_CYCLE_SEC * exportFps));
-
-      const exportModelMat = mat4.create();
-      const exportViewMat = mat4.create();
-      const exportProjMat = mat4.create();
-      const exportUniformScratch = new Float32Array(272 / 4);
-
-      const encodeErrorState = { error: null };
-      const encoder = new VideoEncoder({
-         output: (chunk, metadata) => {
-            const out = new Uint8Array(chunk.byteLength);
-            chunk.copyTo(out);
-            sampleData.push(out);
-            encodedChunkCount += 1;
-            if (chunk.type === 'key') {
-               syncSampleNumbers.push(sampleData.length);
-            }
-            const desc = metadata?.decoderConfig?.description;
-            if (desc && !avcDecoderDescription) {
-               avcDecoderDescription = new Uint8Array(desc.slice(0));
-            }
-         },
-         error: (error) => {
-            encodeErrorState.error = error;
-         },
-      });
-
-      try {
-         exportInProgress = true;
-         animating = false;
-         tiltCyclePrevPhase = null;
-         tiltCycleFrameCount = 0;
-         tiltCycleAccumSec = 0;
-         tiltCycleCompletedCount = 0;
-         encoder.configure(encoderConfig);
-
-         const SENSOR_HALF = 5 * Math.tan(Math.PI / 8) * STONE_MARGIN_SCALE;
-         const camDist = ui.focalLength / 10;
-         mat4.lookAt(exportViewMat, [0, 0, camDist], [0, 0, 0], [0, 1, 0]);
-         const exportFovY = 2 * Math.atan(SENSOR_HALF / camDist);
-         mat4.perspective(exportProjMat, exportFovY, exportCanvas.width / exportCanvas.height, 0.1, 200.0);
-
-         const baseRotX = quantizeOrientationAngle(currentRotX);
-         const baseRotY = quantizeOrientationAngle(currentRotY);
-         const ampRad = ui.tiltAngleDeg * Math.PI / 180.0;
-         const { bindGroup, vertexBuffer, triCount } = renderBundle;
-
-         for (let frameIndex = 0; frameIndex < renderedFrames; frameIndex++) {
-            if (encodeErrorState.error) throw encodeErrorState.error;
-
-            const elapsed = frameIndex / exportFps;
-            const animSample = sampleTiltAnimation(elapsed, ampRad);
-            const rotX = quantizeOrientationAngle(baseRotX + Math.min(Math.max(animSample.x, 0), ampRad));
-            const rotY = quantizeOrientationAngle(baseRotY + Math.min(Math.max(animSample.y, 0), ampRad));
-
-            mat4.identity(exportModelMat);
-            mat4.rotateX(exportModelMat, exportModelMat, rotX);
-            mat4.rotateY(exportModelMat, exportModelMat, rotY);
-
-            exportUniformScratch.set(exportModelMat, 0);
-            exportUniformScratch.set(exportViewMat, 16);
-            exportUniformScratch.set(exportProjMat, 32);
-            exportUniformScratch[48] = 0;
-            exportUniformScratch[49] = 0;
-            exportUniformScratch[50] = camDist;
-            exportUniformScratch[51] = 0;
-            exportUniformScratch[52] = elapsed;
-            exportUniformScratch[53] = ui.ri;
-            exportUniformScratch[54] = ui.cod;
-            exportUniformScratch[55] = ui.lightMode;
-            exportUniformScratch[56] = ui.color[0];
-            exportUniformScratch[57] = ui.color[1];
-            exportUniformScratch[58] = ui.color[2];
-            exportUniformScratch[59] = 0.0;
-            exportUniformScratch[60] = ui.exitHighlight[0];
-            exportUniformScratch[61] = ui.exitHighlight[1];
-            exportUniformScratch[62] = ui.exitHighlight[2];
-            exportUniformScratch[63] = ui.exitStrength;
-            exportUniformScratch[64] = ui.lightMode === 4 ? 1.0 : 0.0;
-            exportUniformScratch[65] = ui.headShadowColor[0];
-            exportUniformScratch[66] = ui.headShadowColor[1];
-            exportUniformScratch[67] = ui.headShadowColor[2];
-            device.queue.writeBuffer(uniformBuffer, 0, exportUniformScratch);
-
-            const commandEncoder = device.createCommandEncoder();
-            const frameTexture = exportContext.getCurrentTexture();
-            const renderPass = commandEncoder.beginRenderPass({
-               colorAttachments: [{
-                  view: frameTexture.createView(),
-                  clearValue: { r: 0.05, g: 0.05, b: 0.05, a: 1.0 },
-                  loadOp: 'clear',
-                  storeOp: 'store',
-               }],
-               depthStencilAttachment: {
-                  view: exportDepthTexture.createView(),
-                  depthClearValue: 1.0,
-                  depthLoadOp: 'clear',
-                  depthStoreOp: 'discard',
-               },
-            });
-            renderPass.setPipeline(pipeline);
-            renderPass.setBindGroup(0, bindGroup);
-            renderPass.setVertexBuffer(0, vertexBuffer);
-            renderPass.draw(triCount * 3);
-            renderPass.end();
-            device.queue.submit([commandEncoder.finish()]);
-            await device.queue.onSubmittedWorkDone();
-
-            const vf = new VideoFrame(exportCanvas, {
-               timestamp: frameIndex * frameDurationUs,
-               duration: frameDurationUs,
-            });
-            const forceKeyframe = frameIndex === 0 || (frameIndex % exportFps) === 0;
-            encoder.encode(vf, { keyFrame: forceKeyframe });
-            vf.close();
-            renderedFrameCount = frameIndex + 1;
-            const frac = renderedFrameCount / renderedFrames;
-            const progress = RENDER_PROGRESS_START + frac * (RENDER_PROGRESS_END - RENDER_PROGRESS_START);
-            updateRenderStatus(progress);
-         }
-
-         const flushStartMs = performance.now();
-         reportProgress(0.92, `Flushing encoder… queue ${encoder.encodeQueueSize} · packets ${encodedChunkCount}`);
-         const flushPromise = encoder.flush();
-         while (encoder.encodeQueueSize > 0) {
-            const flushElapsedSec = Math.max(0.001, (performance.now() - flushStartMs) / 1000);
-            reportProgress(
-               0.92,
-               `Flushing encoder… queue ${encoder.encodeQueueSize} · packets ${encodedChunkCount} · ${flushElapsedSec.toFixed(1)}s`,
-            );
-            await new Promise((resolve) => setTimeout(resolve, 40));
-         }
-         await flushPromise;
-         reportProgress(0.96, `Finalizing video… packets ${encodedChunkCount}`);
-         if (!avcDecoderDescription || sampleData.length === 0) return false;
-
-         const loopSampleData = sampleData;
-         const loopSyncSampleNumbers = syncSampleNumbers.length > 0 ? syncSampleNumbers : [1];
-         const repeatedSampleData = new Array(loopSampleData.length * exportLoopCount);
-         const repeatedSyncSampleNumbers = [];
-         for (let loopIndex = 0; loopIndex < exportLoopCount; loopIndex++) {
-            const baseSample = loopIndex * loopSampleData.length;
-            for (let i = 0; i < loopSampleData.length; i++) {
-               repeatedSampleData[baseSample + i] = loopSampleData[i];
-            }
-            for (const syncSample of loopSyncSampleNumbers) {
-               repeatedSyncSampleNumbers.push(baseSample + syncSample);
-            }
-         }
-
-         const blob = makeMp4FromAvcSamples({
-            width: exportCanvas.width,
-            height: exportCanvas.height,
-            timescale: 1_000_000,
-            sampleDuration: frameDurationUs,
-            sampleData: repeatedSampleData,
-            syncSampleNumbers: repeatedSyncSampleNumbers,
-            avcC: avcDecoderDescription,
-         });
-         if (blob.size === 0) return false;
-         reportProgress(0.98, 'Saving file…');
-
-         const baseName = makeExportBaseName(currentModelFilename);
-         const downloadUrl = URL.createObjectURL(blob);
-         const anchor = document.createElement('a');
-         anchor.href = downloadUrl;
-         anchor.download = `${baseName}-tilt-${exportLoopCount}loops-${Date.now()}.mp4`;
-         document.body.appendChild(anchor);
-         anchor.click();
-         anchor.remove();
-         setTimeout(() => URL.revokeObjectURL(downloadUrl), 60_000);
-         reportProgress(1.0, 'Export complete.');
-         return true;
-      } finally {
-         try { encoder.close(); } catch {}
-         exportDepthTexture.destroy();
-         animating = prevAnimating;
-         animStartTime = prevAnimStartTime;
-         tiltCyclePrevPhase = prevTiltCyclePrevPhase;
-         tiltCycleFrameCount = prevTiltCycleFrameCount;
-         tiltCycleAccumSec = prevTiltCycleAccumSec;
-         tiltCycleCompletedCount = prevTiltCycleCompletedCount;
-         exportInProgress = prevExportInProgress;
-         requestRender();
-      }
    }
 
    uiControls = buildUI(ui, {
@@ -2980,31 +1544,20 @@ async function setupApp() {
          animating = !animating;
          if (animating) {
             animStartTime = performance.now() * 0.001;
-            tiltCyclePrevPhase = null;
-            tiltCycleFrameCount = 0;
-            tiltCycleAccumSec = 0;
-            tiltCycleCompletedCount = 0;
-            tiltPreRenderRequested = false;
-            tiltPreRenderReady = false;
-            tiltPreRenderQueue = [];
-            tiltPreRenderIndex = 0;
-            tiltPreRenderBaseRotX = null;
-            tiltPreRenderBaseRotY = null;
             if (isMobileDevice) {
                requestTiltPreRender();
             }
-         } else {
-            tiltCyclePrevPhase = null;
-            tiltCycleFrameCount = 0;
-            tiltCycleAccumSec = 0;
-            tiltCycleCompletedCount = 0;
-            tiltPreRenderRequested = false;
-            tiltPreRenderReady = false;
-            tiltPreRenderQueue = [];
-            tiltPreRenderIndex = 0;
-            tiltPreRenderBaseRotX = null;
-            tiltPreRenderBaseRotY = null;
          }
+         // tiltCyclePrevPhase = null;
+         // tiltCycleFrameCount = 0;
+         // tiltCycleAccumSec = 0;
+         // tiltCycleCompletedCount = 0;
+         // tiltPreRenderRequested = false;
+         // tiltPreRenderReady = false;
+         // tiltPreRenderQueue = [];
+         // tiltPreRenderIndex = 0;
+         // tiltPreRenderBaseRotX = null;
+         // tiltPreRenderBaseRotY = null;
          requestRender();
          return animating;
       },
@@ -3016,12 +1569,6 @@ async function setupApp() {
       onRenderOutputChanged() {
          invalidateOrientationCache();
          requestRender();
-      },
-      onTiltAngleChanged(previousTiltDeg, nextTiltDeg) {
-         requestRender();
-      },
-      onExportTiltLoop(onProgress) {
-         return exportTiltLoop(onProgress);
       },
       onFileSelected(name, fileUrl) { loadModel(name, fileUrl); },
    });
@@ -3114,7 +1661,12 @@ async function setupApp() {
    let perfStatsTextEl = null;
    let perfStatsPlotCanvas = null;
    let perfStatsPlotCtx = null;
-   const frameTimeHistory = [];
+   // Ring buffer — no per-frame heap alloc, no O(n) shift
+   const FRAME_HIST_CAP = 1024; // covers 5 s @ 200 fps
+   const frameHistT = new Float64Array(FRAME_HIST_CAP); // timestamps (s)
+   const frameHistMs = new Float32Array(FRAME_HIST_CAP); // frame deltas (ms)
+   let frameHistHead = 0; // next-write slot
+   let frameHistCount = 0; // valid entries (≤ FRAME_HIST_CAP)
 
    let fpsSmoothed = 60, lastFpsUpdate = 0, lastFrameTime = performance.now() * 0.001;
    let frameCpuTotalMsSmoothed = 0;
@@ -3166,31 +1718,41 @@ async function setupApp() {
    }
 
    function pushFrameTimeSample(timeSec, deltaSec) {
-      frameTimeHistory.push({ t: timeSec, ms: deltaSec * 1000.0 });
-      const cutoff = timeSec - FRAME_PLOT_WINDOW_SEC;
-      while (frameTimeHistory.length > 0 && frameTimeHistory[0].t < cutoff) {
-         frameTimeHistory.shift();
-      }
+      frameHistT[frameHistHead] = timeSec;
+      frameHistMs[frameHistHead] = deltaSec * 1000.0;
+      frameHistHead = (frameHistHead + 1) % FRAME_HIST_CAP;
+      if (frameHistCount < FRAME_HIST_CAP) frameHistCount++;
    }
 
    function drawFrameTimePlot(nowSec) {
       if (!perfStatsPlotCtx || !perfStatsPlotCanvas) return;
+      if (frameHistCount < 2) return;
 
       const w = FRAME_PLOT_WIDTH;
       const h = FRAME_PLOT_HEIGHT;
       const ctx = perfStatsPlotCtx;
       ctx.clearRect(0, 0, w, h);
 
-      if (frameTimeHistory.length < 2) return;
+      const cutoff = nowSec - FRAME_PLOT_WINDOW_SEC;
+      const tail = (frameHistHead - frameHistCount + FRAME_HIST_CAP) % FRAME_HIST_CAP;
+
+      // Find first entry inside the window
+      let startJ = 0;
+      for (let j = 0; j < frameHistCount; j++) {
+         if (frameHistT[(tail + j) % FRAME_HIST_CAP] >= cutoff) { startJ = j; break; }
+      }
+      if (frameHistCount - startJ < 2) return;
 
       let maxMs = 0;
-      for (const s of frameTimeHistory) maxMs = Math.max(maxMs, s.ms);
+      for (let j = startJ; j < frameHistCount; j++) {
+         const ms = frameHistMs[(tail + j) % FRAME_HIST_CAP];
+         if (ms > maxMs) maxMs = ms;
+      }
       const yMax = Math.max(16.7, Math.min(80.0, maxMs * 1.1));
 
-      const ms16 = 16.7;
-      const ms33 = 33.3;
       ctx.strokeStyle = 'rgba(255,255,255,0.15)';
       ctx.lineWidth = 1;
+      const ms16 = 16.7, ms33 = 33.3;
       if (ms16 <= yMax) {
          const y16 = h - (ms16 / yMax) * h;
          ctx.beginPath(); ctx.moveTo(0, y16); ctx.lineTo(w, y16); ctx.stroke();
@@ -3201,37 +1763,26 @@ async function setupApp() {
       }
 
       const minT = nowSec - FRAME_PLOT_WINDOW_SEC;
-      const pointForSample = (sample) => ({
-         x: ((sample.t - minT) / FRAME_PLOT_WINDOW_SEC) * w,
-         y: h - (Math.min(sample.ms, yMax) / yMax) * h,
-      });
-
-      const colorForMs = (ms) => {
-         if (ms < 17) return '#59e35f';
-         if (ms < 34) return '#f5c842';
-         return '#ff5f5f';
-      };
-
       ctx.lineWidth = 1.5;
-      // Batch segments by color into 3 paths to avoid ~300 separate draw calls
-      const paths = {
-         '#59e35f': new Path2D(),
-         '#f5c842': new Path2D(),
-         '#ff5f5f': new Path2D(),
-      };
-      for (let i = 1; i < frameTimeHistory.length; i++) {
-         const prev = pointForSample(frameTimeHistory[i - 1]);
-         const currSample = frameTimeHistory[i];
-         const curr = pointForSample(currSample);
-         const p = paths[colorForMs(currSample.ms)];
-         p.moveTo(prev.x, prev.y);
-         p.lineTo(curr.x, curr.y);
+      // 3 batched paths by color — all x/y computed inline, zero per-sample heap alloc
+      const path0 = new Path2D(); // green  < 17 ms
+      const path1 = new Path2D(); // yellow 17–33 ms
+      const path2 = new Path2D(); // red    > 33 ms
+      for (let j = startJ + 1; j < frameHistCount; j++) {
+         const pi = (tail + j - 1) % FRAME_HIST_CAP;
+         const ci = (tail + j) % FRAME_HIST_CAP;
+         const prevX = ((frameHistT[pi] - minT) / FRAME_PLOT_WINDOW_SEC) * w;
+         const prevY = h - (Math.min(frameHistMs[pi], yMax) / yMax) * h;
+         const currX = ((frameHistT[ci] - minT) / FRAME_PLOT_WINDOW_SEC) * w;
+         const currMs = frameHistMs[ci];
+         const currY = h - (Math.min(currMs, yMax) / yMax) * h;
+         const p = currMs < 17 ? path0 : currMs < 34 ? path1 : path2;
+         p.moveTo(prevX, prevY);
+         p.lineTo(currX, currY);
       }
-      for (const [color, path] of Object.entries(paths)) {
-         ctx.strokeStyle = color;
-         ctx.beginPath();
-         ctx.stroke(path);
-      }
+      ctx.strokeStyle = '#59e35f'; ctx.beginPath(); ctx.stroke(path0);
+      ctx.strokeStyle = '#f5c842'; ctx.beginPath(); ctx.stroke(path1);
+      ctx.strokeStyle = '#ff5f5f'; ctx.beginPath(); ctx.stroke(path2);
    }
 
    if (DEBUG) {
@@ -3303,7 +1854,7 @@ async function setupApp() {
    }
 
    // --- Render loop ---
-   function frame() {
+   frame = function render() {
       framePending = false;
       const frameStartMs = performance.now();
       const time = performance.now() * 0.001;
@@ -3380,7 +1931,7 @@ async function setupApp() {
                   storeOp: 'store',
                }],
                depthStencilAttachment: {
-                  view: depthTexture.createView(),
+                  view: depthTextureView,
                   depthClearValue: 1.0,
                   depthLoadOp: 'clear',
                   depthStoreOp: 'discard',
@@ -3541,6 +2092,7 @@ async function setupApp() {
          format: 'depth24plus',
          usage: GPUTextureUsage.RENDER_ATTACHMENT,
       });
+      depthTextureView = depthTexture.createView();
       requestRender();
    }
    window.addEventListener('resize', resize);

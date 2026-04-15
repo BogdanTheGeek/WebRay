@@ -100,7 +100,7 @@ fn rnd_sky(d: vec3<f32>) -> f32 {
 // Head shadow matches C++ coshead = cos(20°) ≈ 0.9397
 // ─────────────────────────────────────────────────
 fn sample_env_view(dirView: vec3<f32>) -> vec3<f32> {
-    let d    = normalize(dirView);
+    let d    = dirView; // caller guarantees unit length
     let mode = uniforms.lightMode;
     let graphOnly = uniforms.graphMode > 0.5;
 
@@ -166,7 +166,8 @@ fn sample_env_view(dirView: vec3<f32>) -> vec3<f32> {
 }
 
 fn sample_env(dirWorld: vec3<f32>) -> vec3<f32> {
-    let dView = (uniforms.viewMatrix * vec4<f32>(normalize(dirWorld), 0.0)).xyz;
+    // dirWorld is unit length; viewMatrix is orthogonal so product stays unit length.
+    let dView = (uniforms.viewMatrix * vec4<f32>(dirWorld, 0.0)).xyz;
     return sample_env_view(dView);
 }
 
@@ -438,14 +439,19 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(aces_tonemap(col * 0.3), 1.0);
     }
 
-    let invModel = transpose(uniforms.modelMatrix);
-    let V_local  = normalize((invModel * vec4<f32>(V_world, 0.0)).xyz);
-    let N_local  = normalize((invModel * vec4<f32>(N_world, 0.0)).xyz);
+    // For a rotation-only model matrix, inverse = transpose of the 3×3 submatrix.
+    // mat3×vec3 is 9 muls + 6 adds vs mat4×vec4's 16 muls + 12 adds.
+    let mCol0   = uniforms.modelMatrix[0].xyz;
+    let mCol1   = uniforms.modelMatrix[1].xyz;
+    let mCol2   = uniforms.modelMatrix[2].xyz;
+    let V_local = normalize(vec3<f32>(dot(V_world, mCol0), dot(V_world, mCol1), dot(V_world, mCol2)));
+    let N_local = normalize(vec3<f32>(dot(N_world, mCol0), dot(N_world, mCol1), dot(N_world, mCol2)));
 
     if (input.frosted > 0.5) {
         let upLight = max(0.0, N_world.z);
-        let rim = pow(1.0 - max(0.0, dot(-V_world, N_world)), 1.6);
-        let frostFresnel = 0.18 + 0.28 * pow(1.0 - max(0.0, dot(-V_world, N_world)), 3.0);
+        let NdotV_frost = max(0.0, dot(-V_world, N_world));
+        let rim = pow(1.0 - NdotV_frost, 1.6);
+        let frostFresnel = 0.18 + 0.28 * pow(1.0 - NdotV_frost, 3.0);
         let frostRefl = sample_env(reflect(V_world, N_world)) * mix(vec3<f32>(1.0), uniforms.stoneColor, 0.30) * frostFresnel;
         let frostWhite = mix(vec3<f32>(0.88, 0.90, 0.92), uniforms.stoneColor, 0.42);
         let frostDiffuse = frostWhite * (0.66 + 0.18 * upLight) + vec3<f32>(0.14) * rim;
