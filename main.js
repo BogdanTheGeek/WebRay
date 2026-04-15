@@ -1,6 +1,6 @@
 // import { mat4, vec4 } from 'https://cdn.skypack.dev/gl-matrix';
 import { mat4, vec4 } from './gl-matrix/esm/index.js';
-import { loadSTL, loadGCS, loadGEM, convertGCSTextToGEMBuffer, normalizeMesh, computeMeshBoundsRadius, buildBVH } from './loaders.js';
+import { loadSTL, loadGCS, loadASC, loadGEM, convertGCSTextToGEMBuffer, normalizeMesh, computeMeshBoundsRadius, buildBVH } from './loaders.js';
 import { exportInProgress, setupExporter } from './video.js';
 
 const shaderSource = await (await fetch('shaders.wgsl')).text();
@@ -1606,6 +1606,7 @@ async function setupApp() {
       switch (ext) {
          case '.gem': stone = await loadGEM(url); break;
          case '.gcs': stone = await loadGCS(url); break;
+         case '.asc': stone = await loadASC(url); break;
          default: stone = await loadSTL(url); break;
       }
 

@@ -334,6 +334,316 @@ function convertGCSTextToGEMBuffer(gcsText) {
    return writer.finish();
 }
 
+function buildStoneFromHalfSpacePlanes(planes, refractiveIndex = null) {
+   const EPSILON = 1e-8;
+   const VERTEX_EPS = 1e-6;
+
+   function intersect3Planes(p0, p1, p2) {
+      const { a: a0, b: b0, c: c0, d: d0 } = p0;
+      const { a: a1, b: b1, c: c1, d: d1 } = p1;
+      const { a: a2, b: b2, c: c2, d: d2 } = p2;
+
+      const det = a0 * (b1 * c2 - b2 * c1) - b0 * (a1 * c2 - a2 * c1) + c0 * (a1 * b2 - a2 * b1);
+      if (Math.abs(det) < EPSILON) return null;
+
+      const x = (d0 * (b1 * c2 - b2 * c1) - b0 * (d1 * c2 - d2 * c1) + c0 * (d1 * b2 - d2 * b1)) / det;
+      const y = (a0 * (d1 * c2 - d2 * c1) - d0 * (a1 * c2 - a2 * c1) + c0 * (a1 * d2 - a2 * d1)) / det;
+      const z = (a0 * (b1 * d2 - b2 * d1) - b0 * (a1 * d2 - a2 * d1) + d0 * (a1 * b2 - a2 * b1)) / det;
+      return [x, y, z];
+   }
+
+   function insideAllPlanes(pt) {
+      const [x, y, z] = pt;
+      for (const p of planes) {
+         if (p.a * x + p.b * y + p.c * z > p.d + EPSILON) return false;
+      }
+      return true;
+   }
+
+   const allVerts = [];
+   function addVertex(pt) {
+      for (let i = 0; i < allVerts.length; i++) {
+         const v = allVerts[i];
+         if (Math.abs(v[0] - pt[0]) + Math.abs(v[1] - pt[1]) + Math.abs(v[2] - pt[2]) < VERTEX_EPS)
+            return i;
+      }
+      allVerts.push(pt);
+      return allVerts.length - 1;
+   }
+
+   const n = planes.length;
+   const facetVerts = planes.map(() => []);
+
+   for (let i = 0; i < n - 2; i++) {
+      for (let j = i + 1; j < n - 1; j++) {
+         for (let k = j + 1; k < n; k++) {
+            const pt = intersect3Planes(planes[i], planes[j], planes[k]);
+            if (!pt || !insideAllPlanes(pt)) continue;
+            const vi = addVertex(pt);
+            for (const pi of [i, j, k]) {
+               if (!facetVerts[pi].includes(vi)) facetVerts[pi].push(vi);
+            }
+         }
+      }
+   }
+
+   function orderFacetVerts(planeIdx, vindices) {
+      if (vindices.length < 3) return vindices;
+      const p = planes[planeIdx];
+      const normal = [p.a, p.b, p.c];
+
+      let cx = 0, cy = 0, cz = 0;
+      for (const vi of vindices) {
+         cx += allVerts[vi][0];
+         cy += allVerts[vi][1];
+         cz += allVerts[vi][2];
+      }
+      cx /= vindices.length;
+      cy /= vindices.length;
+      cz /= vindices.length;
+
+      let t0 = [1, 0, 0];
+      if (Math.abs(normal[0]) > 0.9) t0 = [0, 1, 0];
+      const t1 = [
+         normal[1] * t0[2] - normal[2] * t0[1],
+         normal[2] * t0[0] - normal[0] * t0[2],
+         normal[0] * t0[1] - normal[1] * t0[0],
+      ];
+      const tu = [
+         t1[1] * normal[2] - t1[2] * normal[1],
+         t1[2] * normal[0] - t1[0] * normal[2],
+         t1[0] * normal[1] - t1[1] * normal[0],
+      ];
+
+      const angles = vindices.map(vi => {
+         const dx = allVerts[vi][0] - cx;
+         const dy = allVerts[vi][1] - cy;
+         const dz = allVerts[vi][2] - cz;
+         const u = dx * tu[0] + dy * tu[1] + dz * tu[2];
+         const v = dx * t1[0] + dy * t1[1] + dz * t1[2];
+         return { vi, angle: Math.atan2(v, u) };
+      });
+
+      angles.sort((a, b) => a.angle - b.angle);
+      return angles.map(a => a.vi);
+   }
+
+   const triangles = [];
+   const facets = [];
+
+   for (let pi = 0; pi < n; pi++) {
+      const verts = orderFacetVerts(pi, facetVerts[pi]);
+      if (verts.length < 3) continue;
+
+      const p = planes[pi];
+      const triangleCount = verts.length - 2;
+      facets.push({
+         index: pi + 1,
+         name: p.name || '',
+         instructions: p.instructions || '',
+         frosted: Boolean(p.frosted),
+         normal: [p.a, p.b, p.c],
+         d: p.d,
+         vertexCount: verts.length,
+         triangleCount,
+      });
+
+      for (let i = 1; i < verts.length - 1; i++) {
+         triangles.push({
+            v0: allVerts[verts[0]],
+            v1: allVerts[verts[i]],
+            v2: allVerts[verts[i + 1]],
+            normal: [p.a, p.b, p.c],
+            frosted: Boolean(p.frosted),
+         });
+      }
+   }
+
+   const triCount = triangles.length;
+   const floatsPerVertex = 7;
+   const vertexData = new Float32Array(triCount * 3 * floatsPerVertex);
+
+   for (let i = 0; i < triCount; i++) {
+      const { v0, v1, v2, normal, frosted } = triangles[i];
+      const vs = [v0, v2, v1];
+      for (let v = 0; v < 3; v++) {
+         const idx = (i * 3 + v) * floatsPerVertex;
+         vertexData[idx + 0] = vs[v][0];
+         vertexData[idx + 1] = -vs[v][1];
+         vertexData[idx + 2] = vs[v][2];
+         vertexData[idx + 3] = normal[0];
+         vertexData[idx + 4] = -normal[1];
+         vertexData[idx + 5] = normal[2];
+         vertexData[idx + 6] = frosted ? 1.0 : 0.0;
+      }
+   }
+
+   return new StoneData(vertexData, triCount, facets, refractiveIndex, null);
+}
+
+async function loadASC(url) {
+   const response = await fetch(url);
+   const text = await response.text();
+   const lines = text.split(/\r?\n/);
+
+   let igear = 96;
+   let gearOff = 0;
+   let currentAngle = 0;
+   let currentRho = 0;
+   let currentName = '';
+   let currentInstructions = '';
+   let refractiveIndex = 1.54;
+
+   const planes = [];
+
+   const polarPlane = (angle, index) => {
+      const incl = angle * Math.PI / 180;
+      const azi = (index - gearOff) * 2 * Math.PI / igear;
+      let c = Math.cos(incl);
+      let s = Math.sin(incl);
+      if (angle < 0) {
+         c *= -1;
+         s *= -1;
+      }
+      const a = s * Math.sin(azi);
+      const b = -s * Math.cos(azi);
+      return [a, b, c];
+   };
+
+   let sawHeader = false;
+
+   for (const rawLine of lines) {
+      const line = String(rawLine || '').trim();
+      if (!line) continue;
+      if (line.startsWith(';') || line.startsWith('#') || line.startsWith('//')) continue;
+
+      const parts = line.split(/\s+/);
+      if (!parts.length || !parts[0]) continue;
+
+      if (!sawHeader) {
+         if (parts[0] !== 'GemCad') throw new Error('ASC: missing GemCad header');
+         sawHeader = true;
+         continue;
+      }
+
+      let i = 0;
+      while (i < parts.length) {
+         const tok = parts[i];
+         if (!tok) {
+            i++;
+            continue;
+         }
+
+         const ch = tok.charAt(0);
+
+         if (ch === 'a') {
+            if (i + 2 < parts.length) {
+               const angle = parseFloat(parts[i + 1]);
+               const rho = parseFloat(parts[i + 2]);
+               if (isFinite(angle) && isFinite(rho)) {
+                  currentAngle = angle;
+                  currentRho = rho * 0.9;
+               }
+               i += 3;
+               continue;
+            }
+            i++;
+            continue;
+         }
+
+         if (ch === 'n') {
+            currentName = i + 1 < parts.length ? parts[i + 1] : '';
+            i += 2;
+            continue;
+         }
+
+         if (ch === 'G') {
+            currentInstructions = line.slice(line.indexOf(tok) + tok.length).trim();
+            break;
+         }
+
+         if (ch === 'g') {
+            if (i + 1 < parts.length) {
+               const nextGear = parseInt(parts[i + 1], 10);
+               if (isFinite(nextGear) && nextGear > 0) igear = nextGear;
+            }
+            if (i + 2 < parts.length) {
+               const nextOff = parseFloat(parts[i + 2]);
+               if (isFinite(nextOff)) gearOff = nextOff;
+            }
+            i += 3;
+            continue;
+         }
+
+         if (ch === 'I') {
+            if (i + 1 < parts.length) {
+               const ri = parseFloat(parts[i + 1]);
+               if (isFinite(ri) && ri > 1.0) refractiveIndex = ri;
+            }
+            i += 2;
+            continue;
+         }
+
+         if (ch === 'H' || ch === 'F' || ch === 'y') {
+            break;
+         }
+
+         const index = parseFloat(tok);
+         if (!isFinite(index)) {
+            i++;
+            continue;
+         }
+
+         let normal;
+         let d;
+         if (currentAngle === 0) {
+            if (currentRho > 0) {
+               normal = [0, 0, 1];
+               d = currentRho;
+            } else {
+               normal = [0, 0, -1];
+               d = -currentRho;
+            }
+         } else {
+            normal = polarPlane(currentAngle, index);
+            d = currentRho;
+         }
+
+         const len = Math.hypot(normal[0], normal[1], normal[2]);
+         if (!isFinite(len) || len < 1e-9 || !isFinite(d) || Math.abs(d) <= 1e-12) {
+            i++;
+            continue;
+         }
+
+         if (d < 0) {
+            normal = [-normal[0], -normal[1], -normal[2]];
+            d = -d;
+         }
+
+         const normalizedFacet = normalizeFacetMetadata(currentName, currentInstructions);
+         planes.push({
+            a: normal[0] / len,
+            b: normal[1] / len,
+            c: normal[2] / len,
+            d,
+            name: normalizedFacet.name,
+            instructions: normalizedFacet.instructions,
+            frosted: normalizedFacet.frosted,
+         });
+         i++;
+      }
+   }
+
+   if (!sawHeader) {
+      throw new Error('ASC: missing GemCad header');
+   }
+   if (!planes.length) {
+      throw new Error('ASC: no facets found');
+   }
+
+   return buildStoneFromHalfSpacePlanes(planes, refractiveIndex);
+}
+
 // ---------------------------------------------------------------------------
 // GemCad .gem binary format loader — derived from stone.cpp::readGemFile()
 //
@@ -803,5 +1113,5 @@ function buildBVH(vertexData, triangleCount) {
    return { nodeBuffer, triBuffer: sortedTris, nodeCount };
 }
 
-export { loadSTL, loadGCS, loadGEM, convertGCSTextToGEMBuffer, normalizeMesh, computeMeshBoundsRadius, buildBVH };
+export { loadSTL, loadGCS, loadASC, loadGEM, convertGCSTextToGEMBuffer, normalizeMesh, computeMeshBoundsRadius, buildBVH };
 
