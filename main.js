@@ -43,6 +43,22 @@ function requestRender() {
    framePending = true;
    requestAnimationFrame(frame);
 }
+
+function clampRenderScale(scale, maxScale) {
+   const upper = Math.max(0.5, maxScale || 1);
+   return Math.min(upper, Math.max(0.5, scale || upper));
+}
+
+function rgbToHex(rgb) {
+   const r = Math.max(0, Math.min(255, Math.round((rgb?.[0] ?? 0) * 255)));
+   const g = Math.max(0, Math.min(255, Math.round((rgb?.[1] ?? 0) * 255)));
+   const b = Math.max(0, Math.min(255, Math.round((rgb?.[2] ?? 0) * 255)));
+   return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+}
+
+function applyBodyBackground(ui) {
+   document.body.style.backgroundColor = rgbToHex(ui.backgroundColor);
+}
 // ---------------------------------------------------------------------------
 // UI panel — markup and CSS live in index.html; this function wires up
 // event listeners and initialises values from the ui state object.
@@ -62,9 +78,23 @@ function buildUI(ui, cbs) {
    panel.querySelector('#tiltVal').textContent = ui.tiltAngleDeg;
    panel.querySelector('#focalSlider').value = ui.focalLength;
    panel.querySelector('#focalVal').textContent = `${ui.focalLength} mm`;
+   const renderScaleSlider = panel.querySelector('#renderScaleSlider');
+   const renderScaleVal = panel.querySelector('#renderScaleVal');
+   const applyRenderScaleUi = () => {
+      const maxScale = Math.max(0.5, ui.renderScaleMax || 1);
+      ui.renderScale = clampRenderScale(ui.renderScale, maxScale);
+      renderScaleSlider.min = '0.50';
+      renderScaleSlider.max = maxScale.toFixed(2);
+      renderScaleSlider.step = '0.25';
+      renderScaleSlider.value = ui.renderScale.toFixed(2);
+      renderScaleVal.textContent = `${Math.round(ui.renderScale * 100)}%`;
+   };
+   applyRenderScaleUi();
+   panel.querySelector('#bgColor').value = rgbToHex(ui.backgroundColor);
    panel.querySelector('#exitColor').value = '#000000';
    panel.querySelector('#headShadowColor').value = '#ffbf66';
    ui.headShadowColor = [1.0, 0.75, 0.4];
+   applyBodyBackground(ui);
 
    // Sync active light-mode button with ui.lightMode
    panel.querySelectorAll('#modes .mode').forEach(b =>
@@ -103,7 +133,7 @@ function buildUI(ui, cbs) {
    const gemColours = [
       '#ffffff', '#e8253a', '#1a5fd4',
       '#1db85c', '#9b59d0', '#f5c842',
-      '#ff6090', '#b8e0ff',
+      '#ff6090',
    ];
    const swatchContainer = panel.querySelector('#swatches');
 
@@ -183,6 +213,12 @@ function buildUI(ui, cbs) {
       cbs.onRenderOutputChanged?.();
    });
 
+   panel.querySelector('#bgColor').addEventListener('input', e => {
+      ui.backgroundColor = hexToRgb(e.target.value);
+      applyBodyBackground(ui);
+      cbs.onRenderOutputChanged?.();
+   });
+
    panel.querySelector('#exitColor').addEventListener('input', e => {
       ui.exitHighlight = hexToRgb(e.target.value);
       ui.exitStrength = 1.0; // Ensure it's visible when a colour is picked
@@ -212,6 +248,14 @@ function buildUI(ui, cbs) {
       focalVal.textContent = `${ui.focalLength} mm`;
       cbs.onGraphParamsChanged?.();
       cbs.onRenderOutputChanged?.();
+   });
+
+   renderScaleSlider.addEventListener('input', () => {
+      const maxScale = Math.max(0.5, ui.renderScaleMax || 1);
+      ui.renderScale = clampRenderScale(parseFloat(renderScaleSlider.value), maxScale);
+      renderScaleSlider.value = ui.renderScale.toFixed(2);
+      renderScaleVal.textContent = `${Math.round(ui.renderScale * 100)}%`;
+      cbs.onRenderScaleChanged?.();
    });
 
    // --- View buttons (Reset / Tilt) ---
@@ -251,6 +295,10 @@ function buildUI(ui, cbs) {
          codVal.textContent = ui.cod.toFixed(3);
          panel.querySelector('#gPreset').value = '-1';
       },
+      setRenderScaleMax(maxScale) {
+         ui.renderScaleMax = Math.max(0.5, maxScale || 1);
+         applyRenderScaleUi();
+      },
    };
 }
 
@@ -262,11 +310,14 @@ const ui = {
    cod: presets[0][2],
    lightMode: 3,
    color: [1, 1, 1],
+   backgroundColor: [13 / 255, 13 / 255, 13 / 255],
    exitHighlight: [0, 0, 0],
    headShadowColor: [0.5, 0.5, 0.5],
    exitStrength: 0.0,
    tiltAngleDeg: 10,
    focalLength: 200,
+   renderScale: 0,
+   renderScaleMax: 1,
    exportQualityPx: 1080,
 };
 
@@ -314,7 +365,6 @@ const TILT_ANIM_STEP_SEC = 1.2;
 const TILT_ANIM_CYCLE_SEC = TILT_ANIM_STEP_SEC * 2;
 const TILT_PRERENDER_SAMPLE_FPS = 60;
 const TILT_PRERENDER_FPS_THRESHOLD = 50;
-const TILT_PRERENDER_BUDGET_PER_FRAME = 2;
 const STONE_MARGIN_SCALE = 0.70;
 
 // ---------------------------------------------------------------------------
@@ -512,6 +562,18 @@ async function setupApp() {
    const context = canvas.getContext('webgpu');
    const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
    const mobileRenderDprCap = 1.25;
+   const getRenderScaleUpperBound = () => {
+      const deviceDpr = Math.max(1, window.devicePixelRatio || 1);
+      return isMobileDevice
+         ? Math.min(deviceDpr, mobileRenderDprCap)
+         : deviceDpr;
+   };
+   ui.renderScaleMax = getRenderScaleUpperBound();
+   if (ui.renderScale <= 0) {
+      ui.renderScale = ui.renderScaleMax;
+   } else {
+      ui.renderScale = clampRenderScale(ui.renderScale, ui.renderScaleMax);
+   }
    const tiltPreRenderSampleFps = TILT_PRERENDER_SAMPLE_FPS;
    const tiltPreRenderBudgetPerFrame = 1;
    const orientationCacheMaxEntries = ORIENTATION_CACHE_MAX_ENTRIES;
@@ -1352,7 +1414,7 @@ async function setupApp() {
       device.queue.writeBuffer(uniformBuffer, 0, uniformScratch);
    }
 
-   function renderOrientationToCache(cacheItem, time, bindGroup, vertexBuffer, triCount) {
+   function renderOrientationToCache(cacheItem, bindGroup, vertexBuffer, triCount) {
       const cacheTexture = device.createTexture({
          size: [canvas.width, canvas.height],
          format: canvasFormat,
@@ -1362,7 +1424,12 @@ async function setupApp() {
       const renderPass = commandEncoder.beginRenderPass({
          colorAttachments: [{
             view: cacheTexture.createView(),
-            clearValue: { r: 0.05, g: 0.05, b: 0.05, a: 1.0 },
+            clearValue: {
+               r: ui.backgroundColor[0],
+               g: ui.backgroundColor[1],
+               b: ui.backgroundColor[2],
+               a: 1.0,
+            },
             loadOp: 'clear',
             storeOp: 'store',
          }],
@@ -1404,7 +1471,7 @@ async function setupApp() {
          const cacheItem = tiltPreRenderQueue[tiltPreRenderIndex++];
          if (orientationFrameCache.has(cacheItem.key)) continue;
          writeUniformsForOrientation(cacheItem.rotX, cacheItem.rotY, time);
-         renderOrientationToCache(cacheItem, time, bindGroup, vertexBuffer, triCount);
+         renderOrientationToCache(cacheItem, bindGroup, vertexBuffer, triCount);
          renderedCount++;
       }
       if (tiltPreRenderIndex >= tiltPreRenderQueue.length) {
@@ -1496,8 +1563,6 @@ async function setupApp() {
       renderBundle = { bindGroup, graphBindGroups, vertexBuffer, triCount: stone.triangleCount };
       invalidateOrientationCache();
 
-      setupExporter(ui, renderBundle);
-
       // Push RI and filename into the live panel
       if (stone.refractiveIndex && stone.refractiveIndex > 1.0) {
          uiControls.setRI(stone.refractiveIndex);
@@ -1548,16 +1613,6 @@ async function setupApp() {
                requestTiltPreRender();
             }
          }
-         // tiltCyclePrevPhase = null;
-         // tiltCycleFrameCount = 0;
-         // tiltCycleAccumSec = 0;
-         // tiltCycleCompletedCount = 0;
-         // tiltPreRenderRequested = false;
-         // tiltPreRenderReady = false;
-         // tiltPreRenderQueue = [];
-         // tiltPreRenderIndex = 0;
-         // tiltPreRenderBaseRotX = null;
-         // tiltPreRenderBaseRotY = null;
          requestRender();
          return animating;
       },
@@ -1566,12 +1621,62 @@ async function setupApp() {
          scheduleGraphUpdate();
          requestRender();
       },
+      onRenderScaleChanged() {
+         resize();
+         requestRender();
+      },
       onRenderOutputChanged() {
          invalidateOrientationCache();
          requestRender();
       },
       onFileSelected(name, fileUrl) { loadModel(name, fileUrl); },
    });
+
+   setupExporter(ui, () => ({
+      renderBundle,
+      device,
+      canvas,
+      canvasFormat,
+      pipeline,
+      uniformBuffer,
+      mat4,
+      currentModelFilename,
+      currentRotX,
+      currentRotY,
+      quantizeOrientationAngle,
+      sampleTiltAnimation,
+      requestRender,
+      clearTiltPrewarm() {
+         if (!tiltPreRenderRequested) return;
+         tiltPreRenderRequested = false;
+         tiltPreRenderQueue = [];
+         tiltPreRenderIndex = 0;
+         updatePrewarmOverlay();
+      },
+      getAnimationState() {
+         return {
+            animating,
+            animStartTime,
+            tiltCyclePrevPhase,
+            tiltCycleFrameCount,
+            tiltCycleAccumSec,
+            tiltCycleCompletedCount,
+         };
+      },
+      setAnimationState(nextState) {
+         animating = !!nextState.animating;
+         animStartTime = Number(nextState.animStartTime) || 0;
+         tiltCyclePrevPhase = nextState.tiltCyclePrevPhase ?? null;
+         tiltCycleFrameCount = Number(nextState.tiltCycleFrameCount) || 0;
+         tiltCycleAccumSec = Number(nextState.tiltCycleAccumSec) || 0;
+         tiltCycleCompletedCount = Number(nextState.tiltCycleCompletedCount) || 0;
+      },
+      constants: {
+         TILT_PRERENDER_SAMPLE_FPS,
+         TILT_ANIM_CYCLE_SEC,
+         STONE_MARGIN_SCALE,
+      },
+   }));
 
    // --- Pointer (canvas rotation) ---
    // setPointerCapture ensures move/up events are delivered even when the
@@ -1926,7 +2031,12 @@ async function setupApp() {
             const renderPassDescriptor = {
                colorAttachments: [{
                   view: canvasTexture.createView(),
-                  clearValue: { r: 0.05, g: 0.05, b: 0.05, a: 1.0 },
+                  clearValue: {
+                     r: ui.backgroundColor[0],
+                     g: ui.backgroundColor[1],
+                     b: ui.backgroundColor[2],
+                     a: 1.0,
+                  },
                   loadOp: 'clear',
                   storeOp: 'store',
                }],
@@ -2051,9 +2161,27 @@ async function setupApp() {
    }
 
    // --- Resize ---
+   function computeCanvasHorizontalBounds(viewportWidth) {
+      if (window.innerWidth <= 960) {
+         return { left: 0, width: viewportWidth };
+      }
+      const controlsLeft = panel?.getBoundingClientRect?.().left;
+      if (!Number.isFinite(controlsLeft)) {
+         return { left: 0, width: viewportWidth };
+      }
+      const gapPx = 8;
+      const usableRight = Math.max(2, Math.floor(controlsLeft - gapPx));
+      return {
+         left: 0,
+         width: Math.max(2, Math.min(viewportWidth, usableRight)),
+      };
+   }
+
    function computeFitCanvasCssSize(viewportWidth, viewportHeight) {
-      const side = Math.max(2, Math.floor(Math.min(viewportWidth, viewportHeight)));
-      return { width: side, height: side };
+      const horizontal = computeCanvasHorizontalBounds(viewportWidth);
+      const side = Math.max(2, Math.floor(Math.min(horizontal.width, viewportHeight)));
+      const left = Math.round(horizontal.left + (horizontal.width - side) * 0.5);
+      return { width: side, height: side, left };
    }
 
    function resize() {
@@ -2064,13 +2192,14 @@ async function setupApp() {
       canvas.style.position = 'fixed';
       canvas.style.width = `${fitCss.width}px`;
       canvas.style.height = `${fitCss.height}px`;
-      canvas.style.left = `${Math.round((viewportWidth - fitCss.width) * 0.5)}px`;
+      canvas.style.left = `${fitCss.left}px`;
       canvas.style.top = `${Math.round((viewportHeight - fitCss.height) * 0.5)}px`;
 
-      const deviceDpr = Math.max(1, window.devicePixelRatio || 1);
-      const dpr = isMobileDevice
-         ? Math.min(deviceDpr, mobileRenderDprCap)
-         : deviceDpr;
+      const maxRenderScale = getRenderScaleUpperBound();
+      ui.renderScaleMax = maxRenderScale;
+      uiControls?.setRenderScaleMax(maxRenderScale);
+      const dpr = clampRenderScale(ui.renderScale, maxRenderScale);
+      ui.renderScale = dpr;
       const cssWidth = Math.max(1, fitCss.width);
       const cssHeight = Math.max(1, fitCss.height);
       let nextWidth = Math.max(1, Math.round(cssWidth * dpr));

@@ -6,6 +6,9 @@ const exportProgressEl = document.getElementById('exportProgress');
 const exportProgressFillEl = document.getElementById('exportProgressFill');
 const exportQualitySelect = document.getElementById('exportQualitySelect');
 let exportInProgress = false;
+let exporterUiState = null;
+let getExporterRuntime = null;
+let exporterUiBound = false;
 
 const EXPORT_QUALITY_PRESETS = {
    400: { maxLongEdge: 400, bitrate: 1_000_000 },
@@ -14,7 +17,18 @@ const EXPORT_QUALITY_PRESETS = {
    2160: { maxLongEdge: 2160, bitrate: 24_000_000 },
 };
 
-function setupExporter(ui, renderBundle) {
+function setupExporter(ui, runtimeSource) {
+   exporterUiState = ui;
+   getExporterRuntime = typeof runtimeSource === 'function'
+      ? runtimeSource
+      : () => runtimeSource;
+
+   if (exportQualitySelect && exporterUiState) {
+      exportQualitySelect.value = String(exporterUiState.exportQualityPx);
+   }
+
+   if (exporterUiBound) return;
+   exporterUiBound = true;
 
    exportTiltBtn.addEventListener('click', async () => {
       if (exportTiltBtn.dataset.busy === '1') return;
@@ -24,10 +38,11 @@ function setupExporter(ui, renderBundle) {
       if (exportStatusEl) exportStatusEl.textContent = 'Preparing export…';
       setExportProgress(0.02, { visible: true });
       try {
+         const runtime = getExporterRuntime?.();
          const ok = await exportTiltLoop((progress, statusText) => {
             setExportProgress(progress, { visible: true });
             if (exportStatusEl && statusText) exportStatusEl.textContent = statusText;
-         }, renderBundle);
+         }, exporterUiState, runtime);
          if (exportStatusEl) {
             exportStatusEl.textContent = ok ? 'Export complete.' : 'Export failed.';
             setExportProgress(ok ? 1 : 0, { visible: true });
@@ -48,15 +63,13 @@ function setupExporter(ui, renderBundle) {
       }
    });
 
-   exportQualitySelect.value = String(ui.exportQualityPx);
-
-   exportQualitySelect.addEventListener('change', () => {
+   exportQualitySelect?.addEventListener('change', () => {
+      if (!exporterUiState) return;
       const parsed = parseInt(exportQualitySelect.value, 10);
       if (EXPORT_QUALITY_PRESETS[parsed]) {
-         ui.exportQualityPx = parsed;
+         exporterUiState.exportQualityPx = parsed;
       }
    });
-
 }
 
 
@@ -380,10 +393,73 @@ function makeMp4FromAvcSamples({ width, height, timescale, sampleDuration, sampl
    return new Blob([ftyp, moov, mdat], { type: 'video/mp4' });
 }
 
-async function exportTiltLoop(onProgress, renderBundle) {
+function validateExporterRuntime(runtime) {
+   if (!runtime) throw new Error('Exporter runtime unavailable.');
+   const requiredKeys = [
+      'renderBundle',
+      'device',
+      'canvas',
+      'canvasFormat',
+      'pipeline',
+      'uniformBuffer',
+      'mat4',
+      'currentModelFilename',
+      'currentRotX',
+      'currentRotY',
+      'quantizeOrientationAngle',
+      'sampleTiltAnimation',
+      'requestRender',
+      'clearTiltPrewarm',
+      'getAnimationState',
+      'setAnimationState',
+      'constants',
+   ];
+   for (const key of requiredKeys) {
+      if (!(key in runtime)) {
+         throw new Error(`Exporter runtime missing: ${key}`);
+      }
+   }
+}
+
+async function exportTiltLoop(onProgress, uiState, runtime) {
    if (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') {
       return false;
    }
+   if (!uiState) {
+      throw new Error('Exporter UI state unavailable.');
+   }
+   validateExporterRuntime(runtime);
+
+   const { renderBundle } = runtime;
+   if (!renderBundle) {
+      throw new Error('No model loaded for export.');
+   }
+
+   const {
+      device,
+      canvas,
+      canvasFormat,
+      pipeline,
+      uniformBuffer,
+      mat4,
+      currentModelFilename,
+      currentRotX,
+      currentRotY,
+      quantizeOrientationAngle,
+      sampleTiltAnimation,
+      requestRender,
+      clearTiltPrewarm,
+      getAnimationState,
+      setAnimationState,
+      constants,
+   } = runtime;
+
+   const {
+      TILT_PRERENDER_SAMPLE_FPS,
+      TILT_ANIM_CYCLE_SEC,
+      STONE_MARGIN_SCALE,
+   } = constants;
+
    const reportProgress = (progress, statusText = '') => {
       onProgress?.(progress, statusText);
    };
@@ -395,23 +471,12 @@ async function exportTiltLoop(onProgress, renderBundle) {
 
    // Export renders every frame directly to the export canvas; orientation
    // prewarm is for interactive viewport playback and only adds startup lag.
-   if (tiltPreRenderRequested) {
-      tiltPreRenderRequested = false;
-      tiltPreRenderQueue = [];
-      tiltPreRenderIndex = 0;
-      updatePrewarmOverlay();
-   }
+   clearTiltPrewarm();
 
-   const prevAnimating = animating;
-   const prevAnimStartTime = animStartTime;
-   const prevTiltCyclePrevPhase = tiltCyclePrevPhase;
-   const prevTiltCycleFrameCount = tiltCycleFrameCount;
-   const prevTiltCycleAccumSec = tiltCycleAccumSec;
-   const prevTiltCycleCompletedCount = tiltCycleCompletedCount;
-   const prevExportInProgress = exportInProgress;
+   const prevAnimState = getAnimationState();
 
    const desiredExportFps = TILT_PRERENDER_SAMPLE_FPS;
-   const exportQuality = getExportQualityPreset(ui.exportQualityPx);
+   const exportQuality = getExportQualityPreset(uiState.exportQualityPx);
    const maxTexDim = device?.limits?.maxTextureDimension2D ?? exportQuality.maxLongEdge;
    const targetLongEdge = Math.min(exportQuality.maxLongEdge, maxTexDim);
    const exportSize = fitEvenSize(canvas.width, canvas.height, targetLongEdge);
@@ -510,19 +575,19 @@ async function exportTiltLoop(onProgress, renderBundle) {
 
    try {
       exportInProgress = true;
-      animating = false;
+      setAnimationState({ ...prevAnimState, animating: false });
       // Reset tilt cycle
       encoder.configure(encoderConfig);
 
       const SENSOR_HALF = 5 * Math.tan(Math.PI / 8) * STONE_MARGIN_SCALE;
-      const camDist = ui.focalLength / 10;
+      const camDist = uiState.focalLength / 10;
       mat4.lookAt(exportViewMat, [0, 0, camDist], [0, 0, 0], [0, 1, 0]);
       const exportFovY = 2 * Math.atan(SENSOR_HALF / camDist);
       mat4.perspective(exportProjMat, exportFovY, exportCanvas.width / exportCanvas.height, 0.1, 200.0);
 
       const baseRotX = quantizeOrientationAngle(currentRotX);
       const baseRotY = quantizeOrientationAngle(currentRotY);
-      const ampRad = ui.tiltAngleDeg * Math.PI / 180.0;
+      const ampRad = uiState.tiltAngleDeg * Math.PI / 180.0;
       const { bindGroup, vertexBuffer, triCount } = renderBundle;
 
       for (let frameIndex = 0; frameIndex < renderedFrames; frameIndex++) {
@@ -545,29 +610,30 @@ async function exportTiltLoop(onProgress, renderBundle) {
          exportUniformScratch[50] = camDist;
          exportUniformScratch[51] = 0;
          exportUniformScratch[52] = elapsed;
-         exportUniformScratch[53] = ui.ri;
-         exportUniformScratch[54] = ui.cod;
-         exportUniformScratch[55] = ui.lightMode;
-         exportUniformScratch[56] = ui.color[0];
-         exportUniformScratch[57] = ui.color[1];
-         exportUniformScratch[58] = ui.color[2];
+         exportUniformScratch[53] = uiState.ri;
+         exportUniformScratch[54] = uiState.cod;
+         exportUniformScratch[55] = uiState.lightMode;
+         exportUniformScratch[56] = uiState.color[0];
+         exportUniformScratch[57] = uiState.color[1];
+         exportUniformScratch[58] = uiState.color[2];
          exportUniformScratch[59] = 0.0;
-         exportUniformScratch[60] = ui.exitHighlight[0];
-         exportUniformScratch[61] = ui.exitHighlight[1];
-         exportUniformScratch[62] = ui.exitHighlight[2];
-         exportUniformScratch[63] = ui.exitStrength;
-         exportUniformScratch[64] = ui.lightMode === 4 ? 1.0 : 0.0;
-         exportUniformScratch[65] = ui.headShadowColor[0];
-         exportUniformScratch[66] = ui.headShadowColor[1];
-         exportUniformScratch[67] = ui.headShadowColor[2];
+         exportUniformScratch[60] = uiState.exitHighlight[0];
+         exportUniformScratch[61] = uiState.exitHighlight[1];
+         exportUniformScratch[62] = uiState.exitHighlight[2];
+         exportUniformScratch[63] = uiState.exitStrength;
+         exportUniformScratch[64] = uiState.lightMode === 4 ? 1.0 : 0.0;
+         exportUniformScratch[65] = uiState.headShadowColor[0];
+         exportUniformScratch[66] = uiState.headShadowColor[1];
+         exportUniformScratch[67] = uiState.headShadowColor[2];
          device.queue.writeBuffer(uniformBuffer, 0, exportUniformScratch);
 
          const commandEncoder = device.createCommandEncoder();
          const frameTexture = exportContext.getCurrentTexture();
+         const bgColor = uiState.backgroundColor || [0.05, 0.05, 0.05];
          const renderPass = commandEncoder.beginRenderPass({
             colorAttachments: [{
                view: frameTexture.createView(),
-               clearValue: { r: 0.05, g: 0.05, b: 0.05, a: 1.0 },
+               clearValue: { r: bgColor[0], g: bgColor[1], b: bgColor[2], a: 1.0 },
                loadOp: 'clear',
                storeOp: 'store',
             }],
@@ -654,13 +720,8 @@ async function exportTiltLoop(onProgress, renderBundle) {
    } finally {
       try { encoder.close(); } catch { }
       exportDepthTexture.destroy();
-      animating = prevAnimating;
-      animStartTime = prevAnimStartTime;
-      tiltCyclePrevPhase = prevTiltCyclePrevPhase;
-      tiltCycleFrameCount = prevTiltCycleFrameCount;
-      tiltCycleAccumSec = prevTiltCycleAccumSec;
-      tiltCycleCompletedCount = prevTiltCycleCompletedCount;
-      exportInProgress = prevExportInProgress;
+      setAnimationState(prevAnimState);
+      exportInProgress = false;
       requestRender();
    }
 }
@@ -727,34 +788,6 @@ function makeExportBaseName(filename) {
       .replace(/\.[^.]*$/, '')
       .replace(/[^a-zA-Z0-9._-]+/g, '-');
    return safe || 'stone';
-}
-
-function computeStoneCropRect(srcWidth, srcHeight) {
-   const centerX = srcWidth * 0.5;
-   const centerY = srcHeight * 0.5;
-   const sensorHalf = 5 * Math.tan(Math.PI / 8) * STONE_MARGIN_SCALE;
-   const camDist = Math.max(0.2, ui.focalLength / 10);
-   const fitRadius = Math.max(0.1, modelBoundsRadius) * 1.12;
-   const depthFactor = camDist / Math.max(0.05, camDist - fitRadius);
-   const halfNdc = (fitRadius / sensorHalf) * depthFactor;
-   const halfPx = Math.max(24, halfNdc * srcHeight * 0.5);
-
-   let x = Math.floor(centerX - halfPx);
-   let y = Math.floor(centerY - halfPx);
-   let w = Math.ceil(halfPx * 2);
-   let h = Math.ceil(halfPx * 2);
-
-   if (x < 0) { w += x; x = 0; }
-   if (y < 0) { h += y; y = 0; }
-   w = Math.min(w, srcWidth - x);
-   h = Math.min(h, srcHeight - y);
-
-   if (w % 2 !== 0) w -= 1;
-   if (h % 2 !== 0) h -= 1;
-   w = Math.max(2, w);
-   h = Math.max(2, h);
-
-   return { x, y, w, h };
 }
 
 function fitEvenSize(width, height, targetLongEdge = 1280) {

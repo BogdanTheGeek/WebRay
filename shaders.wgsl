@@ -97,7 +97,9 @@ fn rnd_sky(d: vec3<f32>) -> f32 {
 // ─────────────────────────────────────────────────
 // Environment sampler
 // Implements all four raytracer.cpp light models.
-// Head shadow matches C++ coshead = cos(20°) ≈ 0.9397
+// headshadow angle hardcoded
+// cos(20°) ≈ 0.9397
+// cos(10°) ≈ 0.9848
 // ─────────────────────────────────────────────────
 fn sample_env_view(dirView: vec3<f32>) -> vec3<f32> {
     let d    = dirView; // caller guarantees unit length
@@ -106,9 +108,9 @@ fn sample_env_view(dirView: vec3<f32>) -> vec3<f32> {
 
     // Head shadow — coloured circle directly above stone (viewer's head)
     var shadowTint = vec3<f32>(1.0);
-    if (!graphOnly && d.z > 0.9397) {
+    if (!graphOnly && d.z > 0.9848) {
         shadowTint = vec3<f32>(uniforms.headShadowR, uniforms.headShadowG, uniforms.headShadowB);
-    } // cos(20°)
+    }
 
     var intensity = 0.0;
 
@@ -147,19 +149,18 @@ fn sample_env_view(dirView: vec3<f32>) -> vec3<f32> {
 
     // Stone colour tint — modulates transmitted light so the body colour
     // of coloured gems (ruby, sapphire, emerald) comes through correctly.
-    // White = no tint. Mix weight 0.55 preserves some brightness.
     let tint = select(
         vec3<f32>(1.0),
         uniforms.stoneColor,
         !graphOnly,
     );
 
-    // Small blue-white ambient from below (light table / bench lamp)
+    // Small white ambient from below (light table / bench lamp)
     // Matches the raytracer's background "leak" colour
     let tableAmbient = select(
         vec3<f32>(0.0),
         vec3<f32>(0.06, 0.06, 0.06) * max(0.0, -d.z + 0.25),
-        !graphOnly,
+        !graphOnly && mode > 2.5,
     );
 
     return tint * envLight + tableAmbient;

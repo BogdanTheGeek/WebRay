@@ -39,7 +39,7 @@
 
         /* ── Main control panel ─────────────────────────────────────── */
         #gemui {
-            width: 256px;
+            width: 300px;
             box-sizing: border-box;
             flex-shrink: 0;
             min-height: 0;
@@ -91,7 +91,8 @@
             padding: 4px 6px; font-size: 12px;
         }
         #gemui #exitColor,
-        #gemui #headShadowColor { width: 100%; height: 28px; border-radius: 6px; border: none; cursor: pointer; }
+        #gemui #headShadowColor,
+        #gemui #bgColor { width: 100%; height: 28px; border-radius: 6px; border: none; cursor: pointer; }
         #gemui .colorRow {
             display: flex;
             gap: 8px;
@@ -400,6 +401,10 @@
 
             <div class="row colorRow">
                 <div class="colorCol">
+                    <label>Background</label>
+                    <input type="color" id="bgColor">
+                </div>
+                <div class="colorCol">
                     <label>Windowing</label>
                     <input type="color" id="exitColor">
                 </div>
@@ -440,6 +445,11 @@
             <div class="row">
                 <label>Focal Length <span class="val" id="focalVal">200 mm</span></label>
                 <input type="range" id="focalSlider" min="20" max="300" step="1" value="200">
+            </div>
+
+            <div class="row">
+                <label>Internal Resolution <span class="val" id="renderScaleVal">100%</span></label>
+                <input type="range" id="renderScaleSlider" min="0.50" max="1.00" step="0.25" value="1.00">
             </div>
 
             <hr class="divider">
