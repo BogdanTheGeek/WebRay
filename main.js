@@ -1643,7 +1643,7 @@ async function setupApp() {
       designApplyTimer = setTimeout(() => {
          designApplyTimer = null;
          applyDesignStone();
-      }, 120);
+      }, 20);
    }
 
    function setDesignFromStoneFacets(facets = [], sourceGear = null) {
