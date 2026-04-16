@@ -1701,6 +1701,7 @@ async function setupApp() {
             min: Number.isFinite(min) ? min : null,
             max: Number.isFinite(max) ? max : null,
             moved: false,
+            vel: 0,
          };
          inputEl.setPointerCapture(e.pointerId);
       });
@@ -1712,7 +1713,8 @@ async function setupApp() {
          dragState.moved = true;
          e.preventDefault();
 
-         const rawValue = dragState.startValue + dx * dragState.step;
+         dragState.vel = 0.9 * dragState.vel + 0.1 * dx;
+         const rawValue = dragState.startValue + dx * dragState.step * Math.max(0.1, 0.8 * Math.abs(dragState.vel));
          const clamped = clamp(rawValue, dragState.min, dragState.max);
          const snapped = Math.round(clamped / dragState.step) * dragState.step;
          const nextValue = clamp(snapped, dragState.min, dragState.max);
