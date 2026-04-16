@@ -91,6 +91,8 @@ function buildUI(ui, cbs) {
    panel.querySelector('#riVal').textContent = ui.ri.toFixed(3);
    panel.querySelector('#codSlider').value = ui.cod;
    panel.querySelector('#codVal').textContent = ui.cod.toFixed(3);
+   panel.querySelector('#claritySlider').value = ui.clarity;
+   panel.querySelector('#clarityVal').textContent = ui.clarity.toFixed(3);
    panel.querySelector('#tiltAngle').value = ui.tiltAngleDeg;
    panel.querySelector('#tiltVal').textContent = ui.tiltAngleDeg;
    panel.querySelector('#focalSlider').value = ui.focalLength;
@@ -253,6 +255,16 @@ function buildUI(ui, cbs) {
       cbs.onRenderOutputChanged?.();
    });
 
+   // --- Clarity slider ---
+   const claritySlider = panel.querySelector('#claritySlider');
+   const clarityVal = panel.querySelector('#clarityVal');
+   claritySlider.addEventListener('input', () => {
+      ui.clarity = parseFloat(claritySlider.value);
+      clarityVal.textContent = ui.clarity.toFixed(3);
+      cbs.onGraphParamsChanged?.();
+      cbs.onRenderOutputChanged?.();
+   });
+
    // --- Preset dropdown ---
    panel.querySelector('#gPreset').addEventListener('change', (e) => {
       const idx = parseInt(e.target.value);
@@ -371,6 +383,7 @@ function buildUI(ui, cbs) {
 const ui = {
    ri: presets[0][1],
    cod: presets[0][2],
+   clarity: 1.0,
    lightMode: 3,
    color: [1, 1, 1],
    backgroundColor: [13 / 255, 13 / 255, 13 / 255],
@@ -2047,7 +2060,7 @@ async function setupApp() {
       out[48] = cameraPos[0];
       out[49] = cameraPos[1];
       out[50] = cameraPos[2];
-      out[51] = 0.0;
+      out[51] = ui.clarity;
 
       out[52] = time;
       out[53] = ui.ri;

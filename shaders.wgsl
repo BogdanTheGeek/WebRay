@@ -15,7 +15,7 @@ struct Uniforms {
     viewMatrix:           mat4x4<f32>,  // 64
     projectionMatrix:     mat4x4<f32>,  // 128
     cameraPosition:       vec3<f32>,    // 192
-    _pad0:                f32,          // 204
+    clarity:              f32,          // 204
     time:                 f32,          // 208
     ri_d:                 f32,          // 212
     cod:                  f32,          // 216
@@ -297,7 +297,11 @@ fn bvh_intersect(ro: vec3<f32>, rd: vec3<f32>, tMax_in: f32) -> HitResult {
 //   window — fraction of throughput that leaked out the pavilion
 //            0 = full TIR, 1 = pure window
 // ─────────────────────────────────────────────────
-struct TraceResult { light: vec3<f32>, window: vec3<f32> };
+struct TraceResult {
+    light: vec3<f32>,
+    window: vec3<f32>,
+    dist: f32
+};
 
 // Merged 3-channel trace: one BVH traversal per bounce shared across R/G/B.
 // The green channel drives geometry (navigator ray). R and B deviate only by
@@ -314,6 +318,7 @@ fn trace_internal(rd_r: vec3<f32>, rd_g: vec3<f32>, rd_b: vec3<f32>,
     var accumulated = vec3<f32>(0.0);
     var throughput  = vec3<f32>(1.0);
     var windowLeak  = vec3<f32>(0.0);
+    var totalDist   = 0.0; // Track cumulative distance
 
     for (var bounce = 0; bounce < 10; bounce++) {
         // Single BVH traversal using the green (middle) navigator ray
@@ -328,6 +333,9 @@ fn trace_internal(rd_r: vec3<f32>, rd_g: vec3<f32>, rd_b: vec3<f32>,
             );
             break;
         }
+
+        // Add the distance traveled in this segment to the total
+        totalDist += hit.t;
 
         var n = normalize(hit.normal);
         if (dot(g, n) > 0.0) { n = -n; }
@@ -388,6 +396,7 @@ fn trace_internal(rd_r: vec3<f32>, rd_g: vec3<f32>, rd_b: vec3<f32>,
     var result: TraceResult;
     result.light  = accumulated;
     result.window = clamp(windowLeak, vec3<f32>(0.0), vec3<f32>(1.0));
+    result.dist   = totalDist;
     return result;
 }
 
@@ -491,9 +500,14 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let entry = input.localPos;
     let tr    = trace_internal(refr_rd_r, refr_rd_g, refr_rd_b, entry, ri, mvMatrix, modelNZ);
 
-    // Brilliance: light reflected back up through the crown
-    let baseColor = reflection
-        + tr.light * (1.0 - fresnel);
+    let clarity = uniforms.clarity;
+    // Beer-Lambert: Clarity 1.0 = clear, 0.0 = opaque/dark
+    let absorptionFactor = (1.0 - clarity) * 1.0;
+    let transmission = exp(-absorptionFactor * tr.dist);
+
+    // Apply to the internal light and window leakage
+    let finalInternalLight = tr.light * transmission * uniforms.stoneColor;
+    let baseColor = reflection + finalInternalLight * (1.0 - fresnel);
 
     // Dedicated graph mode: emit raw pre-tonemap luminance directly.
     // This avoids ACES tonemapping, 8-bit quantization bias, and the
