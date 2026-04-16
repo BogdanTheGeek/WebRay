@@ -608,7 +608,7 @@ async function exportTiltLoop(onProgress, uiState, runtime) {
          exportUniformScratch[48] = 0;
          exportUniformScratch[49] = 0;
          exportUniformScratch[50] = camDist;
-         exportUniformScratch[51] = 0;
+         exportUniformScratch[51] = uiState.clarity;
          exportUniformScratch[52] = elapsed;
          exportUniformScratch[53] = uiState.ri;
          exportUniformScratch[54] = uiState.cod;
