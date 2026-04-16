@@ -11,9 +11,9 @@ let getExporterRuntime = null;
 let exporterUiBound = false;
 
 const EXPORT_QUALITY_PRESETS = {
-   400: { maxLongEdge: 400, bitrate: 1_000_000 },
-   800: { maxLongEdge: 800, bitrate: 2_000_000 },
-   1080: { maxLongEdge: 1080, bitrate: 12_000_000 },
+   400: { maxLongEdge: 400, bitrate: 2_000_000 },
+   800: { maxLongEdge: 800, bitrate: 4_000_000 },
+   1080: { maxLongEdge: 1080, bitrate: 16_000_000 },
    2160: { maxLongEdge: 2160, bitrate: 24_000_000 },
 };
 

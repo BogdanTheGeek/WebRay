@@ -1355,6 +1355,7 @@ async function setupApp() {
    const designNameEl = document.getElementById('designName');
    const designInstructionsEl = document.getElementById('designInstructions');
    const designAddFacetBtn = document.getElementById('designAddFacetBtn');
+   const designSaveGemBtn = document.getElementById('designSaveGemBtn');
    const designClearBtn = document.getElementById('designClearBtn');
    const graphToggleEl = document.getElementById('lightReturnToggle');
    const graphBodyEl = document.getElementById('lightReturnBody');
@@ -1504,6 +1505,133 @@ async function setupApp() {
          startIndex: parseInt(designStartIndexEl.value, 10),
          distance: parseFloat(designDistanceEl.value),
       }, designFacets.length);
+   }
+
+   function buildDesignGcsText(definition = {}) {
+      const gearValue = parseInt(definition?.gear, 10);
+      const gear = Number.isFinite(gearValue) && gearValue > 0 ? Math.round(gearValue) : 96;
+      const riValue = parseFloat(definition?.refractiveIndex);
+      const refractiveIndex = Number.isFinite(riValue) && riValue > 1.0 ? riValue : 1.54;
+      const facets = Array.isArray(definition?.facets) ? definition.facets : [];
+
+      const esc = (value) => String(value ?? '')
+         .replaceAll('&', '&amp;')
+         .replaceAll('<', '&lt;')
+         .replaceAll('>', '&gt;')
+         .replaceAll('"', '&quot;');
+
+      const normalizeVec = (vector) => {
+         const len = Math.hypot(vector[0], vector[1], vector[2]);
+         if (!Number.isFinite(len) || len <= 1e-9) return [0, 0, 1];
+         return [vector[0] / len, vector[1] / len, vector[2] / len];
+      };
+
+      const cross = (a, b) => [
+         a[1] * b[2] - a[2] * b[1],
+         a[2] * b[0] - a[0] * b[2],
+         a[0] * b[1] - a[1] * b[0],
+      ];
+
+      const computeNormalFromPolar = (angleDeg, index, facetGear) => {
+         if (Math.abs(angleDeg) <= 1e-8) {
+            return [0, 0, angleDeg >= 0 ? 1 : -1];
+         }
+         const incl = angleDeg * Math.PI / 180;
+         let c = Math.cos(incl);
+         let s = Math.sin(incl);
+         if (angleDeg < 0) {
+            c *= -1;
+            s *= -1;
+         }
+         const azi = index * 2 * Math.PI / facetGear;
+         return [
+            s * Math.sin(azi),
+            -s * Math.cos(azi),
+            c,
+         ];
+      };
+
+      const getFacetIndexes = (facet, facetGear) => {
+         const explicitIndexes = Array.isArray(facet?.indexes)
+            ? [...new Set(
+               facet.indexes
+                  .map((value) => parseInt(value, 10))
+                  .filter((value) => Number.isFinite(value) && value >= 0)
+                  .map((value) => (value === 0 ? facetGear : value))
+                  .map((value) => wrapGearIndex(value, facetGear)),
+            )].sort((a, b) => a - b)
+            : [];
+
+         if (explicitIndexes.length) return explicitIndexes;
+
+         const symmetry = Math.max(1, Math.min(facetGear, Math.round(parseFloat(facet?.symmetry) || 1)));
+         const startIndex = Math.round(parseFloat(facet?.startIndex) || 0);
+         const mirror = Boolean(facet?.mirror);
+         return generatePatternIndexSet(startIndex, symmetry, mirror, facetGear);
+      };
+
+      const getFacetDistanceByIndex = (facet, index, fallbackDistance) => {
+         if (facet?.indexDistances && typeof facet.indexDistances === 'object') {
+            const direct = parseFloat(facet.indexDistances[String(index)]);
+            if (Number.isFinite(direct) && direct > 0) return direct;
+            const zeroAlias = index === gear ? parseFloat(facet.indexDistances['0']) : NaN;
+            if (Number.isFinite(zeroAlias) && zeroAlias > 0) return zeroAlias;
+         }
+         return fallbackDistance;
+      };
+
+      const fmt = (value) => {
+         const num = Number(value);
+         if (!Number.isFinite(num)) return '0';
+         return num.toFixed(9).replace(/\.?0+$/, '') || '0';
+      };
+
+      const tierXml = [];
+      facets.forEach((rawFacet, idx) => {
+         const facet = normalizeDesignFacet(rawFacet, idx);
+         const facetName = String(facet?.name || `F${idx + 1}`).trim() || `F${idx + 1}`;
+         const facetInstructions = String(facet?.instructions || '').trim();
+         const facetGearValue = parseInt(rawFacet?.gear, 10);
+         const facetGear = Number.isFinite(facetGearValue) && facetGearValue > 0
+            ? Math.round(facetGearValue)
+            : gear;
+         const indexes = getFacetIndexes(facet, facetGear);
+         const defaultDistance = Math.max(1e-5, Math.abs(parseFloat(facet?.distance) || 1));
+
+         const facetXml = indexes.map((index) => {
+            const distance = Math.max(1e-5, Math.abs(getFacetDistanceByIndex(facet, index, defaultDistance)));
+            const normal = normalizeVec(computeNormalFromPolar(facet.angleDeg, index, facetGear));
+            const center = [normal[0] * distance, normal[1] * distance, normal[2] * distance];
+            const ref = Math.abs(normal[2]) < 0.9 ? [0, 0, 1] : [0, 1, 0];
+            const tangentU = normalizeVec(cross(ref, normal));
+            const tangentV = normalizeVec(cross(normal, tangentU));
+            const size = Math.max(1e-3, distance * 0.02);
+
+            const v0 = [
+               center[0] + tangentU[0] * size,
+               center[1] + tangentU[1] * size,
+               center[2] + tangentU[2] * size,
+            ];
+            const v1 = [
+               center[0] + tangentV[0] * size,
+               center[1] + tangentV[1] * size,
+               center[2] + tangentV[2] * size,
+            ];
+            const v2 = [
+               center[0] - (tangentU[0] + tangentV[0]) * size,
+               center[1] - (tangentU[1] + tangentV[1]) * size,
+               center[2] - (tangentU[2] + tangentV[2]) * size,
+            ];
+
+            return `\n      <facet nx="${fmt(normal[0])}" ny="${fmt(normal[1])}" nz="${fmt(normal[2])}">\n        <vertex x="${fmt(v0[0])}" y="${fmt(v0[1])}" z="${fmt(v0[2])}"/>\n        <vertex x="${fmt(v1[0])}" y="${fmt(v1[1])}" z="${fmt(v1[2])}"/>\n        <vertex x="${fmt(v2[0])}" y="${fmt(v2[1])}" z="${fmt(v2[2])}"/>\n      </facet>`;
+         }).join('');
+
+         if (facetXml) {
+            tierXml.push(`  <tier name="${esc(facetName)}" instructions="${esc(facetInstructions)}">${facetXml}\n  </tier>`);
+         }
+      });
+
+      return `<?xml version="1.0" encoding="UTF-8"?>\n<gem>\n  <index symmetry="0" mirror="0" gear="${gear}"/>\n  <render refractive_index="${fmt(refractiveIndex)}"/>\n${tierXml.join('\n')}\n</gem>\n`;
    }
 
    function scheduleDesignApply() {
@@ -1687,6 +1815,38 @@ async function setupApp() {
          designFacets.push(nextFacet);
          renderDesignFacetList();
          scheduleDesignApply();
+      });
+
+      designSaveGemBtn?.addEventListener('click', () => {
+         if (!designFacets.length) {
+            setDesignStatus('Add at least one facet before save.');
+            return;
+         }
+
+         try {
+            const designDefinition = {
+               gear: parseInt(designGearEl.value, 10) || 96,
+               refractiveIndex: ui.ri,
+               facets: designFacets.map((facet, idx) => normalizeDesignFacet(facet, idx)),
+            };
+            const gcsText = buildDesignGcsText(designDefinition);
+            const gemBuffer = convertGCSTextToGEMBuffer(gcsText);
+            const baseName = currentModelFilename.replace(/\.[^.]+$/, '') || 'design';
+            const outName = `${baseName}-design.gem`;
+            const blob = new Blob([gemBuffer], { type: 'application/octet-stream' });
+            const url = URL.createObjectURL(blob);
+            const anchor = document.createElement('a');
+            anchor.href = url;
+            anchor.download = outName;
+            document.body.appendChild(anchor);
+            anchor.click();
+            document.body.removeChild(anchor);
+            URL.revokeObjectURL(url);
+            setDesignStatus(`Saved ${outName}`);
+         } catch (err) {
+            console.error(err);
+            setDesignStatus(`Save failed: ${err?.message || 'invalid design'}`);
+         }
       });
 
       designGearEl.addEventListener('input', () => {
