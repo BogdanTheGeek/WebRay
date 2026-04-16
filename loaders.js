@@ -1,12 +1,13 @@
 "use strict";
 
 class StoneData {
-   constructor(vertexData, triangleCount, facets = [], refractiveIndex = null, dispersion = null) {
+   constructor(vertexData, triangleCount, facets = [], refractiveIndex = null, dispersion = null, sourceGear = null) {
       this.vertexData = vertexData;
       this.triangleCount = triangleCount;
       this.facets = facets;
       this.refractiveIndex = refractiveIndex;
       this.dispersion = dispersion;
+      this.sourceGear = sourceGear;
    }
 }
 
@@ -107,6 +108,9 @@ async function loadGCS(url) {
       if (isFinite(disp)) dispersion = disp;
    }
 
+   const sourceGearRaw = parseInt(doc.querySelector('index')?.getAttribute('gear') || '', 10);
+   const sourceGear = Number.isFinite(sourceGearRaw) && sourceGearRaw > 0 ? sourceGearRaw : null;
+
    const floatsPerVertex = 7;
    const triangles = [];
    const facets = [];
@@ -134,6 +138,12 @@ async function loadGCS(url) {
             parseFloat(v.getAttribute('y') || '0'),
             parseFloat(v.getAttribute('z') || '0'),
          ]);
+         const planeDistanceSamples = verts.map(([x, y, z]) => x * normal[0] + y * normal[1] + z * normal[2]);
+         const finitePlaneDistanceSamples = planeDistanceSamples.filter((value) => Number.isFinite(value));
+         const meanPlaneDistance = finitePlaneDistanceSamples.length
+            ? (finitePlaneDistanceSamples.reduce((sum, value) => sum + value, 0) / finitePlaneDistanceSamples.length)
+            : null;
+         const facetDistance = Number.isFinite(meanPlaneDistance) ? Math.abs(meanPlaneDistance) : null;
 
          const normalized = normalizeFacetMetadata(tierName, tierInst);
 
@@ -143,6 +153,7 @@ async function loadGCS(url) {
             instructions: normalized.instructions,
             frosted: normalized.frosted,
             normal,
+            d: facetDistance,
             vertexCount: verts.length,
             triangleCount,
          });
@@ -178,7 +189,7 @@ async function loadGCS(url) {
       }
    }
 
-   return new StoneData(vertexData, triCount, facets, refractiveIndex, dispersion);
+   return new StoneData(vertexData, triCount, facets, refractiveIndex, dispersion, sourceGear);
 }
 
 function convertGCSTextToGEMBuffer(gcsText) {
@@ -334,7 +345,7 @@ function convertGCSTextToGEMBuffer(gcsText) {
    return writer.finish();
 }
 
-function buildStoneFromHalfSpacePlanes(planes, refractiveIndex = null) {
+function buildStoneFromHalfSpacePlanes(planes, refractiveIndex = null, sourceGear = null) {
    const EPSILON = 1e-8;
    const VERTEX_EPS = 1e-6;
 
@@ -478,7 +489,7 @@ function buildStoneFromHalfSpacePlanes(planes, refractiveIndex = null) {
       }
    }
 
-   return new StoneData(vertexData, triCount, facets, refractiveIndex, null);
+   return new StoneData(vertexData, triCount, facets, refractiveIndex, null, sourceGear);
 }
 
 async function loadASC(url) {
@@ -641,7 +652,147 @@ async function loadASC(url) {
       throw new Error('ASC: no facets found');
    }
 
-   return buildStoneFromHalfSpacePlanes(planes, refractiveIndex);
+   return buildStoneFromHalfSpacePlanes(planes, refractiveIndex, igear);
+}
+
+function buildStoneFromFacetDesign(definition = {}) {
+   const gearDefault = parseInt(definition.gear, 10);
+   const defaultGear = Number.isFinite(gearDefault) && gearDefault > 0 ? gearDefault : 96;
+   const facets = Array.isArray(definition.facets) ? definition.facets : [];
+   const ri = parseFloat(definition.refractiveIndex);
+   const refractiveIndex = Number.isFinite(ri) && ri > 1.0 ? ri : 1.54;
+
+   const planes = [];
+   const wrapIndex = (value, gear) => {
+      const g = Math.max(1, gear);
+      let wrapped = Math.round(value);
+      wrapped = ((wrapped - 1) % g + g) % g + 1;
+      return wrapped;
+   };
+
+   const computeNormalFromPolar = (angleDeg, index, gear, gearOffset = 0) => {
+      if (Math.abs(angleDeg) <= 1e-8) {
+         return [0, 0, angleDeg >= 0 ? 1 : -1];
+      }
+      const incl = angleDeg * Math.PI / 180;
+      const azi = (index - gearOffset) * 2 * Math.PI / gear;
+      let c = Math.cos(incl);
+      let s = Math.sin(incl);
+      if (angleDeg < 0) {
+         c *= -1;
+         s *= -1;
+      }
+      const a = s * Math.sin(azi);
+      const b = -s * Math.cos(azi);
+      return [a, b, c];
+   };
+
+   facets.forEach((facet, idx) => {
+      const facetName = String(facet?.name || `F${idx + 1}`).trim();
+      const instructions = String(facet?.instructions || '').trim();
+      const normalized = normalizeFacetMetadata(facetName, instructions);
+
+      const gearValue = parseInt(facet?.gear, 10);
+      const gear = Number.isFinite(gearValue) && gearValue > 0 ? gearValue : defaultGear;
+
+      const symmetryValue = parseInt(facet?.symmetry, 10);
+      const symmetry = Math.max(1, Number.isFinite(symmetryValue) ? symmetryValue : 1);
+
+      const angle = parseFloat(facet?.angleDeg);
+      const angleDeg = Number.isFinite(angle) ? Math.max(-90.0, Math.min(90.0, angle)) : 0;
+
+      const startRaw = parseFloat(facet?.startIndex);
+      const startIndex = Number.isFinite(startRaw) ? wrapIndex(startRaw, gear) : 1;
+
+      const distanceRaw = parseFloat(facet?.distance);
+      const d = Number.isFinite(distanceRaw) ? Math.max(1e-5, Math.abs(distanceRaw)) : 1.0;
+
+      const mirror = Boolean(facet?.mirror);
+      const step = gear / symmetry;
+      const indexSet = new Set();
+
+      const mirrorIndex = (index) => {
+         const idx = wrapIndex(index, gear);
+         if (idx === gear) return gear;
+         return wrapIndex(gear - idx, gear);
+      };
+
+      const explicitIndexes = Array.isArray(facet?.indexes)
+         ? [...new Set(
+            facet.indexes
+               .map((value) => parseInt(value, 10))
+               .filter((value) => Number.isFinite(value) && value >= 0)
+               .map((value) => (value === 0 ? gear : value))
+               .map((value) => wrapIndex(value, gear)),
+         )]
+         : [];
+
+      const indexDistanceOverrides = facet?.indexDistances && typeof facet.indexDistances === 'object'
+         ? Object.entries(facet.indexDistances)
+            .map(([index, value]) => [wrapIndex(parseInt(index, 10), gear), parseFloat(value)])
+            .filter(([index, value]) => Number.isFinite(index) && Number.isFinite(value) && value >= 0)
+            .reduce((acc, [index, value]) => {
+               acc.set(index, Math.max(1e-5, Math.abs(value)));
+               return acc;
+            }, new Map())
+         : new Map();
+
+      if (explicitIndexes.length > 0) {
+         explicitIndexes.forEach((value) => indexSet.add(value));
+      } else {
+         for (let i = 0; i < symmetry; i++) {
+            const offset = i * step;
+            const primary = wrapIndex(startIndex + offset, gear);
+            indexSet.add(primary);
+            if (mirror) {
+               indexSet.add(mirrorIndex(primary));
+            }
+         }
+      }
+
+      if (Math.abs(angleDeg) <= 1e-8) {
+         const normal = [0, 0, angleDeg >= 0 ? 1 : -1];
+         planes.push({
+            a: normal[0],
+            b: normal[1],
+            c: normal[2],
+            d,
+            name: normalized.name,
+            instructions: normalized.instructions,
+            frosted: normalized.frosted,
+         });
+         return;
+      }
+
+      for (const index of indexSet) {
+         let normal = computeNormalFromPolar(angleDeg, index, gear, 0);
+         let planeD = indexDistanceOverrides.get(index) ?? d;
+         const len = Math.hypot(normal[0], normal[1], normal[2]);
+         if (!Number.isFinite(len) || len < 1e-9) continue;
+
+         normal = [normal[0] / len, normal[1] / len, normal[2] / len];
+         if (planeD < 0) {
+            normal = [-normal[0], -normal[1], -normal[2]];
+            planeD = -planeD;
+         }
+
+         planes.push({
+            a: normal[0],
+            b: normal[1],
+            c: normal[2],
+            d: planeD,
+            name: normalized.name,
+            instructions: normalized.instructions,
+            frosted: normalized.frosted,
+         });
+      }
+   });
+
+   if (!planes.length) {
+      throw new Error('Design: no facets defined');
+   }
+
+   return buildStoneFromHalfSpacePlanes(planes, refractiveIndex, defaultGear);
 }
 
 // ---------------------------------------------------------------------------
@@ -766,10 +917,12 @@ async function loadGEM(url) {
 
    // ── 2. Read optional tail ────────────────────────────────────────────────
    let refractiveIndex = 1.77; // default: corundum, reasonable fallback
+   let sourceGear = null;
    if (offset + I32 * 3 + F64 <= buffer.byteLength) {
       offset += I32; // nsym
       offset += I32; // mirror_sym
-      offset += I32; // igear
+      const tailGear = view.getInt32(offset, true); offset += I32; // igear
+      if (Number.isFinite(tailGear) && tailGear > 0) sourceGear = tailGear;
       refractiveIndex = view.getFloat64(offset, true);
    }
 
@@ -939,7 +1092,7 @@ async function loadGEM(url) {
       }
    }
 
-   return new StoneData(vertexData, triCount, facets, refractiveIndex, null);
+   return new StoneData(vertexData, triCount, facets, refractiveIndex, null, sourceGear);
 }
 
 function normalizeMesh(data) {
@@ -964,7 +1117,7 @@ function normalizeMesh(data) {
       data[i + 2] = (data[i + 2] - center[2]) * scale;
    }
 
-   return scale;
+   return { scale, center };
 }
 
 function computeMeshBoundsRadius(data) {
@@ -1113,5 +1266,15 @@ function buildBVH(vertexData, triangleCount) {
    return { nodeBuffer, triBuffer: sortedTris, nodeCount };
 }
 
-export { loadSTL, loadGCS, loadASC, loadGEM, convertGCSTextToGEMBuffer, normalizeMesh, computeMeshBoundsRadius, buildBVH };
+export {
+   loadSTL,
+   loadGCS,
+   loadASC,
+   loadGEM,
+   convertGCSTextToGEMBuffer,
+   normalizeMesh,
+   computeMeshBoundsRadius,
+   buildBVH,
+   buildStoneFromFacetDesign,
+};
 

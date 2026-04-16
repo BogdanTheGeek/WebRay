@@ -1,6 +1,16 @@
 // import { mat4, vec4 } from 'https://cdn.skypack.dev/gl-matrix';
 import { mat4, vec4 } from './gl-matrix/esm/index.js';
-import { loadSTL, loadGCS, loadASC, loadGEM, convertGCSTextToGEMBuffer, normalizeMesh, computeMeshBoundsRadius, buildBVH } from './loaders.js';
+import {
+   loadSTL,
+   loadGCS,
+   loadASC,
+   loadGEM,
+   convertGCSTextToGEMBuffer,
+   normalizeMesh,
+   computeMeshBoundsRadius,
+   buildBVH,
+   buildStoneFromFacetDesign,
+} from './loaders.js';
 import { exportInProgress, setupExporter } from './video.js';
 
 const shaderSource = await (await fetch('shaders.wgsl')).text();
@@ -108,6 +118,24 @@ function buildUI(ui, cbs) {
       b.classList.toggle('active', parseInt(b.dataset.mode) === ui.lightMode)
    );
 
+   const gemTopTabsEl = panel.querySelector('#gemTopTabs');
+   const gemControlsTabPanelEl = panel.querySelector('#gemControlsTabPanel');
+   const gemDesignTabPanelEl = panel.querySelector('#gemDesignTabPanel');
+   const setGemTopTab = (tabName) => {
+      const isDesign = tabName === 'design';
+      gemControlsTabPanelEl?.classList.toggle('active', !isDesign);
+      gemDesignTabPanelEl?.classList.toggle('active', isDesign);
+      gemTopTabsEl?.querySelectorAll('.mode').forEach((btn) => {
+         btn.classList.toggle('active', btn.dataset.gemTab === tabName);
+      });
+   };
+   gemTopTabsEl?.addEventListener('click', (e) => {
+      const button = e.target.closest('.mode[data-gem-tab]');
+      if (!button) return;
+      setGemTopTab(button.dataset.gemTab);
+   });
+   setGemTopTab('controls');
+
    // Mobile toggle
    toggleBtn.addEventListener('click', () => {
       panel.classList.toggle('mobile-open');
@@ -118,6 +146,7 @@ function buildUI(ui, cbs) {
       const collapsePanel = (panelId, toggleId, expandLabel) => {
          document.getElementById(panelId)?.classList.add('collapsed');
          const btn = document.getElementById(toggleId);
+         if (!btn) return;
          btn.textContent = '+';
          btn.setAttribute('aria-label', expandLabel);
       };
@@ -498,16 +527,17 @@ function hasUniqueTableFacet(facets = []) {
    return zeroDegFacetCount > 0;
 }
 
-function computeFacetGearIndex(normal) {
+function computeFacetGearIndex(normal, gear = 96) {
    const x = normal[0] ?? 0;
    const y = normal[1] ?? 0;
    if (Math.abs(x) < 1e-6 && Math.abs(y) < 1e-6) return 'Table';
 
-   const turns = Math.atan2(x, y) / (Math.PI * 2);
-   let gear = Math.round(turns * 96);
-   gear = ((gear % 96) + 96) % 96;
-   if (gear === 0) gear = 96;
-   return String(gear).padStart(2, '0');
+   const g = Math.max(1, Math.round(gear) || 96);
+   const turns = Math.atan2(x, -y) / (Math.PI * 2);
+   let gearIndex = Math.round(turns * g);
+   gearIndex = ((gearIndex % g) + g) % g;
+   if (gearIndex === 0) gearIndex = g;
+   return String(gearIndex).padStart(Math.max(2, String(g).length), '0');
 }
 
 function getFacetSection(name) {
@@ -517,7 +547,7 @@ function getFacetSection(name) {
    return 'OTHER';
 }
 
-function groupFacetInfo(facets = []) {
+function groupFacetInfo(facets = [], gear = 96) {
    const sections = new Map([
       ['PAVILION', []],
       ['CROWN', []],
@@ -554,7 +584,7 @@ function groupFacetInfo(facets = []) {
          }
          entry.name = name;
       }
-      entry.indexes.push(computeFacetGearIndex(facet.normal || [0, 0, 1]));
+      entry.indexes.push(computeFacetGearIndex(facet.normal || [0, 0, 1], gear));
    }
 
    for (const entries of sections.values()) {
@@ -592,6 +622,503 @@ function formatFacetIndexLines(indexes) {
       lines.push(chunk.join('-') + (hasMore ? '-' : ''));
    }
    return lines;
+}
+
+function parseFacetGearIndex(normal, gear = 96) {
+   const raw = computeFacetGearIndex(normal, gear);
+   const parsed = parseInt(raw, 10);
+   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function wrapGearIndex(value, gear) {
+   const g = Math.max(1, Math.round(gear) || 96);
+   let wrapped = Math.round(value);
+   wrapped = ((wrapped - 1) % g + g) % g + 1;
+   return wrapped;
+}
+
+function generatePatternIndexSet(startIndex, symmetry, mirror, gear) {
+   const g = Math.max(1, Math.round(gear) || 96);
+   const sym = Math.max(1, Math.min(g, Math.round(symmetry) || 1));
+   const step = g / sym;
+   const indexSet = new Set();
+
+   const mirrorIndex = (index) => {
+      const idx = wrapGearIndex(index, g);
+      if (idx === g) return g;
+      return wrapGearIndex(g - idx, g);
+   };
+
+   for (let i = 0; i < sym; i++) {
+      const offset = i * step;
+      const primary = wrapGearIndex(startIndex + offset, g);
+      indexSet.add(primary);
+      if (mirror) indexSet.add(mirrorIndex(primary));
+   }
+   return [...indexSet].sort((a, b) => a - b);
+}
+
+function inferSymmetryMirrorFromIndexes(indexes, gear) {
+   const g = Math.max(1, Math.round(gear) || 96);
+   const normalized = [...new Set(
+      (indexes || [])
+         .map((value) => parseInt(value, 10))
+         .filter((value) => Number.isFinite(value) && value >= 0)
+         .map((value) => (value === 0 ? g : value))
+         .map((value) => wrapGearIndex(value, g)),
+   )].sort((a, b) => a - b);
+
+   if (!normalized.length) {
+      return { startIndex: 0, symmetry: 1, mirror: false };
+   }
+
+   if (normalized.length === 1) {
+      return { startIndex: normalized[0] === g ? 0 : normalized[0], symmetry: 1, mirror: false };
+   }
+
+   const detectUniformMirror = () => {
+      const count = normalized.length;
+      if (count < 4 || count % 2 !== 0) return null;
+
+      const deltas = [];
+      for (let i = 0; i < count; i++) {
+         const curr = normalized[i];
+         const next = normalized[(i + 1) % count];
+         const delta = (next - curr + g) % g;
+         if (delta <= 0) return null;
+         deltas.push(delta);
+      }
+
+      const firstDelta = deltas[0];
+      if (!deltas.every((delta) => Math.abs(delta - firstDelta) < 1e-6)) return null;
+      if (firstDelta <= 0) return null;
+
+      const inferredSymmetry = Math.round(g / (2 * firstDelta));
+      if (!Number.isFinite(inferredSymmetry) || inferredSymmetry < 1 || inferredSymmetry > g) return null;
+      if (g % inferredSymmetry !== 0) return null;
+
+      const startIndex = normalized[0] === g ? 0 : normalized[0];
+      const generated = generatePatternIndexSet(startIndex, inferredSymmetry, true, g);
+      if (generated.length !== normalized.length) return null;
+      for (let i = 0; i < generated.length; i++) {
+         if (generated[i] !== normalized[i]) return null;
+      }
+
+      return { startIndex, symmetry: inferredSymmetry, mirror: true };
+   };
+
+   const uniformMirror = detectUniformMirror();
+   if (uniformMirror) return uniformMirror;
+
+   const detectPeriodicNoMirror = () => {
+      const target = new Set(normalized);
+      let bestCandidate = null;
+      for (let symmetry = 2; symmetry <= g; symmetry++) {
+         if (g % symmetry !== 0) continue;
+         const step = g / symmetry;
+         const residueBuckets = new Map();
+
+         for (const index of normalized) {
+            const residue = ((index - 1) % step) + 1;
+            if (!residueBuckets.has(residue)) residueBuckets.set(residue, []);
+            residueBuckets.get(residue).push(index);
+         }
+
+         const startCandidates = [...residueBuckets.keys()].sort((a, b) => a - b);
+         const phaseCount = startCandidates.length;
+         if (phaseCount <= 0 || phaseCount >= normalized.length) continue;
+         if (normalized.length !== symmetry * phaseCount) continue;
+
+         let matchesExactly = true;
+         for (const start of startCandidates) {
+            for (let i = 0; i < symmetry; i++) {
+               const expected = wrapGearIndex(start + i * step, g);
+               if (!target.has(expected)) {
+                  matchesExactly = false;
+                  break;
+               }
+            }
+            if (!matchesExactly) break;
+         }
+
+         if (!matchesExactly) continue;
+
+         const candidate = {
+            startIndex: startCandidates[0] === g ? 0 : startCandidates[0],
+            symmetry,
+            mirror: false,
+            phaseCount,
+         };
+
+         if (!bestCandidate
+            || candidate.phaseCount < bestCandidate.phaseCount
+            || (candidate.phaseCount === bestCandidate.phaseCount && candidate.symmetry > bestCandidate.symmetry)
+            || (candidate.phaseCount === bestCandidate.phaseCount
+               && candidate.symmetry === bestCandidate.symmetry
+               && candidate.startIndex < bestCandidate.startIndex)
+         ) {
+            bestCandidate = candidate;
+         }
+      }
+
+      if (!bestCandidate) return null;
+      return {
+         startIndex: bestCandidate.startIndex,
+         symmetry: bestCandidate.symmetry,
+         mirror: false,
+      };
+   };
+
+   const periodicNoMirror = detectPeriodicNoMirror();
+   if (periodicNoMirror) return periodicNoMirror;
+
+   const targetKey = normalized.join(',');
+   const targetSet = new Set(normalized);
+   const targetCount = normalized.length;
+   let best = null;
+
+   const preferMirror = targetCount > 1 && (targetCount % 2 === 1);
+   const evaluateSymmetryRange = (symmetryList) => {
+      for (const symmetry of symmetryList) {
+         for (const mirror of [false, true]) {
+            for (let startIndex = 1; startIndex <= g; startIndex++) {
+               const generated = generatePatternIndexSet(startIndex, symmetry, mirror, g);
+               const generatedSet = new Set(generated);
+               let intersectionCount = 0;
+               for (const index of targetSet) {
+                  if (generatedSet.has(index)) intersectionCount += 1;
+               }
+               if (intersectionCount <= 0) continue;
+
+               const missCount = targetCount - intersectionCount;
+               const extraCount = generatedSet.size - intersectionCount;
+               const isExactMatch = missCount === 0 && extraCount === 0;
+               const expectedUniqueCount = mirror
+                  ? Math.min(g, Math.max(1, 2 * symmetry))
+                  : symmetry;
+               const mirrorPenalty = preferMirror
+                  ? (mirror ? 0 : 0.25)
+                  : (mirror ? 0.25 : 0);
+               const score = missCount * 1000
+                  + extraCount * 25
+                  + Math.abs(targetCount - expectedUniqueCount) * 0.5
+                  + mirrorPenalty
+                  + symmetry * 0.0001;
+
+               if (!best
+                  || (isExactMatch && !best.isExactMatch)
+                  || (isExactMatch === best.isExactMatch && score < best.score)
+               ) {
+                  best = { startIndex, symmetry, mirror, score, isExactMatch };
+               }
+            }
+         }
+      }
+   };
+
+   const integerStepSymmetries = [];
+   for (let symmetry = 1; symmetry <= g; symmetry++) {
+      if (g % symmetry === 0) integerStepSymmetries.push(symmetry);
+   }
+
+   evaluateSymmetryRange(integerStepSymmetries);
+   if (!best) {
+      const allSymmetries = [];
+      for (let symmetry = 1; symmetry <= g; symmetry++) allSymmetries.push(symmetry);
+      evaluateSymmetryRange(allSymmetries);
+   }
+
+   if (!best) {
+      return {
+         startIndex: normalized[0] === g ? 0 : normalized[0],
+         symmetry: Math.min(g, Math.max(1, normalized.length)),
+         mirror: false,
+      };
+   }
+
+   return {
+      startIndex: best.startIndex === g ? 0 : best.startIndex,
+      symmetry: best.symmetry,
+      mirror: best.mirror,
+   };
+}
+
+function computeSignedFacetAngleDeg(normal) {
+   const absAngle = computeFacetAngleDeg(normal || [0, 0, 1]);
+   return (normal?.[2] ?? 1) >= 0 ? absAngle : -absAngle;
+}
+
+function getFacetDistanceValue(facet) {
+   if (Number.isFinite(facet?.d)) return Math.abs(facet.d);
+   return 1;
+}
+
+function facetToDesignFacet(facet = {}, idx = 0) {
+   const rawName = String(facet?.name || '').trim();
+   return {
+      id: `${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 8)}`,
+      name: rawName || `F${idx + 1}`,
+      instructions: String(facet?.instructions || ''),
+      symmetry: 1,
+      mirror: false,
+      angleDeg: computeSignedFacetAngleDeg(facet?.normal || [0, 0, 1]),
+      startIndex: parseFacetGearIndex(facet?.normal || [0, 0, 1]),
+      distance: getFacetDistanceValue(facet),
+   };
+}
+
+function groupExternalFacetsForDesign(facets = [], gear = 96) {
+   const makeKeyFromFacet = (facet) => {
+      const section = getFacetSection(facet?.name || '');
+      const angleKey = computeFacetAngleDeg(facet?.normal || [0, 0, 1]).toFixed(2);
+      const instructions = String(facet?.instructions || '').trim();
+      return `${section}\u0000${angleKey}\u0000${instructions}`;
+   };
+
+   const sourceByKey = new Map();
+   facets.forEach((facet) => {
+      const key = makeKeyFromFacet(facet);
+      if (!sourceByKey.has(key)) sourceByKey.set(key, []);
+      sourceByKey.get(key).push(facet);
+   });
+
+   const groupedSections = groupFacetInfo(facets, gear);
+   const sectionOrder = ['PAVILION', 'CROWN', 'OTHER'];
+   const groupedFacets = [];
+
+   for (const sectionName of sectionOrder) {
+      const entries = groupedSections.get(sectionName) || [];
+      for (const entry of entries) {
+         const key = `${sectionName}\u0000${entry.angle.toFixed(2)}\u0000${entry.instructions || ''}`;
+         const sourceFacets = sourceByKey.get(key) || [];
+         const entryNameUpper = String(entry.name || '').trim().toUpperCase();
+         const nameMatchedFacets = entryNameUpper
+            ? sourceFacets.filter((facet) => String(facet?.name || '').trim().toUpperCase() === entryNameUpper)
+            : [];
+         const preferredFacets = nameMatchedFacets.length ? nameMatchedFacets : sourceFacets;
+         const sampleFacet = preferredFacets[0] || sourceFacets[0] || null;
+
+         const indexedFromSource = preferredFacets
+            .map((facet) => parseFacetGearIndex(facet?.normal || [0, 0, 1], gear))
+            .filter((value) => Number.isFinite(value));
+
+         const indexedFromNotes = (entry.indexes || [])
+            .map((value) => parseInt(value, 10))
+            .filter((value) => Number.isFinite(value));
+
+         const indexes = indexedFromNotes.length ? indexedFromNotes : indexedFromSource;
+         const inferred = inferSymmetryMirrorFromIndexes(indexes, gear);
+         const buildDistanceMapByIndex = (facetList) => {
+            const byIndex = new Map();
+            (facetList || []).forEach((facet) => {
+               const gearIndex = parseFacetGearIndex(facet?.normal || [0, 0, 1], gear);
+               const normalizedIndex = gearIndex === 0 ? gear : wrapGearIndex(gearIndex, gear);
+               const facetDistance = getFacetDistanceValue(facet);
+               if (!Number.isFinite(facetDistance) || facetDistance < 0) return;
+               if (!byIndex.has(normalizedIndex)) byIndex.set(normalizedIndex, []);
+               byIndex.get(normalizedIndex).push(facetDistance);
+            });
+            return byIndex;
+         };
+
+         const sourceFacetDistanceByIndex = buildDistanceMapByIndex(sourceFacets);
+         const preferredFacetDistanceByIndex = buildDistanceMapByIndex(preferredFacets);
+         const indexDistances = {};
+         for (const [index, values] of sourceFacetDistanceByIndex.entries()) {
+            if (!values?.length) continue;
+            const sorted = values.slice().sort((a, b) => a - b);
+            indexDistances[String(index)] = sorted[Math.floor(sorted.length / 2)];
+         }
+
+         const normalizedIndexes = [...new Set(
+            (indexes || [])
+               .map((value) => parseInt(value, 10))
+               .filter((value) => Number.isFinite(value) && value >= 0)
+               .map((value) => (value === 0 ? gear : value))
+               .map((value) => wrapGearIndex(value, gear)),
+         )];
+
+         const indexedDistanceCandidates = [];
+         normalizedIndexes.forEach((index) => {
+            const values = preferredFacetDistanceByIndex.get(index)?.length
+               ? preferredFacetDistanceByIndex.get(index)
+               : sourceFacetDistanceByIndex.get(index);
+            if (!values?.length) return;
+            values.forEach((value) => indexedDistanceCandidates.push(value));
+         });
+
+         const inferredStartWrapped = inferred.startIndex === 0
+            ? gear
+            : wrapGearIndex(inferred.startIndex, gear);
+         const startIndexDistanceCandidates = preferredFacetDistanceByIndex.get(inferredStartWrapped)?.length
+            ? preferredFacetDistanceByIndex.get(inferredStartWrapped)
+            : (sourceFacetDistanceByIndex.get(inferredStartWrapped) || []);
+
+         const allDistanceCandidates = (preferredFacets.length ? preferredFacets : sourceFacets)
+            .map((facet) => getFacetDistanceValue(facet))
+            .filter((value) => Number.isFinite(value) && value >= 0);
+
+         const activeDistanceCandidates = indexedDistanceCandidates.length
+            ? indexedDistanceCandidates
+            : allDistanceCandidates;
+         activeDistanceCandidates.sort((a, b) => a - b);
+         const startIndexDistance = startIndexDistanceCandidates.length
+            ? startIndexDistanceCandidates
+               .slice()
+               .sort((a, b) => a - b)[Math.floor(startIndexDistanceCandidates.length / 2)]
+            : null;
+         const medianDistance = activeDistanceCandidates.length
+            ? activeDistanceCandidates[Math.floor(activeDistanceCandidates.length / 2)]
+            : null;
+
+         groupedFacets.push({
+            id: `${Date.now()}-${groupedFacets.length}-${Math.random().toString(36).slice(2, 8)}`,
+            name: String(entry.name || sampleFacet?.name || `F${groupedFacets.length + 1}`),
+            instructions: String(entry.instructions || sampleFacet?.instructions || ''),
+            symmetry: inferred.symmetry,
+            mirror: inferred.mirror,
+            angleDeg: sampleFacet
+               ? computeSignedFacetAngleDeg(sampleFacet.normal || [0, 0, 1])
+               : entry.angle,
+            startIndex: inferred.startIndex,
+            distance: Number.isFinite(startIndexDistance)
+               ? startIndexDistance
+               : Number.isFinite(medianDistance)
+                  ? medianDistance
+               : 1,
+            indexes: indexes.length ? [...new Set(indexes)] : undefined,
+            indexDistances: Object.keys(indexDistances).length ? indexDistances : undefined,
+         });
+      }
+   }
+
+   return groupedFacets;
+}
+
+function normalizeDesignFacet(inputFacet = {}, fallbackIndex = 0) {
+   const parsedSymmetry = parseFloat(inputFacet.symmetry);
+   const parsedAngleDeg = parseFloat(inputFacet.angleDeg);
+   const parsedStartIndex = parseFloat(inputFacet.startIndex);
+   const parsedDistance = parseFloat(inputFacet.distance);
+   const parsedIndexes = Array.isArray(inputFacet.indexes)
+      ? [...new Set(
+         inputFacet.indexes
+            .map((value) => parseInt(value, 10))
+            .filter((value) => Number.isFinite(value) && value > 0),
+      )].sort((a, b) => a - b)
+      : null;
+   const parsedIndexDistances = inputFacet.indexDistances && typeof inputFacet.indexDistances === 'object'
+      ? Object.entries(inputFacet.indexDistances)
+         .map(([index, distance]) => [parseInt(index, 10), parseFloat(distance)])
+         .filter(([index, distance]) => Number.isFinite(index) && index > 0 && Number.isFinite(distance) && distance >= 0)
+         .reduce((acc, [index, distance]) => {
+            acc[String(index)] = distance;
+            return acc;
+         }, {})
+      : null;
+   const next = {
+      id: inputFacet.id || `${Date.now()}-${fallbackIndex}-${Math.random().toString(36).slice(2, 8)}`,
+      name: String(inputFacet.name || `F${fallbackIndex + 1}`).trim() || `F${fallbackIndex + 1}`,
+      instructions: String(inputFacet.instructions || '').trim(),
+      symmetry: Math.max(1, Math.min(96, Math.round(Number.isFinite(parsedSymmetry) ? parsedSymmetry : 1))),
+      mirror: Boolean(inputFacet.mirror),
+      angleDeg: Math.max(-90, Math.min(90, Number.isFinite(parsedAngleDeg) ? parsedAngleDeg : 0)),
+      startIndex: Math.max(0, Math.min(360, Math.round(Number.isFinite(parsedStartIndex) ? parsedStartIndex : 0))),
+      distance: Math.max(0, Number.isFinite(parsedDistance) ? parsedDistance : 0),
+      indexes: parsedIndexes && parsedIndexes.length ? parsedIndexes : undefined,
+      indexDistances: parsedIndexDistances && Object.keys(parsedIndexDistances).length ? parsedIndexDistances : undefined,
+   };
+   return next;
+}
+
+function computeFacetNotesSummary(stone) {
+   const facets = Array.isArray(stone?.facets) ? stone.facets : [];
+   const vertexData = stone?.vertexData;
+   if (!facets.length || !(vertexData instanceof Float32Array) || vertexData.length < 3) return null;
+
+   let minX = Infinity; let maxX = -Infinity;
+   let minY = Infinity; let maxY = -Infinity;
+   let minZ = Infinity; let maxZ = -Infinity;
+   for (let i = 0; i < vertexData.length; i += 7) {
+      const x = vertexData[i + 0];
+      const y = vertexData[i + 1];
+      const z = vertexData[i + 2];
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+      if (z < minZ) minZ = z;
+      if (z > maxZ) maxZ = z;
+   }
+
+   const xSpan = maxX - minX;
+   const ySpan = maxY - minY;
+   const length = Math.max(xSpan, ySpan);
+   const width = Math.max(1e-9, Math.min(xSpan, ySpan));
+   const lw = length / width;
+
+   const GIRDLE_ANGLE_EPS_DEG = 1.0;
+   const isGirdleFacet = (facet) => {
+      const name = String(facet?.name || '').trim();
+      if (/^G\d*/i.test(name)) return true;
+      const angleDeg = computeFacetAngleDeg(facet?.normal || [0, 0, 1]);
+      return Math.abs(angleDeg - 90) <= GIRDLE_ANGLE_EPS_DEG;
+   };
+   const girdleCount = facets.filter((facet) => isGirdleFacet(facet)).length;
+   const totalCount = facets.length;
+   const nonGirdleCount = Math.max(0, totalCount - girdleCount);
+
+   const girdleZSlices = [];
+   const floatsPerVertex = 7;
+   const verticesPerTriangle = 3;
+   let triOffset = 0;
+   for (const facet of facets) {
+      const triCount = Math.max(0, Math.round(facet?.triangleCount || 0));
+      if (isGirdleFacet(facet)) {
+         for (let t = 0; t < triCount; t++) {
+            const triBase = (triOffset + t) * verticesPerTriangle * floatsPerVertex;
+            for (let v = 0; v < verticesPerTriangle; v++) {
+               const base = triBase + v * floatsPerVertex;
+               if (base + 2 >= vertexData.length) continue;
+               const z = vertexData[base + 2];
+               if (Number.isFinite(z)) girdleZSlices.push(z);
+            }
+         }
+      }
+      triOffset += triCount;
+   }
+
+   let girdleTop = 0;
+   let girdleBottom = 0;
+   if (girdleZSlices.length) {
+      girdleZSlices.sort((a, b) => a - b);
+      const loIdx = Math.floor((girdleZSlices.length - 1) * 0.1);
+      const hiIdx = Math.floor((girdleZSlices.length - 1) * 0.9);
+      girdleBottom = girdleZSlices[Math.max(0, Math.min(girdleZSlices.length - 1, loIdx))];
+      girdleTop = girdleZSlices[Math.max(0, Math.min(girdleZSlices.length - 1, hiIdx))];
+   } else {
+      const mid = (minZ + maxZ) * 0.5;
+      girdleBottom = mid;
+      girdleTop = mid;
+   }
+
+   const pavilionDepth = Math.max(0, girdleBottom - minZ);
+   const crownHeight = Math.max(0, maxZ - girdleTop);
+   const pw = pavilionDepth / width;
+   const cw = crownHeight / width;
+
+   const sourceGear = parseInt(stone?.sourceGear, 10);
+   const gearUsed = Number.isFinite(sourceGear) && sourceGear > 0 ? sourceGear : null;
+
+   return {
+      lw,
+      pw,
+      cw,
+      gearUsed,
+      nonGirdleCount,
+      girdleCount,
+      totalCount,
+   };
 }
 
 // ---------------------------------------------------------------------------
@@ -811,14 +1338,33 @@ async function setupApp() {
    mat4.lookAt(viewMat, cameraPos, [0, 0, 0], [0, 1, 0]);
 
    // Panels are defined in index.html — just acquire references.
+   const designPanel = document.getElementById('designPanel');
    const graphPanel = document.getElementById('lightReturnPanel');
    const facetPanel = document.getElementById('facetInfoPanel');
+   const designToggleEl = document.getElementById('designToggle');
+   const designBodyEl = document.getElementById('designBody');
+   const designResizeEl = document.getElementById('designResize');
+   const designStatusEl = document.getElementById('designStatus');
+   const designFacetListEl = document.getElementById('designFacetList');
+   const designGearEl = document.getElementById('designGear');
+   const designSymmetryEl = document.getElementById('designSymmetry');
+   const designMirrorEl = document.getElementById('designMirror');
+   const designAngleEl = document.getElementById('designAngle');
+   const designStartIndexEl = document.getElementById('designStartIndex');
+   const designDistanceEl = document.getElementById('designDistance');
+   const designNameEl = document.getElementById('designName');
+   const designInstructionsEl = document.getElementById('designInstructions');
+   const designAddFacetBtn = document.getElementById('designAddFacetBtn');
+   const designClearBtn = document.getElementById('designClearBtn');
    const graphToggleEl = document.getElementById('lightReturnToggle');
    const graphBodyEl = document.getElementById('lightReturnBody');
    const graphResizeEl = document.getElementById('lightReturnResize');
    const graphStatusEl = document.getElementById('lightReturnStatus');
    const graphCanvas = document.getElementById('lightReturnCanvas');
    const facetToggleEl = document.getElementById('facetInfoToggle');
+   const facetSplitTabsEl = document.getElementById('facetSplitTabs');
+   const facetEditPanelEl = document.getElementById('facetEditPanel');
+   const facetInstructionsPanelEl = document.getElementById('facetInstructionsPanel');
    const facetStatusEl = document.getElementById('facetInfoStatus');
    const facetListEl = document.getElementById('facetInfoList');
    const facetResizeEl = document.getElementById('facetInfoResize');
@@ -828,7 +1374,35 @@ async function setupApp() {
    let graphCanvasHeight = 220;
    let latestGraphSeries = null;
    let latestFacetInfo = [];
+   let designFacets = [];
+   let designApplyTimer = null;
    let modelHasTableFacet = false;
+
+   if (facetEditPanelEl && designFacetListEl && designClearBtn) {
+      const mergedControlsEl = document.createElement('div');
+      mergedControlsEl.className = 'designBtnRow';
+      mergedControlsEl.style.marginBottom = '8px';
+      mergedControlsEl.appendChild(designClearBtn);
+      facetEditPanelEl.appendChild(mergedControlsEl);
+      facetEditPanelEl.appendChild(designFacetListEl);
+   }
+
+   function setFacetSplitTab(tabName) {
+      const isEdit = tabName === 'edit';
+      facetEditPanelEl?.classList.toggle('active', isEdit);
+      facetInstructionsPanelEl?.classList.toggle('active', !isEdit);
+      facetSplitTabsEl?.querySelectorAll('.tabBtn').forEach((button) => {
+         button.classList.toggle('active', button.dataset.facetTab === tabName);
+      });
+   }
+
+   facetSplitTabsEl?.addEventListener('click', (e) => {
+      const button = e.target.closest('.tabBtn[data-facet-tab]');
+      if (!button) return;
+      setFacetSplitTab(button.dataset.facetTab || 'edit');
+   });
+
+   setFacetSplitTab('instructions');
 
    function resizeGraphCanvas() {
       const nextWidth = Math.max(220, Math.round(graphCanvas.clientWidth || graphBodyEl.clientWidth));
@@ -848,6 +1422,7 @@ async function setupApp() {
    let graphBusy = false;
    let graphNeedsRerun = false;
    // DOM is the source of truth for collapsed state — no separate JS flags.
+   let designExpandedSize = { width: 420, height: 380 };
    let graphExpandedSize = { width: 420, height: 320 };
    let facetExpandedSize = { width: 420, height: 260 };
 
@@ -855,7 +1430,184 @@ async function setupApp() {
       facetStatusEl.textContent = text;
    }
 
-   function renderFacetInfo(facets = []) {
+    function setDesignStatus(text) {
+      designStatusEl.textContent = text;
+   }
+
+   function updateDesignStatusSummary() {
+      if (!designFacets.length) {
+         setDesignStatus('No custom facets yet.');
+         return;
+      }
+      const uniqueNames = new Set(designFacets.map((f) => f.name || '?')).size;
+      setDesignStatus(`${designFacets.length} design facets (${uniqueNames} names)`);
+   }
+
+   function renderDesignFacetList() {
+      if (!designFacets.length) {
+         designFacetListEl.innerHTML = '<div class="designFacetEmpty">No facets in design. Add from Create tab.</div>';
+         updateDesignStatusSummary();
+         return;
+      }
+
+      const rows = designFacets.map((facet, idx) => `
+         <tr data-id="${escapeHtml(facet.id)}">
+            <td class="cellName"><input data-field="name" type="text" value="${escapeHtml(facet.name || `F${idx + 1}`)}"></td>
+            <td class="cellNum"><input data-field="symmetry" type="number" min="1" max="96" step="1" value="${facet.symmetry}"></td>
+            <td class="cellMirror"><label class="check"><input data-field="mirror" type="checkbox" ${facet.mirror ? 'checked' : ''}></label></td>
+            <td class="cellNum"><input data-field="angleDeg" type="number" min="-90" max="90" step="0.001" value="${facet.angleDeg.toFixed(4)}"></td>
+            <td class="cellNum"><input data-field="startIndex" type="number" min="0" max="360" step="1" value="${facet.startIndex}"></td>
+            <td class="cellNum"><input data-field="distance" type="number" min="0" max="5" step="0.00001" value="${facet.distance.toFixed(5)}"></td>
+            <td class="cellInst"><input data-field="instructions" type="text" value="${escapeHtml(facet.instructions || '')}"></td>
+            <td class="cellRemove"><button class="designFacetRemove" type="button" data-remove="1">X</button></td>
+         </tr>
+      `).join('');
+
+      designFacetListEl.innerHTML = `
+         <table class="designFacetTable">
+            <colgroup>
+               <col class="colName">
+               <col class="colSym">
+               <col class="colMirror">
+               <col class="colAngle">
+               <col class="colStart">
+               <col class="colDist">
+               <col class="colInst">
+               <col class="colDel">
+            </colgroup>
+            <thead>
+               <tr>
+                  <th>Name</th>
+                  <th>Sym</th>
+                  <th>Mirror</th>
+                  <th>Angle</th>
+                  <th>Index</th>
+                  <th>Dist</th>
+                  <th>Notes</th>
+                  <th>Del</th>
+               </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+         </table>
+      `;
+
+      updateDesignStatusSummary();
+   }
+
+   function readCreateFacetFromInputs() {
+      return normalizeDesignFacet({
+         name: designNameEl.value,
+         instructions: designInstructionsEl.value,
+         symmetry: parseInt(designSymmetryEl.value, 10),
+         mirror: designMirrorEl.checked,
+         angleDeg: parseFloat(designAngleEl.value),
+         startIndex: parseInt(designStartIndexEl.value, 10),
+         distance: parseFloat(designDistanceEl.value),
+      }, designFacets.length);
+   }
+
+   function scheduleDesignApply() {
+      if (!designFacets.length) {
+         updateDesignStatusSummary();
+         return;
+      }
+      if (designApplyTimer) clearTimeout(designApplyTimer);
+      designApplyTimer = setTimeout(() => {
+         designApplyTimer = null;
+         applyDesignStone();
+      }, 120);
+   }
+
+   function setDesignFromStoneFacets(facets = [], sourceGear = null) {
+      const sourceGearValue = parseInt(sourceGear, 10);
+      const hasSourceGear = Number.isFinite(sourceGearValue) && sourceGearValue > 0;
+      const currentGear = Math.max(1, Math.min(360, Math.round(parseFloat(designGearEl?.value) || 96)));
+      const gear = hasSourceGear
+         ? Math.max(1, Math.min(360, Math.round(sourceGearValue)))
+         : currentGear;
+
+      if (hasSourceGear && designGearEl) {
+         designGearEl.value = String(gear);
+      }
+
+      const grouped = groupExternalFacetsForDesign(facets, gear);
+      designFacets = grouped.map((facet, idx) => normalizeDesignFacet(facet, idx));
+      renderDesignFacetList();
+   }
+
+   function installNumberDragScrub(rootEl) {
+      if (!rootEl) return;
+      let dragState = null;
+
+      const countStepDecimals = (step) => {
+         if (!Number.isFinite(step)) return 0;
+         const text = String(step);
+         if (!text.includes('.')) return 0;
+         return text.length - text.indexOf('.') - 1;
+      };
+
+      const clamp = (value, min, max) => {
+         let out = value;
+         if (Number.isFinite(min)) out = Math.max(min, out);
+         if (Number.isFinite(max)) out = Math.min(max, out);
+         return out;
+      };
+
+      rootEl.addEventListener('pointerdown', (e) => {
+         const inputEl = e.target.closest('input[type="number"]');
+         if (!inputEl || !rootEl.contains(inputEl) || inputEl.disabled || inputEl.readOnly) return;
+
+         const startValue = parseFloat(inputEl.value);
+         const step = parseFloat(inputEl.step);
+         const parsedStep = Number.isFinite(step) && step > 0 ? step : 1;
+         const min = parseFloat(inputEl.min);
+         const max = parseFloat(inputEl.max);
+
+         dragState = {
+            inputEl,
+            pointerId: e.pointerId,
+            startX: e.clientX,
+            startValue: Number.isFinite(startValue) ? startValue : 0,
+            step: parsedStep,
+            decimals: countStepDecimals(parsedStep),
+            min: Number.isFinite(min) ? min : null,
+            max: Number.isFinite(max) ? max : null,
+            moved: false,
+         };
+         inputEl.setPointerCapture(e.pointerId);
+      });
+
+      rootEl.addEventListener('pointermove', (e) => {
+         if (!dragState || e.pointerId !== dragState.pointerId) return;
+         const dx = e.clientX - dragState.startX;
+         if (!dragState.moved && Math.abs(dx) < 2) return;
+         dragState.moved = true;
+         e.preventDefault();
+
+         const rawValue = dragState.startValue + dx * dragState.step;
+         const clamped = clamp(rawValue, dragState.min, dragState.max);
+         const snapped = Math.round(clamped / dragState.step) * dragState.step;
+         const nextValue = clamp(snapped, dragState.min, dragState.max);
+         dragState.inputEl.value = nextValue.toFixed(dragState.decimals);
+         dragState.inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+
+      const endDrag = (e) => {
+         if (!dragState || e.pointerId !== dragState.pointerId) return;
+         if (dragState.inputEl.hasPointerCapture(dragState.pointerId)) {
+            dragState.inputEl.releasePointerCapture(dragState.pointerId);
+         }
+         dragState = null;
+      };
+
+      rootEl.addEventListener('pointerup', endDrag);
+      rootEl.addEventListener('pointercancel', endDrag);
+      rootEl.addEventListener('lostpointercapture', (e) => {
+         if (dragState && e.pointerId === dragState.pointerId) dragState = null;
+      });
+   }
+
+   function renderFacetInfo(facets = [], summary = null) {
       latestFacetInfo = facets;
       facetListEl.innerHTML = '';
 
@@ -890,7 +1642,20 @@ async function setupApp() {
          `);
       }
 
-      facetListEl.innerHTML = html.join('') || '<div class="facetEmpty">No facet notes were found for this model.</div>';
+      const summaryHtml = summary
+         ? `
+            <div class="facetSummaryCompact">
+               <div class="facetSectionTitle" style="width:100%">STONE INFO</div>
+               <span><strong>L/W</strong> ${escapeHtml(summary.lw.toFixed(4))}</span>
+               <span><strong>P/W</strong> ${escapeHtml(summary.pw.toFixed(4))}</span>
+               <span><strong>C/W</strong> ${escapeHtml(summary.cw.toFixed(4))}</span>
+               <span><strong>Gear</strong> ${escapeHtml(summary.gearUsed != null ? String(summary.gearUsed) : '—')}</span>
+               <span><strong>Facets</strong> ${escapeHtml(`${summary.nonGirdleCount}+${summary.girdleCount}=${summary.totalCount}`)}</span>
+            </div>
+         `
+         : '';
+
+      facetListEl.innerHTML = (summaryHtml + html.join('')) || '<div class="facetEmpty">No facet notes were found for this model.</div>';
    }
 
    // Toggles a panel's collapsed state. DOM class is the sole source of truth.
@@ -916,6 +1681,101 @@ async function setupApp() {
       toggleEl.setAttribute('aria-label', willCollapse ? `Expand ${name}` : `Minimize ${name}`);
       if (!willCollapse) onExpand?.();
    }
+
+      designAddFacetBtn.addEventListener('click', () => {
+         const nextFacet = readCreateFacetFromInputs();
+         designFacets.push(nextFacet);
+         renderDesignFacetList();
+         scheduleDesignApply();
+      });
+
+      designGearEl.addEventListener('input', () => {
+         scheduleDesignApply();
+      });
+
+      designClearBtn.addEventListener('click', () => {
+         designFacets = [];
+         renderDesignFacetList();
+      });
+
+      renderDesignFacetList();
+      installNumberDragScrub(designBodyEl);
+      installNumberDragScrub(designFacetListEl);
+
+   designFacetListEl.addEventListener('input', (e) => {
+      const itemEl = e.target.closest('[data-id]');
+      if (!itemEl) return;
+      const facetIdx = designFacets.findIndex((facet) => facet.id === itemEl.dataset.id);
+      if (facetIdx < 0) return;
+      const field = e.target.dataset.field;
+      if (!field) return;
+      const nextFacet = { ...designFacets[facetIdx] };
+      if (field === 'mirror') nextFacet[field] = Boolean(e.target.checked);
+      else if (field === 'name' || field === 'instructions') nextFacet[field] = e.target.value;
+      else nextFacet[field] = parseFloat(e.target.value);
+      if (field === 'symmetry' || field === 'mirror' || field === 'startIndex') {
+         nextFacet.indexes = undefined;
+         nextFacet.indexDistances = undefined;
+      }
+      if (field === 'distance') {
+         nextFacet.indexDistances = undefined;
+      }
+      designFacets[facetIdx] = normalizeDesignFacet(nextFacet, facetIdx);
+      updateDesignStatusSummary();
+      scheduleDesignApply();
+   });
+
+   designFacetListEl.addEventListener('click', (e) => {
+      const removeBtn = e.target.closest('[data-remove]');
+      if (!removeBtn) return;
+      const itemEl = e.target.closest('[data-id]');
+      if (!itemEl) return;
+      designFacets = designFacets.filter((facet) => facet.id !== itemEl.dataset.id);
+      renderDesignFacetList();
+      scheduleDesignApply();
+   });
+
+   designToggleEl.addEventListener('click', () => {
+      togglePanel(designPanel, designToggleEl, designExpandedSize, 'stone design');
+   });
+
+   let designResizeDrag = null;
+   let designResizePointerId = null;
+   designResizeEl.addEventListener('pointerdown', (e) => {
+      if (designPanel.classList.contains('collapsed')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      designResizeDrag = {
+         top: designPanel.getBoundingClientRect().top,
+         right: designPanel.getBoundingClientRect().right,
+      };
+      designResizePointerId = e.pointerId;
+      designResizeEl.setPointerCapture(e.pointerId);
+   });
+
+   designResizeEl.addEventListener('pointermove', (e) => {
+      if (!designResizeDrag) return;
+      const nextWidth = Math.max(260, Math.round(designResizeDrag.right - e.clientX));
+      const nextHeight = Math.max(140, Math.round(e.clientY - designResizeDrag.top));
+      designPanel.style.width = `${nextWidth}px`;
+      designPanel.style.height = `${nextHeight}px`;
+      designExpandedSize = { width: nextWidth, height: nextHeight };
+   });
+
+   function endDesignResize(pointerId = designResizePointerId) {
+      if (!designResizeDrag) return;
+      designResizeDrag = null;
+      if (pointerId != null && designResizeEl.hasPointerCapture(pointerId)) {
+         designResizeEl.releasePointerCapture(pointerId);
+      }
+      designResizePointerId = null;
+   }
+
+   designResizeEl.addEventListener('pointerup', (e) => endDesignResize(e.pointerId));
+   designResizeEl.addEventListener('pointercancel', (e) => endDesignResize(e.pointerId));
+   designResizeEl.addEventListener('lostpointercapture', () => endDesignResize());
+   window.addEventListener('pointerup', () => endDesignResize());
+   window.addEventListener('blur', () => endDesignResize());
 
    facetToggleEl.addEventListener('click', () => {
       togglePanel(facetPanel, facetToggleEl, facetExpandedSize, 'facet notes');
@@ -1594,26 +2454,22 @@ async function setupApp() {
       }
    }
 
-   // -------------------------------------------------------------------------
-   // loadModel — swap mesh buffers; pipeline and UI are untouched.
-   // -------------------------------------------------------------------------
-   async function loadModel(filename, url) {
-      console.log(`Loading ${filename}...`);
+   async function applyStoneData(filename, stone, options = {}) {
+      const syncDesignFromStone = options.syncDesignFromStone ?? true;
+      const isDesign = options.isDesign ?? false;
       currentModelFilename = filename;
 
-      const ext = filename.toLowerCase().match(/\.\w+$/)?.[0] ?? '';
-      let stone;
-      switch (ext) {
-         case '.gem': stone = await loadGEM(url); break;
-         case '.gcs': stone = await loadGCS(url); break;
-         case '.asc': stone = await loadASC(url); break;
-         default: stone = await loadSTL(url); break;
+      const meshNormalization = normalizeMesh(stone.vertexData);
+      const meshScale = Number.isFinite(meshNormalization?.scale) ? meshNormalization.scale : null;
+      if (Array.isArray(stone.facets) && Number.isFinite(meshScale)) {
+         stone.facets = stone.facets.map((facet) => {
+            if (!facet || !Number.isFinite(facet.d)) return facet;
+            return {
+               ...facet,
+               d: facet.d * meshScale,
+            };
+         });
       }
-
-      if (stone.refractiveIndex)
-         uiControls.setRI(stone.refractiveIndex);
-
-      normalizeMesh(stone.vertexData);
       modelBoundsRadius = Math.max(0.1, computeMeshBoundsRadius(stone.vertexData));
 
       const { nodeBuffer, triBuffer } = buildBVH(stone.vertexData, stone.triangleCount);
@@ -1665,17 +2521,71 @@ async function setupApp() {
       uiControls.setFileName(filename);
       modelHasTableFacet = hasUniqueTableFacet(stone.facets || []);
       if (Array.isArray(stone.facets) && stone.facets.length > 0) {
-         renderFacetInfo(stone.facets);
-         setFacetStatus(`${stone.facets.length} facets parsed from ${filename}`);
+         renderFacetInfo(stone.facets, computeFacetNotesSummary(stone));
+         setFacetStatus(
+            isDesign
+               ? `${stone.facets.length} generated facets from design`
+               : `${stone.facets.length} facets parsed from ${filename}`,
+         );
       } else {
-         renderFacetInfo([]);
-         setFacetStatus(filename.toLowerCase().endsWith('.gem')
-            ? `No named facets found in ${filename}`
-            : `Facet notes are only available for .gem files`);
+         renderFacetInfo([], computeFacetNotesSummary(stone));
+         if (isDesign) {
+            setFacetStatus('Design produced no valid facets');
+         } else {
+            setFacetStatus(filename.toLowerCase().endsWith('.gem')
+               ? `No named facets found in ${filename}`
+               : `Facet notes are only available for .gem files`);
+         }
       }
+
+      if (syncDesignFromStone) {
+         setDesignFromStoneFacets(
+            Array.isArray(stone.facets) ? stone.facets : [],
+            stone?.sourceGear,
+         );
+      }
+
       scheduleGraphUpdate('model load');
       resize();
       requestRender();
+   }
+
+   function applyDesignStone() {
+      if (!designFacets.length) {
+         setDesignStatus('Add at least one facet before apply.');
+         return;
+      }
+      try {
+         const designDefinition = {
+            gear: parseInt(designGearEl.value, 10) || 96,
+            refractiveIndex: ui.ri,
+            facets: designFacets.map((facet, idx) => normalizeDesignFacet(facet, idx)),
+         };
+         const stone = buildStoneFromFacetDesign(designDefinition);
+         applyStoneData('custom-design.asc', stone, { syncDesignFromStone: false, isDesign: true });
+         setDesignStatus(`Applied ${designFacets.length} design facets`);
+      } catch (err) {
+         console.error(err);
+         setDesignStatus(`Design failed: ${err?.message || 'invalid facets'}`);
+      }
+   }
+
+   // -------------------------------------------------------------------------
+   // loadModel — swap mesh buffers; pipeline and UI are untouched.
+   // -------------------------------------------------------------------------
+   async function loadModel(filename, url) {
+      console.log(`Loading ${filename}...`);
+
+      const ext = filename.toLowerCase().match(/\.\w+$/)?.[0] ?? '';
+      let stone;
+      switch (ext) {
+         case '.gem': stone = await loadGEM(url); break;
+         case '.gcs': stone = await loadGCS(url); break;
+         case '.asc': stone = await loadASC(url); break;
+         default: stone = await loadSTL(url); break;
+      }
+
+      await applyStoneData(filename, stone, { syncDesignFromStone: true, isDesign: false });
    }
 
    function shouldKeepRendering() {

@@ -84,6 +84,25 @@
             background: rgba(255,255,255,.05); color: #aaa; transition: all .15s;
         }
         #gemui .mode.active { background: #7eb8f7; color: #000; border-color: #7eb8f7; font-weight: 600; }
+        #gemTopTabs { margin: 0 0 10px; }
+        .gemUiTabPanel { display: none; }
+        .gemUiTabPanel.active { display: block; }
+        #gemui #designPanel {
+            width: 100%;
+            height: auto;
+            min-width: 0;
+            min-height: 0;
+            border: none;
+            border-radius: 0;
+            padding: 0;
+            background: transparent;
+            backdrop-filter: none;
+            font: inherit;
+        }
+        #gemui #designHeader,
+        #gemui #designToggle,
+        #gemui #designResize { display: none; }
+        #gemui #designBody { display: flex; }
         #gemui .divider { border: none; border-top: 1px solid rgba(255,255,255,.08); margin: 12px 0; }
         #gemui select {
             width: 100%; background: #1a1a22; color: #e8e8e8;
@@ -208,6 +227,195 @@
             border-bottom: 2px solid rgba(255,255,255,.35);
             border-bottom-left-radius: 2px;
         }
+        #designForm {
+            flex: 1 1 auto;
+            min-height: 0;
+            overflow: auto;
+            padding-right: 2px;
+        }
+        .designRow {
+            margin-bottom: 8px;
+        }
+        .designRow label {
+            display: block;
+            margin-bottom: 3px;
+            font-size: 11px;
+            color: #aaa;
+        }
+        .designRow input[type=number],
+        .designRow input[type=text],
+        .designRow select {
+            width: 100%;
+            box-sizing: border-box;
+            background: #1a1a22;
+            color: #e8e8e8;
+            border: 1px solid rgba(255,255,255,.15);
+            border-radius: 6px;
+            padding: 4px 6px;
+            font-size: 12px;
+        }
+        .designGrid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+        }
+        .designGrid2 {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+            align-items: end;
+        }
+        .designGrid3 {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 8px;
+            align-items: end;
+        }
+        .designRow .check {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-top: 3px;
+        }
+        .designBtnRow {
+            display: flex;
+            gap: 6px;
+            margin-top: 2px;
+        }
+        .designBtn {
+            flex: 1;
+            padding: 6px 8px;
+            text-align: center;
+            font-size: 11px;
+            border-radius: 6px;
+            cursor: pointer;
+            border: 1px solid rgba(255,255,255,.15);
+            background: rgba(255,255,255,.05);
+            color: #ddd;
+            user-select: none;
+        }
+        .designBtn:hover { border-color: rgba(255,255,255,.28); color: #fff; }
+        #designFacetList {
+            min-height: 0;
+            overflow: auto;
+        }
+        .designFacetTable {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+            font-size: 11px;
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 8px;
+            overflow: hidden;
+            background: rgba(255,255,255,0.03);
+        }
+        .designFacetTable thead th {
+            text-align: left;
+            font-weight: 600;
+            color: #dce6f5;
+            background: rgba(255,255,255,0.06);
+            padding: 6px 6px;
+            border-bottom: 1px solid rgba(255,255,255,0.10);
+            position: sticky;
+            top: 0;
+            z-index: 1;
+        }
+        .designFacetTable tbody td {
+            padding: 4px 4px;
+            border-bottom: 1px solid rgba(255,255,255,0.06);
+            vertical-align: middle;
+        }
+        .designFacetTable tbody tr:last-child td {
+            border-bottom: none;
+        }
+        .designFacetTable input[type=text],
+        .designFacetTable input[type=number] {
+            width: 100%;
+            box-sizing: border-box;
+            background: #1a1a22;
+            color: #e8e8e8;
+            border: 1px solid rgba(255,255,255,.15);
+            border-radius: 5px;
+            padding: 3px 5px;
+            font-size: 11px;
+        }
+        .designFacetTable .cellMirror {
+            text-align: center;
+            white-space: nowrap;
+        }
+        .designFacetTable .cellRemove {
+            text-align: center;
+            width: 32px;
+        }
+        .designFacetTable .cellName { min-width: 56px; }
+        .designFacetTable .cellInst { min-width: 100px; }
+        .designFacetTable .cellNum { width: 76px; }
+        .designFacetTable col.colName { width: 56px; }
+        .designFacetTable col.colSym { width: 56px; }
+        .designFacetTable col.colMirror { width: 42px; }
+        .designFacetTable col.colAngle { width: 80px; }
+        .designFacetTable col.colStart { width: 56px; }
+        .designFacetTable col.colInst { min-width: 100px; }
+        .designFacetTable col.colDist { width: 74px; }
+        .designFacetTable col.colDel { width: 32px; }
+        .designFacetTable .check {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+        }
+        .designFacetRemove {
+            border: 1px solid rgba(255,255,255,.15);
+            background: rgba(255,255,255,.05);
+            border-radius: 5px;
+            color: #ddd;
+            font-size: 10px;
+            padding: 2px 7px;
+            cursor: pointer;
+        }
+        .designRow input[type=number],
+        .designFacetTable input[type=number] {
+            cursor: ew-resize;
+        }
+        .designFacetEmpty {
+            color: #aaa;
+            font-size: 12px;
+            padding: 10px 2px;
+        }
+        #facetSplitTabs {
+            display: flex;
+            gap: 4px;
+            margin: 0 0 8px;
+            flex: 0 0 auto;
+        }
+        #facetSplitTabs .tabBtn {
+            flex: 1;
+            padding: 4px 6px;
+            text-align: center;
+            font-size: 11px;
+            border-radius: 6px;
+            cursor: pointer;
+            border: 1px solid rgba(255,255,255,.15);
+            background: rgba(255,255,255,.05);
+            color: #aaa;
+            transition: all .15s;
+            user-select: none;
+        }
+        #facetSplitTabs .tabBtn.active {
+            background: #7eb8f7;
+            color: #000;
+            border-color: #7eb8f7;
+            font-weight: 600;
+        }
+        .facetSplitPanel {
+            display: none;
+            flex: 1 1 auto;
+            min-height: 0;
+            flex-direction: column;
+        }
+        .facetSplitPanel.active { display: flex; }
+        #facetEditPanel { overflow: auto; }
+        #facetInstructionsPanel { min-height: 0; }
         #facetInfoList {
             flex: 1 1 auto; min-height: 0; overflow: auto;
             display: flex; flex-direction: column; gap: 10px; padding-right: 2px;
@@ -237,6 +445,36 @@
         .facetGroupIndexes { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
         .facetGroupInst { color: #d4dae3; }
         .facetEmpty { color: #aaa; font-size: 12px; padding: 10px 2px; }
+        .facetSummaryCompact {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px 10px;
+            margin: 0 0 8px;
+            padding: 6px 8px;
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.08);
+            background: rgba(255,255,255,0.03);
+            color: #d4dae3;
+            font-size: 11px;
+            line-height: 1.3;
+        }
+        .facetSummaryCompact strong {
+            color: #fff;
+            font-weight: 600;
+            margin-right: 3px;
+        }
+
+        .warning {
+            color:#ffb380;
+            background:rgba(255,179,128,0.12);
+            border:1px solid rgba(255,179,128,0.4);
+            border-radius:6px;
+            padding:6px 10px;
+            margin-bottom:12px;
+            font-size:14px;
+            font-weight:600;
+            font-family: system-ui, sans-serif;
+        }
 
         /* ── Controls toggle (mobile only) ─────────────────────────── */
         #gemui-toggle {
@@ -358,8 +596,15 @@
                     <button id="facetInfoToggle" type="button" aria-label="Minimize facet notes">&#x2212;</button>
                 </div>
                 <div id="facetInfoBody">
-                    <div id="facetInfoStatus">Waiting for model&hellip;</div>
-                    <div id="facetInfoList"></div>
+                    <div id="facetSplitTabs">
+                        <div class="tabBtn" data-facet-tab="instructions">Instructions</div>
+                        <div class="tabBtn" data-facet-tab="edit">Edit</div>
+                    </div>
+                    <div id="facetEditPanel" class="facetSplitPanel"></div>
+                    <div id="facetInstructionsPanel" class="facetSplitPanel">
+                        <div id="facetInfoStatus">Waiting for model&hellip;</div>
+                        <div id="facetInfoList"></div>
+                    </div>
                 </div>
                 <div id="facetInfoResize" aria-hidden="true"></div>
             </div>
@@ -369,6 +614,12 @@
         <!-- Right column: controls -->
         <div id="gemui">
             <h3>Gem Controls</h3>
+            <div class="modes" id="gemTopTabs">
+                <div class="mode active" data-gem-tab="controls">Controls</div>
+                <div class="mode" data-gem-tab="design">Design</div>
+            </div>
+
+            <div id="gemControlsTabPanel" class="gemUiTabPanel active">
             <div class="row">
                 <label>Load File</label>
                 <div class="modes">
@@ -489,6 +740,71 @@
             </div>
 
             <hr class="divider">
+            </div>
+
+            <div id="gemDesignTabPanel" class="gemUiTabPanel">
+                <div id="designPanel">
+                    <div id="designHeader">
+                        <h3>Stone Design</h3>
+                        <button id="designToggle" type="button" aria-label="Minimize stone design">&#x2212;</button>
+                    </div>
+                    <div class="warning"> Experimental Feature </div>
+                    <div id="designBody">
+                        <div id="designStatus">No custom facets yet.</div>
+                    </div>
+                        <div id="designForm">
+                            <div class="designGrid3">
+                                <div class="designRow">
+                                    <label>Gear</label>
+                                    <input type="number" id="designGear" min="4" max="360" step="1" value="96">
+                                </div>
+                                <div class="designRow">
+                                    <label>Symmetry</label>
+                                    <input type="number" id="designSymmetry" min="1" max="96" step="1" value="8">
+                                </div>
+                                <div class="designRow">
+                                    <label>Mirror</label>
+                                    <label class="check"><input type="checkbox" id="designMirror"> Enable</label>
+                                </div>
+                            </div>
+                            <div class="designGrid3">
+                                <div class="designRow">
+                                    <label>Angle (deg)</label>
+                                    <input type="number" id="designAngle" min="-90" max="90" step="0.001" value="90">
+                                </div>
+                                <div class="designRow">
+                                    <label>Start Index</label>
+                                    <input type="number" id="designStartIndex" min="0" max="360" step="1" value="0">
+                                </div>
+                                <div class="designRow">
+                                   <label>Distance from Center</label>
+                                    <input type="number" id="designDistance" min="0" max="5" step="0.00001" value="0.7">
+                                </div>
+                            </div>
+                            <div class="designGrid2">
+                               <div class="designRow">
+                                   <label>Name</label>
+                                   <input type="text" id="designName" value="A">
+                               </div>
+                               <div class="designRow">
+                                   <label>Instructions</label>
+                                   <input type="text" id="designInstructions" value="">
+                               </div>
+                            </div>
+                            <div class="designBtnRow">
+                                <div class="designBtn" id="designAddFacetBtn">Add Facet</div>
+                            </div>
+                        </div>
+                        <div id="designFacetSource" style="display:none;">
+                            <div class="designBtnRow" style="margin-bottom:8px;">
+                                <div class="designBtn" id="designClearBtn">Clear All</div>
+                            </div>
+                            <div id="designFacetList"></div>
+                        </div>
+                    </div>
+                    <div id="designResize" aria-hidden="true"></div>
+                </div>
+            </div>
 
         </div><!-- #gemui -->
 
