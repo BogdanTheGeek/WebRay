@@ -629,6 +629,39 @@ function stretchStoneByVertices(stone, scaleFactor, crown = true) {
          // fallback: use original facet normal
          normal = facets[i].normal ? facets[i].normal.slice() : [0, 0, 1];
       }
+      // If this is a girdle facet, lock its angle to 90deg by forcing
+      // the normal's Z component to zero (preserve XY azimuth). Use a
+      // centroid fallback when XY direction cannot be derived from the
+      // computed normal.
+      const isG = isGirdleFacet(facets[i]) || Boolean(facets[i]?.isGirdle);
+      if (isG) {
+         // project normal to XY plane
+         let nx2 = normal[0];
+         let ny2 = normal[1];
+         let lenXY = Math.hypot(nx2, ny2);
+         if (lenXY > 1e-8) {
+            nx2 /= lenXY; ny2 /= lenXY;
+            normal = [nx2, ny2, 0];
+         } else {
+            // fallback: derive XY direction from polygon centroid
+            let cx = 0, cy = 0;
+            for (const q of pts) { cx += q[0]; cy += q[1]; }
+            cx /= pts.length; cy /= pts.length;
+            const v0x = pts[0][0] - cx; const v0y = pts[0][1] - cy;
+            const vlen = Math.hypot(v0x, v0y);
+            if (vlen > 1e-8) {
+               normal = [v0x / vlen, v0y / vlen, 0];
+            } else {
+               // ultimate fallback: align with +X
+               normal = [1, 0, 0];
+            }
+         }
+         // ensure same hemisphere as original facet normal
+         const orig = facets[i].normal || [0, 0, 1];
+         const dot = (orig[0] * normal[0]) + (orig[1] * normal[1]) + ((orig[2] || 0) * normal[2]);
+         if (dot < 0) normal = [-normal[0], -normal[1], -normal[2]];
+      }
+
       // compute d using first vertex
       const p = pts[0];
       const d = normal[0] * p[0] + normal[1] * p[1] + normal[2] * p[2];
