@@ -1532,18 +1532,21 @@ function groupFacetInfo(facets = [], gear = 96) {
 
    for (const entries of sections.values()) {
       entries.forEach((entry) => {
-         const numeric = [];
-         const text = [];
+         const seen = new Set();
+         const out = [];
          for (const index of entry.indexes) {
-            if (/^\d+$/.test(index)) numeric.push(parseInt(index, 10));
-            else text.push(index);
+            let formatted;
+            if (/^\d+$/.test(index)) {
+               formatted = String(parseInt(index, 10)).padStart(2, '0');
+            } else {
+               formatted = index;
+            }
+            if (!seen.has(formatted)) {
+               seen.add(formatted);
+               out.push(formatted);
+            }
          }
-         numeric.sort((a, b) => a - b);
-         text.sort((a, b) => a.localeCompare(b));
-         entry.indexes = [
-            ...numeric.map((value) => String(value).padStart(2, '0')),
-            ...text,
-         ];
+         entry.indexes = out;
       });
 
       entries.sort((a, b) => {
