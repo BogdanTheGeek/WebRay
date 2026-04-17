@@ -633,7 +633,7 @@ function stretchStoneByVertices(stone, scaleFactor, crown = true) {
       // the normal's Z component to zero (preserve XY azimuth). Use a
       // centroid fallback when XY direction cannot be derived from the
       // computed normal.
-      const isG = isGirdleFacet(facets[i]) || Boolean(facets[i]?.isGirdle);
+      const isG = isGirdleFacet(facets[i]);
       if (isG) {
          // project normal to XY plane
          let nx2 = normal[0];
@@ -1580,12 +1580,6 @@ function groupFacetInfo(facets = [], gear = 96) {
             }
          }
          entry.indexes = out;
-      });
-
-      entries.sort((a, b) => {
-         const nameCmp = a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
-         if (nameCmp !== 0) return nameCmp;
-         return a.angle - b.angle;
       });
    }
 
