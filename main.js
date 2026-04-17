@@ -899,11 +899,10 @@ async function setupApp() {
    }
 
    function buildDesignGcsText(definition = {}) {
-      const gearValue = parseInt(definition?.gear, 10);
-      const gear = Number.isFinite(gearValue) && gearValue > 0 ? Math.round(gearValue) : 96;
-      const riValue = parseFloat(definition?.refractiveIndex);
+      const gear = parseInt(definition.gear, 10);
+      const riValue = parseFloat(definition.refractiveIndex);
       const refractiveIndex = Number.isFinite(riValue) && riValue > 1.0 ? riValue : 1.54;
-      const facets = Array.isArray(definition?.facets) ? definition.facets : [];
+      const facets = Array.isArray(definition.facets) ? definition.facets : [];
 
       const esc = (value) => String(value ?? '')
          .replaceAll('&', '&amp;')
@@ -982,7 +981,7 @@ async function setupApp() {
          const facet = normalizeDesignFacet(rawFacet, idx);
          const facetName = String(facet?.name || `F${idx + 1}`).trim() || `F${idx + 1}`;
          const facetInstructions = String(facet?.instructions || '').trim();
-         const facetGearValue = parseInt(rawFacet?.gear, 10);
+         const facetGearValue = parseInt(rawFacet.gear, 10);
          const facetGear = Number.isFinite(facetGearValue) && facetGearValue > 0
             ? Math.round(facetGearValue)
             : gear;
@@ -1037,17 +1036,13 @@ async function setupApp() {
       }, 20);
    }
 
-   function setDesignFromStoneFacets(facets = [], sourceGear = null) {
-      const sourceGearValue = parseInt(sourceGear, 10);
-      const hasSourceGear = Number.isFinite(sourceGearValue) && sourceGearValue > 0;
-      const currentGear = Math.max(1, Math.min(360, Math.round(parseFloat(designGearEl?.value) || 96)));
-      const gear = hasSourceGear
-         ? Math.max(1, Math.min(360, Math.round(sourceGearValue)))
-         : currentGear;
-
-      if (hasSourceGear && designGearEl) {
-         designGearEl.value = String(gear);
+   function setDesignFromStoneFacets(facets = [], sourceGear) {
+      const gear = parseInt(sourceGear, 10);
+      const hasSourceGear = Number.isFinite(gear) && gear > 0;
+      if (!hasSourceGear) {
+         throw new Error('Invalid source gear for design facets', { sourceGear });
       }
+      designGearEl.value = String(gear);
 
       const grouped = groupExternalFacetsForDesign(facets, gear);
       designFacets = grouped.map((facet, idx) => normalizeDesignFacet(facet, idx));
@@ -1137,7 +1132,7 @@ async function setupApp() {
          return;
       }
 
-      const groupedSections = groupFacetInfo(facets);
+      const groupedSections = groupFacetInfo(facets, summary.gearUsed);
       const sectionOrder = ['PAVILION', 'CROWN', 'OTHER'];
       const html = [];
 
@@ -1170,7 +1165,7 @@ async function setupApp() {
                <span><strong>L/W</strong> ${escapeHtml(summary.lw.toFixed(4))}</span>
                <span><strong>P/W</strong> ${escapeHtml(summary.pw.toFixed(4))}</span>
                <span><strong>C/W</strong> ${escapeHtml(summary.cw.toFixed(4))}</span>
-               <span><strong>Gear</strong> ${escapeHtml(summary.gearUsed != null ? String(summary.gearUsed) : '—')}</span>
+               <span><strong>Gear</strong> ${escapeHtml(String(summary.gearUsed))}</span>
                <span><strong>Facets</strong> ${escapeHtml(`${summary.nonGirdleCount}+${summary.girdleCount}=${summary.totalCount}`)}</span>
             </div>
          `
@@ -1218,7 +1213,7 @@ async function setupApp() {
 
       try {
          const designDefinition = {
-            gear: parseInt(designGearEl.value, 10) || 96,
+            gear: parseInt(designGearEl.value, 10),
             refractiveIndex: ui.ri,
             facets: designFacets.map((facet, idx) => normalizeDesignFacet(facet, idx)),
          };
@@ -2094,7 +2089,7 @@ async function setupApp() {
       if (syncDesignFromStone) {
          setDesignFromStoneFacets(
             Array.isArray(stone.facets) ? stone.facets : [],
-            stone?.sourceGear,
+            stone.sourceGear,
          );
       }
 
@@ -2109,8 +2104,9 @@ async function setupApp() {
          return;
       }
       try {
+         const gear = parseInt(designGearEl.value, 10);
          const designDefinition = {
-            gear: parseInt(designGearEl.value, 10) || 96,
+            gear: gear,
             refractiveIndex: ui.ri,
             facets: designFacets.map((facet, idx) => normalizeDesignFacet(facet, idx)),
          };
@@ -2158,13 +2154,17 @@ async function setupApp() {
       }
       const val = parseFloat(slider.value);
       label.textContent = val.toFixed(3);
+      const gear = parseInt(designGearEl.value, 10);
+      console.log(`Gear ${gear} stretch ${crown ? 'crown' : 'pavilion'} by ${val.toFixed(3)}`);
       const designDefinition = {
-         gear: parseInt(designGearEl.value, 10) || 96,
+         gear: gear,
          refractiveIndex: ui.ri,
          facets: designFacets.map((f, idx) => normalizeDesignFacet(f, idx)),
       };
       const baseStone = buildStoneFromFacetDesign(designDefinition);
+      console.debug('Base stone built from design', baseStone);
       const stone = stretchStoneByVertices(baseStone, val, crown);
+      console.debug('Stretched stone', stone);
       applyStoneData(currentModelFilename, stone, { syncDesignFromStone: false, isDesign: true });
       setDesignStatus(`${crown ? "Crown" : "Pavilion"} ratio ${val.toFixed(3)} applied`);
    };
@@ -2184,8 +2184,10 @@ async function setupApp() {
          const pavVal = parseFloat(designPavilionRatioSlider.value) || 1.0;
          suspendScaleAdjust = true;
          try {
+            const gear = parseInt(designGearEl.value, 10);
+            console.log(`Applying scales crown=${crownVal.toFixed(3)} pav=${pavVal.toFixed(3)} for gear ${gear}`);
             const designDefinition = {
-               gear: parseInt(designGearEl.value, 10) || 96,
+               gear: gear,
                refractiveIndex: ui.ri,
                facets: designFacets.map((f, idx) => normalizeDesignFacet(f, idx)),
             };
@@ -2194,7 +2196,7 @@ async function setupApp() {
             if (Math.abs(pavVal - 1.0) > 1e-6) stone = stretchStoneByVertices(stone, pavVal, false);
             applyStoneData(currentModelFilename, stone, { syncDesignFromStone: false, isDesign: true });
             // rebuild design facets table from new stone
-            setDesignFromStoneFacets(stone.facets || [], stone.sourceGear || null);
+            setDesignFromStoneFacets(stone.facets || [], stone.sourceGear);
             setDesignStatus(`Applied scales crown=${crownVal.toFixed(3)} pav=${pavVal.toFixed(3)}`);
          } catch (err) {
             console.error(err);
@@ -2240,6 +2242,8 @@ async function setupApp() {
          case '.asc': stone = await loadASC(url); break;
          default: stone = await loadSTL(url); break;
       }
+
+      designGearEl.value = stone.sourceGear;
 
       await applyStoneData(filename, stone, { syncDesignFromStone: true, isDesign: false });
    }
