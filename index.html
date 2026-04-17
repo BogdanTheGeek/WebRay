@@ -614,12 +614,6 @@
         <!-- Right column: controls -->
         <div id="gemui">
             <h3>Gem Controls</h3>
-            <div class="modes" id="gemTopTabs">
-                <div class="mode active" data-gem-tab="controls">Analyse</div>
-                <div class="mode" data-gem-tab="design">Design</div>
-            </div>
-
-            <div id="gemControlsTabPanel" class="gemUiTabPanel active">
             <div class="row">
                 <label>Load File</label>
                 <div class="modes">
@@ -628,6 +622,12 @@
                 <div id="fileNameEl"></div>
                 <input type="file" id="uiFileInput" accept=".stl,.STL,.gem,.GEM,.gcs,.GCS,.asc,.ASC" style="display:none">
             </div>
+            <div class="modes" id="gemTopTabs">
+                <div class="mode active" data-gem-tab="controls">Analyse</div>
+                <div class="mode" data-gem-tab="design">Design</div>
+            </div>
+
+            <div id="gemControlsTabPanel" class="gemUiTabPanel active">
 
             <div class="row">
                 <label>Gem Species</label>
