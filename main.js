@@ -2214,17 +2214,16 @@ async function setupApp() {
    if (designResetScaleBtn) {
       designResetScaleBtn.addEventListener('click', () => {
          suspendScaleAdjust = true;
-         try {
-            designCrownRatioSlider.value = '1.0';
-            designPavilionRatioSlider.value = '1.0';
-            designCrownRatio.textContent = '1.000';
-            designPavilionRatio.textContent = '1.000';
-            pendingCrown = false;
-            pendingPavilion = false;
-            setDesignStatus('Scale reset');
-         } finally {
-            suspendScaleAdjust = false;
-         }
+         designCrownRatioSlider.value = '1.0';
+         designPavilionRatioSlider.value = '1.0';
+         designCrownRatio.textContent = '1.000';
+         designPavilionRatio.textContent = '1.000';
+         pendingCrown = false;
+         pendingPavilion = false;
+         setDesignStatus('Scale reset');
+         suspendScaleAdjust = false;
+         adjustRatio(designCrownRatioSlider, designCrownRatio, true);
+         adjustRatio(designPavilionRatioSlider, designPavilionRatio, false);
       });
    }
 

@@ -104,12 +104,17 @@ fn rnd_sky(d: vec3<f32>) -> f32 {
 fn sample_env_view(dirView: vec3<f32>) -> vec3<f32> {
     let d    = dirView; // caller guarantees unit length
     let mode = uniforms.lightMode;
-    let graphOnly = uniforms.graphMode > 0.5;
+    let graph = uniforms.graphMode > 0.5;
 
     // Head shadow — coloured circle directly above stone (viewer's head)
     var shadowTint = vec3<f32>(1.0);
-    if (!graphOnly && d.z > 0.9848) {
-        shadowTint = vec3<f32>(uniforms.headShadowR, uniforms.headShadowG, uniforms.headShadowB);
+    if (d.z > 0.9848) {
+        if (graph) {
+            shadowTint = vec3<f32>(0.0, 0.0, 0.0);
+        }
+        else {
+            shadowTint = vec3<f32>(uniforms.headShadowR, uniforms.headShadowG, uniforms.headShadowB);
+        }
     }
 
     var intensity = 0.0;
@@ -152,7 +157,7 @@ fn sample_env_view(dirView: vec3<f32>) -> vec3<f32> {
     let tint = select(
         vec3<f32>(1.0),
         uniforms.stoneColor,
-        !graphOnly,
+        !graph,
     );
 
     // Small white ambient from below (light table / bench lamp)
@@ -160,7 +165,7 @@ fn sample_env_view(dirView: vec3<f32>) -> vec3<f32> {
     let tableAmbient = select(
         vec3<f32>(0.0),
         vec3<f32>(0.06, 0.06, 0.06) * max(0.0, -d.z + 0.25),
-        !graphOnly && mode > 2.5,
+        !graph && mode > 2.5,
     );
 
     return tint * envLight + tableAmbient;
