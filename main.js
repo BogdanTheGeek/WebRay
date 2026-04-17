@@ -2115,7 +2115,7 @@ async function setupApp() {
             facets: designFacets.map((facet, idx) => normalizeDesignFacet(facet, idx)),
          };
          const stone = buildStoneFromFacetDesign(designDefinition);
-         applyStoneData('custom-design', stone, { syncDesignFromStone: false, isDesign: true });
+         applyStoneData(currentModelFilename, stone, { syncDesignFromStone: false, isDesign: true });
          setDesignStatus(`Applied ${designFacets.length} design facets`);
       } catch (err) {
          console.error(err);
@@ -2165,7 +2165,7 @@ async function setupApp() {
       };
       const baseStone = buildStoneFromFacetDesign(designDefinition);
       const stone = stretchStoneByVertices(baseStone, val, crown);
-      applyStoneData('custom-design', stone, { syncDesignFromStone: false, isDesign: true });
+      applyStoneData(currentModelFilename, stone, { syncDesignFromStone: false, isDesign: true });
       setDesignStatus(`${crown ? "Crown" : "Pavilion"} ratio ${val.toFixed(3)} applied`);
    };
 
@@ -2192,7 +2192,7 @@ async function setupApp() {
             let stone = buildStoneFromFacetDesign(designDefinition);
             if (Math.abs(crownVal - 1.0) > 1e-6) stone = stretchStoneByVertices(stone, crownVal, true);
             if (Math.abs(pavVal - 1.0) > 1e-6) stone = stretchStoneByVertices(stone, pavVal, false);
-            applyStoneData('custom-design', stone, { syncDesignFromStone: false, isDesign: true });
+            applyStoneData(currentModelFilename, stone, { syncDesignFromStone: false, isDesign: true });
             // rebuild design facets table from new stone
             setDesignFromStoneFacets(stone.facets || [], stone.sourceGear || null);
             setDesignStatus(`Applied scales crown=${crownVal.toFixed(3)} pav=${pavVal.toFixed(3)}`);

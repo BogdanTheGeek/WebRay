@@ -2175,5 +2175,6 @@ export {
    computeFacetNotesSummary,
    stretchSide,
    stretchStoneByVertices,
+   computeNormalFromPolar,
 };
 
