@@ -1154,7 +1154,7 @@ async function setupApp() {
                      <div class="facetGroup">
                         <div class="facetGroupName">${escapeHtml(entry.name)}</div>
                         <div class="facetGroupAngle">${escapeHtml(entry.angleLabel)}</div>
-                        <div class="facetGroupIndexes">${escapeHtml(formatFacetIndexLines(entry.indexes).join('\n'))}</div>
+                        <div class="facetGroupIndexes">${escapeHtml(formatFacetIndexLines(entry.indexes))}</div>
                         <div class="facetGroupInst">${instruction}</div>
                      </div>
                   `;
@@ -2211,21 +2211,20 @@ async function setupApp() {
          }
       });
    }
-   if (designResetScaleBtn) {
-      designResetScaleBtn.addEventListener('click', () => {
-         suspendScaleAdjust = true;
-         designCrownRatioSlider.value = '1.0';
-         designPavilionRatioSlider.value = '1.0';
-         designCrownRatio.textContent = '1.000';
-         designPavilionRatio.textContent = '1.000';
-         pendingCrown = false;
-         pendingPavilion = false;
-         setDesignStatus('Scale reset');
-         suspendScaleAdjust = false;
-         adjustRatio(designCrownRatioSlider, designCrownRatio, true);
-         adjustRatio(designPavilionRatioSlider, designPavilionRatio, false);
-      });
-   }
+
+   designResetScaleBtn.addEventListener('click', () => {
+      suspendScaleAdjust = true;
+      designCrownRatioSlider.value = '1.0';
+      designPavilionRatioSlider.value = '1.0';
+      designCrownRatio.textContent = '1.000';
+      designPavilionRatio.textContent = '1.000';
+      pendingCrown = false;
+      pendingPavilion = false;
+      setDesignStatus('Scale reset');
+      suspendScaleAdjust = false;
+      adjustRatio(designCrownRatioSlider, designCrownRatio, true);
+      adjustRatio(designPavilionRatioSlider, designPavilionRatio, false);
+   });
 
    // -------------------------------------------------------------------------
    // loadModel — swap mesh buffers; pipeline and UI are untouched.
