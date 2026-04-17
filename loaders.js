@@ -1,6 +1,7 @@
 "use strict";
 
 const TABLE_FACET_MAX_ANGLE_DEG = 1.5;
+const EPS = 1e-9;
 
 class StoneData {
    constructor(vertexData, triangleCount, facets = [], refractiveIndex = null, dispersion = null, sourceGear = null) {
@@ -494,6 +495,185 @@ function buildStoneFromHalfSpacePlanes(planes, refractiveIndex = null, sourceGea
    return new StoneData(vertexData, triCount, facets, refractiveIndex, null, sourceGear);
 }
 
+   function stretchStoneByVertices(stone, scaleFactor, crown = true) {
+      const s = Number(scaleFactor) || 1;
+      if (!stone || !stone.vertexData || !Array.isArray(stone.facets) || s === 1) return stone;
+
+      const floatsPerVertex = 7;
+      const vertsPerTri = 3;
+      const triCount = stone.triangleCount || 0;
+      const vertexData = stone.vertexData;
+      const facets = stone.facets;
+
+      // Build per-facet vertex lists by walking triangles in order
+      const facetVertexLists = [];
+      let triOffset = 0;
+      for (let fi = 0; fi < facets.length; fi++) {
+         const triCountForFacet = Math.max(0, Math.round(facets[fi].triangleCount || 0));
+         const pts = [];
+         for (let t = 0; t < triCountForFacet; t++) {
+            const triIdx = triOffset + t;
+            const base = triIdx * vertsPerTri * floatsPerVertex;
+            for (let v = 0; v < vertsPerTri; v++) {
+               const idx = base + v * floatsPerVertex;
+               const x = vertexData[idx + 0];
+               const y = -vertexData[idx + 1]; // stored Y inverted
+               const z = vertexData[idx + 2];
+               pts.push([x, y, z]);
+            }
+         }
+         triOffset += triCountForFacet;
+         // deduplicate
+         const uniq = [];
+         const seen = new Set();
+         for (const p of pts) {
+            const key = `${p[0].toFixed(6)}:${p[1].toFixed(6)}:${p[2].toFixed(6)}`;
+            if (!seen.has(key)) {
+               seen.add(key);
+               uniq.push(p);
+            }
+         }
+         facetVertexLists.push(uniq);
+      }
+
+      // compute girdle top/bottom from girdle facets (if present)
+      let girdleTop = null;
+      let girdleBottom = null;
+      for (let i = 0; i < facets.length; i++) {
+         const f = facets[i];
+         if (!isGirdleFacet(f)) continue;
+         for (const p of facetVertexLists[i]) {
+            girdleTop = girdleTop === null ? p[2] : Math.max(girdleTop, p[2]);
+            girdleBottom = girdleBottom === null ? p[2] : Math.min(girdleBottom, p[2]);
+         }
+      }
+
+      // classify facets and compute z0. For crown use girdleTop, for pavilion use girdleBottom.
+      let z0 = null;
+      const ANG_EPS = 1e-4;
+      if (crown) {
+         if (girdleTop !== null) z0 = girdleTop;
+         else {
+            // fallback: lowest point among positive-angle facets (exclude girdle)
+            for (let i = 0; i < facets.length; i++) {
+               const f = facets[i];
+               const angle = computeSignedFacetAngleDeg(f.normal || [0,0,1]);
+               if (angle > ANG_EPS) {
+                  for (const p of facetVertexLists[i]) z0 = z0 === null ? p[2] : Math.min(z0, p[2]);
+               }
+            }
+         }
+      } else {
+         if (girdleBottom !== null) z0 = girdleBottom;
+         else {
+            for (let i = 0; i < facets.length; i++) {
+               const f = facets[i];
+               const angle = computeSignedFacetAngleDeg(f.normal || [0,0,1]);
+               if (angle < -ANG_EPS) {
+                  for (const p of facetVertexLists[i]) z0 = z0 === null ? p[2] : Math.max(z0, p[2]);
+               }
+            }
+         }
+      }
+      if (z0 === null) return stone;
+
+      // apply scaling to vertices in targeted facets
+      const newFacetVerts = facetVertexLists.map((list, i) => list.map(p => p.slice()));
+      for (let i = 0; i < facets.length; i++) {
+         const f = facets[i];
+         const angle = computeSignedFacetAngleDeg(f.normal || [0,0,1]);
+         const isG = isGirdleFacet(f);
+         // include table in crown scaling (table ~ angle ~= 0 with normal.z > 0)
+         const isTable = Math.abs(angle) <= ANG_EPS && ((f.normal?.[2] ?? 1) > 0);
+         const isTarget = !isG && (crown ? (angle > ANG_EPS || isTable) : (angle < -ANG_EPS));
+         if (!isTarget) continue;
+         for (const p of newFacetVerts[i]) {
+            p[2] = z0 + s * (p[2] - z0);
+         }
+      }
+
+      // helper to compute plane from polygon vertices
+      const planes = [];
+      for (let i = 0; i < facets.length; i++) {
+         const pts = newFacetVerts[i];
+         if (!pts || pts.length < 3) continue;
+         // find non-collinear triple
+         let normal = null;
+         for (let a = 0; a < pts.length - 2 && !normal; a++) {
+            const p0 = pts[a];
+            for (let b = a + 1; b < pts.length - 1 && !normal; b++) {
+               const p1 = pts[b];
+               for (let c = b + 1; c < pts.length && !normal; c++) {
+                  const p2 = pts[c];
+                  const ux = p1[0] - p0[0];
+                  const uy = p1[1] - p0[1];
+                  const uz = p1[2] - p0[2];
+                  const vx = p2[0] - p0[0];
+                  const vy = p2[1] - p0[1];
+                  const vz = p2[2] - p0[2];
+                  const nx = uy * vz - uz * vy;
+                  const ny = uz * vx - ux * vz;
+                  const nz = ux * vy - uy * vx;
+                  const nlen = Math.hypot(nx, ny, nz);
+                  if (nlen > EPS) {
+                     normal = [nx / nlen, ny / nlen, nz / nlen];
+                     // ensure normal sign matches original facet normal z
+                     const origSign = Math.sign((facets[i].normal?.[2]) ?? 1);
+                     if ((normal[2] * origSign) < 0) {
+                        normal = [-normal[0], -normal[1], -normal[2]];
+                     }
+                  }
+               }
+            }
+         }
+         if (!normal) {
+            // fallback: use original facet normal
+            normal = facets[i].normal ? facets[i].normal.slice() : [0,0,1];
+         }
+         // compute d using first vertex
+         const p = pts[0];
+         const d = normal[0] * p[0] + normal[1] * p[1] + normal[2] * p[2];
+         planes.push({ a: normal[0], b: normal[1], c: normal[2], d, name: facets[i].name || '', instructions: facets[i].instructions || '', frosted: facets[i].frosted });
+      }
+
+      if (!planes.length) return stone;
+
+      // Ensure plane normals point inward/define correct half-spaces by testing
+      // against centroid of all scaled vertices. Flip normals/d when centroid
+      // does not satisfy plane inequality.
+      const allPts = [];
+      for (const list of newFacetVerts) for (const p of list) allPts.push(p);
+      let cx = 0, cy = 0, cz = 0;
+      if (allPts.length) {
+         for (const p of allPts) { cx += p[0]; cy += p[1]; cz += p[2]; }
+         cx /= allPts.length; cy /= allPts.length; cz /= allPts.length;
+      }
+      let flipCount = 0;
+      for (let i = 0; i < planes.length; i++) {
+         const p = planes[i];
+         // normalize
+         const nlen = Math.hypot(p.a, p.b, p.c) || 1;
+         p.a /= nlen; p.b /= nlen; p.c /= nlen; p.d /= nlen;
+         const val = p.a * cx + p.b * cy + p.c * cz;
+         if (val > p.d + EPS) {
+            p.a = -p.a; p.b = -p.b; p.c = -p.c; p.d = -p.d; flipCount++;
+         }
+      }
+      if (flipCount) console.debug('stretchStoneByVertices: flipped', flipCount, 'planes to match centroid');
+
+      try {
+         const result = buildStoneFromHalfSpacePlanes(planes, stone.refractiveIndex, stone.sourceGear || null);
+         if (!result || !(result.vertexData instanceof Float32Array) || result.triangleCount === 0) {
+            console.warn('stretchStoneByVertices: rebuild produced empty mesh; aborting.','z0=',z0,'scale=',s,'planes=',planes.length);
+            return stone;
+         }
+         return result;
+      } catch (err) {
+         console.warn('stretchStoneByVertices: rebuild threw, aborting.', err);
+         return stone;
+      }
+   }
+
 async function loadASC(url) {
    const response = await fetch(url);
    const text = await response.text();
@@ -657,6 +837,23 @@ async function loadASC(url) {
    return buildStoneFromHalfSpacePlanes(planes, refractiveIndex, igear);
 }
 
+function computeNormalFromPolar(angleDeg, index, gear, gearOffset = 0) {
+   if (Math.abs(angleDeg) <= 1e-8) {
+      return [0, 0, angleDeg >= 0 ? 1 : -1];
+   }
+   const incl = angleDeg * Math.PI / 180;
+   const azi = (index - gearOffset) * 2 * Math.PI / gear;
+   let c = Math.cos(incl);
+   let s = Math.sin(incl);
+   if (angleDeg < 0) {
+      c *= -1;
+      s *= -1;
+   }
+   const a = s * Math.sin(azi);
+   const b = -s * Math.cos(azi);
+   return [a, b, c];
+};
+
 function buildStoneFromFacetDesign(definition = {}) {
    const gearDefault = parseInt(definition.gear, 10);
    const defaultGear = Number.isFinite(gearDefault) && gearDefault > 0 ? gearDefault : 96;
@@ -670,23 +867,6 @@ function buildStoneFromFacetDesign(definition = {}) {
       let wrapped = Math.round(value);
       wrapped = ((wrapped - 1) % g + g) % g + 1;
       return wrapped;
-   };
-
-   const computeNormalFromPolar = (angleDeg, index, gear, gearOffset = 0) => {
-      if (Math.abs(angleDeg) <= 1e-8) {
-         return [0, 0, angleDeg >= 0 ? 1 : -1];
-      }
-      const incl = angleDeg * Math.PI / 180;
-      const azi = (index - gearOffset) * 2 * Math.PI / gear;
-      let c = Math.cos(incl);
-      let s = Math.sin(incl);
-      if (angleDeg < 0) {
-         c *= -1;
-         s *= -1;
-      }
-      const a = s * Math.sin(azi);
-      const b = -s * Math.cos(azi);
-      return [a, b, c];
    };
 
    facets.forEach((facet, idx) => {
@@ -1790,6 +1970,14 @@ function normalizeDesignFacet(inputFacet = {}, fallbackIndex = 0) {
    return next;
 }
 
+const GIRDLE_ANGLE_EPS_DEG = 1.0;
+const isGirdleFacet = (facet) => {
+   const name = String(facet?.name || '').trim();
+   if (/^G\d*/i.test(name)) return true;
+   const angleDeg = computeFacetAngleDeg(facet?.normal || [0, 0, 1]);
+   return Math.abs(angleDeg - 90) <= GIRDLE_ANGLE_EPS_DEG;
+};
+
 function computeFacetNotesSummary(stone) {
    const facets = Array.isArray(stone?.facets) ? stone.facets : [];
    const vertexData = stone?.vertexData;
@@ -1816,13 +2004,6 @@ function computeFacetNotesSummary(stone) {
    const width = Math.max(1e-9, Math.min(xSpan, ySpan));
    const lw = length / width;
 
-   const GIRDLE_ANGLE_EPS_DEG = 1.0;
-   const isGirdleFacet = (facet) => {
-      const name = String(facet?.name || '').trim();
-      if (/^G\d*/i.test(name)) return true;
-      const angleDeg = computeFacetAngleDeg(facet?.normal || [0, 0, 1]);
-      return Math.abs(angleDeg - 90) <= GIRDLE_ANGLE_EPS_DEG;
-   };
    const girdleCount = facets.filter((facet) => isGirdleFacet(facet)).length;
    const totalCount = facets.length;
    const nonGirdleCount = Math.max(0, totalCount - girdleCount);
@@ -1880,6 +2061,80 @@ function computeFacetNotesSummary(stone) {
    };
 }
 
+function stretchSide(facets, stretchFactor, crown) {
+   // Apply linear Z-scale transform to facet planes.
+   // Transform positions by M = diag(1,1,scale). For planes, new normal = M^{-T} * n,
+   // then normalize and adjust distance: d' = d / ||M^{-T} n||
+   const k = Number(stretchFactor) || 1;
+   if (!Array.isArray(facets) || facets.length === 0) return facets;
+   if (!Number.isFinite(k) || k <= 0) return facets;
+
+   return facets.map((facet) => {
+      if (!facet) return facet;
+      const isGirdle = isGirdleFacet(facet);
+
+      // design facet format uses `angleDeg` and `distance`
+      const signedAngle = Number.isFinite(facet.angleDeg) ? facet.angleDeg : computeSignedFacetAngleDeg(facet.normal || [0, 0, 1]);
+      const isTarget = crown ? (!isGirdle && signedAngle > 0.0) : (!isGirdle && signedAngle < 0.0);
+
+      // Table facet (near 0 deg): scale distance only when adjusting crown
+      if (Math.abs(signedAngle) <= 0.1) {
+         if (!crown) return facet; // do not move table when changing pavilion
+         const origDist = Number.isFinite(facet.distance) ? facet.distance : (Number.isFinite(facet.d) ? facet.d : 0);
+         return {
+            ...facet,
+            distance: origDist * k,
+         };
+      }
+
+      if (!isTarget) return facet;
+
+      // Build representative normal from signed angle. Azimuth irrelevant for stretch.
+      const sign = signedAngle >= 0 ? 1 : -1;
+      const theta = Math.abs(signedAngle) * Math.PI / 180.0;
+      // choose nx = sin(theta), ny = 0, nz = cos(theta) with sign
+      const nx = Math.sin(theta);
+      const ny = 0;
+      const nz = Math.cos(theta) * sign;
+
+      // M = diag(1,1,k) → M^{-T} = diag(1,1,1/k)
+      const tx = nx;
+      const ty = ny;
+      const tz = nz / k;
+      const norm = Math.hypot(tx, ty, tz);
+      if (norm <= 1e-12) return facet;
+
+      const aPrime = tx / norm;
+      const bPrime = ty / norm;
+      const cPrime = tz / norm;
+      // compute new signed angle
+      const newNz = cPrime;
+      const newAngleDeg = (nz >= 0 ? 1 : -1) * (Math.acos(Math.max(-1, Math.min(1, Math.abs(newNz)))) * 180.0 / Math.PI);
+
+      const origDist = Number.isFinite(facet.distance) ? facet.distance : (Number.isFinite(facet.d) ? facet.d : 0);
+      // first-order transformed distance
+      let transformedD = origDist / norm;
+
+      // Preserve intersection radius at girdle plane z0 (use z0 = 0).
+      const z0 = 0;
+      const sinTheta = Math.hypot(nx, ny);
+      if (sinTheta > 1e-8) {
+         const rOrig = (origDist - nz * z0) / sinTheta;
+         const sinPrime = Math.hypot(aPrime, bPrime);
+         if (sinPrime > 1e-8) {
+            const dTarget = rOrig * sinPrime + cPrime * z0;
+            transformedD = dTarget;
+         }
+      }
+
+      return {
+         ...facet,
+         angleDeg: newAngleDeg,
+         distance: (origDist < 0 ? -Math.abs(transformedD) : Math.abs(transformedD)),
+      };
+   });
+}
+
 
 export {
    loadSTL,
@@ -1907,5 +2162,7 @@ export {
    groupExternalFacetsForDesign,
    normalizeDesignFacet,
    computeFacetNotesSummary,
+   stretchSide,
+   stretchStoneByVertices,
 };
 

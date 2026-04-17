@@ -18,6 +18,7 @@ import {
    groupExternalFacetsForDesign,
    normalizeDesignFacet,
    computeFacetNotesSummary,
+   stretchStoneByVertices,
 } from './loaders.js';
 import { exportInProgress, setupExporter } from './video.js';
 
@@ -59,6 +60,181 @@ let framePending = false;
 let frame = () => { }; // Replaced by setupApp() return value; declared here to avoid closure issues with requestRender()
 const ROT_EPSILON = 1e-4;
 
+// ---------------------------------------------------------------------------
+// Module-level state — shared across model reloads
+// ---------------------------------------------------------------------------
+const ui = {
+   ri: presets[0][1],
+   cod: presets[0][2],
+   clarity: 1.0,
+   lightMode: 3,
+   color: [1, 1, 1],
+   backgroundColor: [13 / 255, 13 / 255, 13 / 255],
+   exitHighlight: [0, 0, 0],
+   headShadowColor: [0.5, 0.5, 0.5],
+   exitStrength: 0.0,
+   tiltAngleDeg: 10,
+   focalLength: 200,
+   renderScale: 0,
+   renderScaleMax: 1,
+   exportQualityPx: 1080,
+};
+
+// Camera / interaction (survive model reloads)
+const modelMat = mat4.create();
+const viewMat = mat4.create();
+const projMat = mat4.create();
+const cameraPos = vec4.fromValues(0, 0, 5, 0);
+let targetRotX = 0, targetRotY = 0;
+let currentRotX = 0, currentRotY = 0;
+let animating = false, animStartTime = 0;
+
+// Current model GPU resources — replaced by loadModel()
+let renderBundle = null; // { bindGroup, graphBindGroups, vertexBuffer, triCount }
+let modelBoundsRadius = 1.0;
+
+// Reference to UI controls — set by setupApp(), used by loadModel()
+let uiControls = null;
+
+const GRAPH_SAMPLE_SIZE = 64;
+const GRAPH_COLOR_FORMAT = 'rgba16float';
+const GRAPH_REDUCE_SUM_SCALE = 65536;
+const GRAPH_REDUCE_CELL_U32_COUNT = 4;
+const GRAPH_VALUE_SCALE = 100;
+const GRAPH_TILT_MIN = -30;
+const GRAPH_TILT_MAX = 30;
+const GRAPH_TILT_STEP = 1;
+const GRAPH_MODES = [
+   { label: 'ISO', color: '#e8e8e8', mode: 0 },
+   { label: 'COS', color: '#ff5f5f', mode: 1 },
+   { label: 'SC2', color: '#59e35f', mode: 2 },
+];
+const GRAPH_TILT_VALUES = Array.from(
+   { length: Math.floor((GRAPH_TILT_MAX - GRAPH_TILT_MIN) / GRAPH_TILT_STEP) + 1 },
+   (_, i) => GRAPH_TILT_MIN + i * GRAPH_TILT_STEP,
+);
+const GRAPH_TILT_COUNT = GRAPH_TILT_VALUES.length;
+const GRAPH_MODE_COUNT = GRAPH_MODES.length;
+const GRAPH_TILE_COUNT = GRAPH_TILT_COUNT * GRAPH_MODE_COUNT;
+const GRAPH_ATLAS_WIDTH = GRAPH_SAMPLE_SIZE * GRAPH_TILT_COUNT;
+const GRAPH_ATLAS_HEIGHT = GRAPH_SAMPLE_SIZE * GRAPH_MODE_COUNT;
+const ORIENTATION_CACHE_ANGLE_STEP_DEG = 0.05;
+const ORIENTATION_CACHE_MAX_ENTRIES = 1 / ORIENTATION_CACHE_ANGLE_STEP_DEG * 30 * 2; // 30° in each direction, both axes
+const ORIENTATION_CACHE_ANGLE_STEP_RAD = ORIENTATION_CACHE_ANGLE_STEP_DEG * Math.PI / 180.0;
+const TILT_ANIM_STEP_SEC = 1.2;
+const TILT_ANIM_CYCLE_SEC = TILT_ANIM_STEP_SEC * 2;
+const TILT_PRERENDER_SAMPLE_FPS = 60;
+const TILT_PRERENDER_FPS_THRESHOLD = 50;
+const STONE_MARGIN_SCALE = 0.70;
+
+// Panels are defined in index.html — just acquire references.
+const designPanel = document.getElementById('designPanel');
+const graphPanel = document.getElementById('lightReturnPanel');
+const facetPanel = document.getElementById('facetInfoPanel');
+const designToggleEl = document.getElementById('designToggle');
+const designBodyEl = document.getElementById('designBody');
+const designResizeEl = document.getElementById('designResize');
+const designStatusEl = document.getElementById('designStatus');
+const designFacetListEl = document.getElementById('designFacetList');
+const designGearEl = document.getElementById('designGear');
+const designSymmetryEl = document.getElementById('designSymmetry');
+const designMirrorEl = document.getElementById('designMirror');
+const designAngleEl = document.getElementById('designAngle');
+const designStartIndexEl = document.getElementById('designStartIndex');
+const designDistanceEl = document.getElementById('designDistance');
+const designNameEl = document.getElementById('designName');
+const designInstructionsEl = document.getElementById('designInstructions');
+const designAddFacetBtn = document.getElementById('designAddFacetBtn');
+const designSaveGemBtn = document.getElementById('designSaveGemBtn');
+const designClearBtn = document.getElementById('designClearBtn');
+const graphToggleEl = document.getElementById('lightReturnToggle');
+const graphBodyEl = document.getElementById('lightReturnBody');
+const graphResizeEl = document.getElementById('lightReturnResize');
+const graphStatusEl = document.getElementById('lightReturnStatus');
+const graphCanvas = document.getElementById('lightReturnCanvas');
+const facetToggleEl = document.getElementById('facetInfoToggle');
+const facetSplitTabsEl = document.getElementById('facetSplitTabs');
+const facetEditPanelEl = document.getElementById('facetEditPanel');
+const facetInstructionsPanelEl = document.getElementById('facetInstructionsPanel');
+const facetStatusEl = document.getElementById('facetInfoStatus');
+const facetListEl = document.getElementById('facetInfoList');
+const facetResizeEl = document.getElementById('facetInfoResize');
+const graphCtx = graphCanvas.getContext('2d');
+const graphDpr = window.devicePixelRatio || 1;
+let graphCanvasWidth = 388;
+let graphCanvasHeight = 220;
+let latestGraphSeries = null;
+let latestFacetInfo = [];
+let designFacets = [];
+let designApplyTimer = null;
+let modelHasTableFacet = false;
+
+function hexToRgb(hex) {
+   const r = parseInt(hex.slice(1, 3), 16) / 255;
+   const g = parseInt(hex.slice(3, 5), 16) / 255;
+   const b = parseInt(hex.slice(5, 7), 16) / 255;
+   return [r, g, b];
+}
+
+function rgbToHex(rgb) {
+   const r = Math.max(0, Math.min(255, Math.round((rgb?.[0] ?? 0) * 255)));
+   const g = Math.max(0, Math.min(255, Math.round((rgb?.[1] ?? 0) * 255)));
+   const b = Math.max(0, Math.min(255, Math.round((rgb?.[2] ?? 0) * 255)));
+   return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+}
+
+function escapeHtml(text) {
+   return String(text)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+}
+
+function bytesPerPixelForFormat(format) {
+   switch (format) {
+      case 'bgra8unorm':
+      case 'bgra8unorm-srgb':
+      case 'rgba8unorm':
+      case 'rgba8unorm-srgb':
+      case 'rgba8snorm':
+      case 'rgba8uint':
+      case 'rgba8sint':
+         return 4;
+      case 'rg16float':
+      case 'rg16uint':
+      case 'rg16sint':
+         return 4;
+      case 'rgba16float':
+      case 'rgba16uint':
+      case 'rgba16sint':
+         return 8;
+      case 'r16float':
+      case 'r16uint':
+      case 'r16sint':
+         return 2;
+      case 'r32float':
+      case 'r32uint':
+      case 'r32sint':
+         return 4;
+      case 'rg32float':
+      case 'rg32uint':
+      case 'rg32sint':
+         return 8;
+      case 'rgba32float':
+      case 'rgba32uint':
+      case 'rgba32sint':
+         return 16;
+      default:
+         return 4;
+   }
+}
+
+function estimateCacheTextureBytes(width, height, bytesPerPixel) {
+   return Math.max(0, Math.floor(width) * Math.floor(height) * bytesPerPixel);
+}
+
 function requestRender() {
    if (framePending) return;
    framePending = true;
@@ -68,13 +244,6 @@ function requestRender() {
 function clampRenderScale(scale, maxScale) {
    const upper = Math.max(0.5, maxScale || 1);
    return Math.min(upper, Math.max(0.5, scale || upper));
-}
-
-function rgbToHex(rgb) {
-   const r = Math.max(0, Math.min(255, Math.round((rgb?.[0] ?? 0) * 255)));
-   const g = Math.max(0, Math.min(255, Math.round((rgb?.[1] ?? 0) * 255)));
-   const b = Math.max(0, Math.min(255, Math.round((rgb?.[2] ?? 0) * 255)));
-   return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
 }
 
 function applyBodyBackground(ui) {
@@ -386,135 +555,6 @@ function buildUI(ui, cbs) {
 }
 
 // ---------------------------------------------------------------------------
-// Module-level state — shared across model reloads
-// ---------------------------------------------------------------------------
-const ui = {
-   ri: presets[0][1],
-   cod: presets[0][2],
-   clarity: 1.0,
-   lightMode: 3,
-   color: [1, 1, 1],
-   backgroundColor: [13 / 255, 13 / 255, 13 / 255],
-   exitHighlight: [0, 0, 0],
-   headShadowColor: [0.5, 0.5, 0.5],
-   exitStrength: 0.0,
-   tiltAngleDeg: 10,
-   focalLength: 200,
-   renderScale: 0,
-   renderScaleMax: 1,
-   exportQualityPx: 1080,
-};
-
-// Camera / interaction (survive model reloads)
-const modelMat = mat4.create();
-const viewMat = mat4.create();
-const projMat = mat4.create();
-const cameraPos = vec4.fromValues(0, 0, 5, 0);
-let targetRotX = 0, targetRotY = 0;
-let currentRotX = 0, currentRotY = 0;
-let animating = false, animStartTime = 0;
-
-// Current model GPU resources — replaced by loadModel()
-let renderBundle = null; // { bindGroup, graphBindGroups, vertexBuffer, triCount }
-let modelBoundsRadius = 1.0;
-
-// Reference to UI controls — set by setupApp(), used by loadModel()
-let uiControls = null;
-
-const GRAPH_SAMPLE_SIZE = 64;
-const GRAPH_COLOR_FORMAT = 'rgba16float';
-const GRAPH_REDUCE_SUM_SCALE = 65536;
-const GRAPH_REDUCE_CELL_U32_COUNT = 4;
-const GRAPH_VALUE_SCALE = 100;
-const GRAPH_TILT_MIN = -30;
-const GRAPH_TILT_MAX = 30;
-const GRAPH_TILT_STEP = 1;
-const GRAPH_MODES = [
-   { label: 'ISO', color: '#e8e8e8', mode: 0 },
-   { label: 'COS', color: '#ff5f5f', mode: 1 },
-   { label: 'SC2', color: '#59e35f', mode: 2 },
-];
-const GRAPH_TILT_VALUES = Array.from(
-   { length: Math.floor((GRAPH_TILT_MAX - GRAPH_TILT_MIN) / GRAPH_TILT_STEP) + 1 },
-   (_, i) => GRAPH_TILT_MIN + i * GRAPH_TILT_STEP,
-);
-const GRAPH_TILT_COUNT = GRAPH_TILT_VALUES.length;
-const GRAPH_MODE_COUNT = GRAPH_MODES.length;
-const GRAPH_TILE_COUNT = GRAPH_TILT_COUNT * GRAPH_MODE_COUNT;
-const GRAPH_ATLAS_WIDTH = GRAPH_SAMPLE_SIZE * GRAPH_TILT_COUNT;
-const GRAPH_ATLAS_HEIGHT = GRAPH_SAMPLE_SIZE * GRAPH_MODE_COUNT;
-const ORIENTATION_CACHE_ANGLE_STEP_DEG = 0.05;
-const ORIENTATION_CACHE_MAX_ENTRIES = 1 / ORIENTATION_CACHE_ANGLE_STEP_DEG * 30 * 2; // 30° in each direction, both axes
-const ORIENTATION_CACHE_ANGLE_STEP_RAD = ORIENTATION_CACHE_ANGLE_STEP_DEG * Math.PI / 180.0;
-const TILT_ANIM_STEP_SEC = 1.2;
-const TILT_ANIM_CYCLE_SEC = TILT_ANIM_STEP_SEC * 2;
-const TILT_PRERENDER_SAMPLE_FPS = 60;
-const TILT_PRERENDER_FPS_THRESHOLD = 50;
-const STONE_MARGIN_SCALE = 0.70;
-
-// ---------------------------------------------------------------------------
-// Pure utilities — no closure deps, safe at module scope
-// ---------------------------------------------------------------------------
-function hexToRgb(hex) {
-   const r = parseInt(hex.slice(1, 3), 16) / 255;
-   const g = parseInt(hex.slice(3, 5), 16) / 255;
-   const b = parseInt(hex.slice(5, 7), 16) / 255;
-   return [r, g, b];
-}
-
-function bytesPerPixelForFormat(format) {
-   switch (format) {
-      case 'bgra8unorm':
-      case 'bgra8unorm-srgb':
-      case 'rgba8unorm':
-      case 'rgba8unorm-srgb':
-      case 'rgba8snorm':
-      case 'rgba8uint':
-      case 'rgba8sint':
-         return 4;
-      case 'rg16float':
-      case 'rg16uint':
-      case 'rg16sint':
-         return 4;
-      case 'rgba16float':
-      case 'rgba16uint':
-      case 'rgba16sint':
-         return 8;
-      case 'r16float':
-      case 'r16uint':
-      case 'r16sint':
-         return 2;
-      case 'r32float':
-      case 'r32uint':
-      case 'r32sint':
-         return 4;
-      case 'rg32float':
-      case 'rg32uint':
-      case 'rg32sint':
-         return 8;
-      case 'rgba32float':
-      case 'rgba32uint':
-      case 'rgba32sint':
-         return 16;
-      default:
-         return 4;
-   }
-}
-
-function estimateCacheTextureBytes(width, height, bytesPerPixel) {
-   return Math.max(0, Math.floor(width) * Math.floor(height) * bytesPerPixel);
-}
-
-function escapeHtml(text) {
-   return String(text)
-      .replaceAll('&', '&amp;')
-      .replaceAll('<', '&lt;')
-      .replaceAll('>', '&gt;')
-      .replaceAll('"', '&quot;')
-      .replaceAll("'", '&#39;');
-}
-
-// ---------------------------------------------------------------------------
 // setupApp — one-time WebGPU + UI init; returns { loadModel }
 // ---------------------------------------------------------------------------
 async function setupApp() {
@@ -730,48 +770,6 @@ async function setupApp() {
    // Camera looks down +Z toward the table
    mat4.lookAt(viewMat, cameraPos, [0, 0, 0], [0, 1, 0]);
 
-   // Panels are defined in index.html — just acquire references.
-   const designPanel = document.getElementById('designPanel');
-   const graphPanel = document.getElementById('lightReturnPanel');
-   const facetPanel = document.getElementById('facetInfoPanel');
-   const designToggleEl = document.getElementById('designToggle');
-   const designBodyEl = document.getElementById('designBody');
-   const designResizeEl = document.getElementById('designResize');
-   const designStatusEl = document.getElementById('designStatus');
-   const designFacetListEl = document.getElementById('designFacetList');
-   const designGearEl = document.getElementById('designGear');
-   const designSymmetryEl = document.getElementById('designSymmetry');
-   const designMirrorEl = document.getElementById('designMirror');
-   const designAngleEl = document.getElementById('designAngle');
-   const designStartIndexEl = document.getElementById('designStartIndex');
-   const designDistanceEl = document.getElementById('designDistance');
-   const designNameEl = document.getElementById('designName');
-   const designInstructionsEl = document.getElementById('designInstructions');
-   const designAddFacetBtn = document.getElementById('designAddFacetBtn');
-   const designSaveGemBtn = document.getElementById('designSaveGemBtn');
-   const designClearBtn = document.getElementById('designClearBtn');
-   const graphToggleEl = document.getElementById('lightReturnToggle');
-   const graphBodyEl = document.getElementById('lightReturnBody');
-   const graphResizeEl = document.getElementById('lightReturnResize');
-   const graphStatusEl = document.getElementById('lightReturnStatus');
-   const graphCanvas = document.getElementById('lightReturnCanvas');
-   const facetToggleEl = document.getElementById('facetInfoToggle');
-   const facetSplitTabsEl = document.getElementById('facetSplitTabs');
-   const facetEditPanelEl = document.getElementById('facetEditPanel');
-   const facetInstructionsPanelEl = document.getElementById('facetInstructionsPanel');
-   const facetStatusEl = document.getElementById('facetInfoStatus');
-   const facetListEl = document.getElementById('facetInfoList');
-   const facetResizeEl = document.getElementById('facetInfoResize');
-   const graphCtx = graphCanvas.getContext('2d');
-   const graphDpr = window.devicePixelRatio || 1;
-   let graphCanvasWidth = 388;
-   let graphCanvasHeight = 220;
-   let latestGraphSeries = null;
-   let latestFacetInfo = [];
-   let designFacets = [];
-   let designApplyTimer = null;
-   let modelHasTableFacet = false;
-
    if (facetEditPanelEl && designFacetListEl && designClearBtn) {
       const mergedControlsEl = document.createElement('div');
       mergedControlsEl.className = 'designBtnRow';
@@ -824,7 +822,7 @@ async function setupApp() {
       facetStatusEl.textContent = text;
    }
 
-    function setDesignStatus(text) {
+   function setDesignStatus(text) {
       designStatusEl.textContent = text;
    }
 
@@ -1205,57 +1203,57 @@ async function setupApp() {
       if (!willCollapse) onExpand?.();
    }
 
-      designAddFacetBtn.addEventListener('click', () => {
-         const nextFacet = readCreateFacetFromInputs();
-         designFacets.push(nextFacet);
-         renderDesignFacetList();
-         scheduleDesignApply();
-      });
-
-      designSaveGemBtn?.addEventListener('click', () => {
-         if (!designFacets.length) {
-            setDesignStatus('Add at least one facet before save.');
-            return;
-         }
-
-         try {
-            const designDefinition = {
-               gear: parseInt(designGearEl.value, 10) || 96,
-               refractiveIndex: ui.ri,
-               facets: designFacets.map((facet, idx) => normalizeDesignFacet(facet, idx)),
-            };
-            const gcsText = buildDesignGcsText(designDefinition);
-            const gemBuffer = convertGCSTextToGEMBuffer(gcsText);
-            const baseName = currentModelFilename.replace(/\.[^.]+$/, '') || 'design';
-            const outName = `${baseName}-design.gem`;
-            const blob = new Blob([gemBuffer], { type: 'application/octet-stream' });
-            const url = URL.createObjectURL(blob);
-            const anchor = document.createElement('a');
-            anchor.href = url;
-            anchor.download = outName;
-            document.body.appendChild(anchor);
-            anchor.click();
-            document.body.removeChild(anchor);
-            URL.revokeObjectURL(url);
-            setDesignStatus(`Saved ${outName}`);
-         } catch (err) {
-            console.error(err);
-            setDesignStatus(`Save failed: ${err?.message || 'invalid design'}`);
-         }
-      });
-
-      designGearEl.addEventListener('input', () => {
-         scheduleDesignApply();
-      });
-
-      designClearBtn.addEventListener('click', () => {
-         designFacets = [];
-         renderDesignFacetList();
-      });
-
+   designAddFacetBtn.addEventListener('click', () => {
+      const nextFacet = readCreateFacetFromInputs();
+      designFacets.push(nextFacet);
       renderDesignFacetList();
-      installNumberDragScrub(designBodyEl);
-      installNumberDragScrub(designFacetListEl);
+      scheduleDesignApply();
+   });
+
+   designSaveGemBtn?.addEventListener('click', () => {
+      if (!designFacets.length) {
+         setDesignStatus('Add at least one facet before save.');
+         return;
+      }
+
+      try {
+         const designDefinition = {
+            gear: parseInt(designGearEl.value, 10) || 96,
+            refractiveIndex: ui.ri,
+            facets: designFacets.map((facet, idx) => normalizeDesignFacet(facet, idx)),
+         };
+         const gcsText = buildDesignGcsText(designDefinition);
+         const gemBuffer = convertGCSTextToGEMBuffer(gcsText);
+         const baseName = currentModelFilename.replace(/\.[^.]+$/, '') || 'design';
+         const outName = `${baseName}-design.gem`;
+         const blob = new Blob([gemBuffer], { type: 'application/octet-stream' });
+         const url = URL.createObjectURL(blob);
+         const anchor = document.createElement('a');
+         anchor.href = url;
+         anchor.download = outName;
+         document.body.appendChild(anchor);
+         anchor.click();
+         document.body.removeChild(anchor);
+         URL.revokeObjectURL(url);
+         setDesignStatus(`Saved ${outName}`);
+      } catch (err) {
+         console.error(err);
+         setDesignStatus(`Save failed: ${err?.message || 'invalid design'}`);
+      }
+   });
+
+   designGearEl.addEventListener('input', () => {
+      scheduleDesignApply();
+   });
+
+   designClearBtn.addEventListener('click', () => {
+      designFacets = [];
+      renderDesignFacetList();
+   });
+
+   renderDesignFacetList();
+   installNumberDragScrub(designBodyEl);
+   installNumberDragScrub(designFacetListEl);
 
    designFacetListEl.addEventListener('input', (e) => {
       const itemEl = e.target.closest('[data-id]');
@@ -1545,7 +1543,7 @@ async function setupApp() {
          graphCtx.moveTo(W - padR - 82, y);
          graphCtx.lineTo(W - padR - 54, y);
          graphCtx.stroke();
-          graphCtx.setLineDash([]);
+         graphCtx.setLineDash([]);
          graphCtx.fillStyle = '#ddd';
          graphCtx.fillText(series.label, W - padR - 48, y);
       });
@@ -2117,12 +2115,117 @@ async function setupApp() {
             facets: designFacets.map((facet, idx) => normalizeDesignFacet(facet, idx)),
          };
          const stone = buildStoneFromFacetDesign(designDefinition);
-         applyStoneData('custom-design.asc', stone, { syncDesignFromStone: false, isDesign: true });
+         applyStoneData('custom-design', stone, { syncDesignFromStone: false, isDesign: true });
          setDesignStatus(`Applied ${designFacets.length} design facets`);
       } catch (err) {
          console.error(err);
          setDesignStatus(`Design failed: ${err?.message || 'invalid facets'}`);
       }
+   }
+
+   const designCrownRatioSlider = document.getElementById('designCrownRatioSlider');
+   const designPavilionRatioSlider = document.getElementById('designPavilionRatioSlider');
+   const designCrownRatio = document.getElementById('designCrownRatio');
+   const designPavilionRatio = document.getElementById('designPavilionRatio');
+   const designApplyScaleBtn = document.getElementById('designApplyScaleBtn');
+   const designResetScaleBtn = document.getElementById('designResetScaleBtn');
+
+   let suspendScaleAdjust = false;
+   let pendingCrown = false;
+   let pendingPavilion = false;
+
+   const adjustRatio = (slider, label, crown = true) => {
+      if (suspendScaleAdjust) return;
+      // if other slider has pending change, reset it back to 1.0 to avoid mixed pending scales
+      if (crown) {
+         if (pendingPavilion) {
+            suspendScaleAdjust = true;
+            designPavilionRatioSlider.value = '1.0';
+            designPavilionRatio.textContent = '1.000';
+            pendingPavilion = false;
+            suspendScaleAdjust = false;
+         }
+         pendingCrown = true;
+      } else {
+         if (pendingCrown) {
+            suspendScaleAdjust = true;
+            designCrownRatioSlider.value = '1.0';
+            designCrownRatio.textContent = '1.000';
+            pendingCrown = false;
+            suspendScaleAdjust = false;
+         }
+         pendingPavilion = true;
+      }
+      const val = parseFloat(slider.value);
+      label.textContent = val.toFixed(3);
+      const designDefinition = {
+         gear: parseInt(designGearEl.value, 10) || 96,
+         refractiveIndex: ui.ri,
+         facets: designFacets.map((f, idx) => normalizeDesignFacet(f, idx)),
+      };
+      const baseStone = buildStoneFromFacetDesign(designDefinition);
+      const stone = stretchStoneByVertices(baseStone, val, crown);
+      applyStoneData('custom-design', stone, { syncDesignFromStone: false, isDesign: true });
+      setDesignStatus(`${crown ? "Crown" : "Pavilion"} ratio ${val.toFixed(3)} applied`);
+   };
+
+
+   designCrownRatioSlider.addEventListener('input', () => {
+      adjustRatio(designCrownRatioSlider, designCrownRatio, true);
+   });
+
+   designPavilionRatioSlider.addEventListener('input', () => {
+      adjustRatio(designPavilionRatioSlider, designPavilionRatio, false);
+   });
+
+   if (designApplyScaleBtn) {
+      designApplyScaleBtn.addEventListener('click', () => {
+         const crownVal = parseFloat(designCrownRatioSlider.value) || 1.0;
+         const pavVal = parseFloat(designPavilionRatioSlider.value) || 1.0;
+         suspendScaleAdjust = true;
+         try {
+            const designDefinition = {
+               gear: parseInt(designGearEl.value, 10) || 96,
+               refractiveIndex: ui.ri,
+               facets: designFacets.map((f, idx) => normalizeDesignFacet(f, idx)),
+            };
+            let stone = buildStoneFromFacetDesign(designDefinition);
+            if (Math.abs(crownVal - 1.0) > 1e-6) stone = stretchStoneByVertices(stone, crownVal, true);
+            if (Math.abs(pavVal - 1.0) > 1e-6) stone = stretchStoneByVertices(stone, pavVal, false);
+            applyStoneData('custom-design', stone, { syncDesignFromStone: false, isDesign: true });
+            // rebuild design facets table from new stone
+            setDesignFromStoneFacets(stone.facets || [], stone.sourceGear || null);
+            setDesignStatus(`Applied scales crown=${crownVal.toFixed(3)} pav=${pavVal.toFixed(3)}`);
+         } catch (err) {
+            console.error(err);
+            setDesignStatus(`Apply scale failed: ${err?.message || 'error'}`);
+         } finally {
+            // reset sliders to 1.0 to avoid repeated application
+            designCrownRatioSlider.value = '1.0';
+            designPavilionRatioSlider.value = '1.0';
+            designCrownRatio.textContent = '1.000';
+            designPavilionRatio.textContent = '1.000';
+            pendingCrown = false;
+            pendingPavilion = false;
+            suspendScaleAdjust = false;
+         }
+      });
+   }
+   if (designResetScaleBtn) {
+      designResetScaleBtn.addEventListener('click', () => {
+         suspendScaleAdjust = true;
+         try {
+            designCrownRatioSlider.value = '1.0';
+            designPavilionRatioSlider.value = '1.0';
+            designCrownRatio.textContent = '1.000';
+            designPavilionRatio.textContent = '1.000';
+            pendingCrown = false;
+            pendingPavilion = false;
+            setDesignStatus('Scale reset');
+         } finally {
+            suspendScaleAdjust = false;
+         }
+      });
    }
 
    // -------------------------------------------------------------------------
