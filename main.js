@@ -904,6 +904,8 @@ async function setupApp() {
       const riValue = parseFloat(definition.refractiveIndex);
       const refractiveIndex = Number.isFinite(riValue) && riValue > 1.0 ? riValue : 1.54;
       const facets = Array.isArray(definition.facets) ? definition.facets : [];
+      const symmetry = Math.max(1, ...facets.map(f => Number.isFinite(Number(f.symmetry)) ? Number(f.symmetry) : 1));
+      const mirror = facets.some(f => f.mirror) ? 1 : 0;
 
       const normalizeVec = (vector) => {
          const len = Math.hypot(vector[0], vector[1], vector[2]);
@@ -970,18 +972,18 @@ async function setupApp() {
             const outNormal = normalizeVec(face.normal || normal);
             const rawIdxAngle = Number.isFinite(Number(face.indexAngle)) ? Number(face.indexAngle) : (Number.isFinite(Number(face.azimuthDeg)) ? Number(face.azimuthDeg) : 0);
             const idxAngleStr = fmt(rawIdxAngle);
-            return `\n      <facet nx="${fmt(outNormal[0])}" ny="${fmt(outNormal[1])}" nz="${fmt(outNormal[2])}" index_angle="${idxAngleStr}">\n${vertsXml}\n      </facet>`;
+            return `\n        <facet nx="${fmt(outNormal[0])}" ny="${fmt(outNormal[1])}" nz="${fmt(outNormal[2])}" index_angle="${idxAngleStr}">\n${vertsXml}\n        </facet>`;
          }).join('');
          if (facetXml) {
             // Map signed angle (-90..+90) to 0..180 for GCS output
             const angleForXml = (Number(angleAttr) < 0) ? (180 + Number(angleAttr)) : Number(angleAttr);
             const angleStr = fmt(angleForXml);
             const depthStr = fmt(depthAttr ?? 0);
-            tierXml.push(`  <tier angle="${angleStr}" depth="${depthStr}" name="${escapeHtml(name)}" instructions="${escapeHtml(instructions)}" visible="${visibleAttr ? 'true' : 'false'}" guide="${guideAttr ? 'true' : 'false'}">${facetXml}\n  </tier>`);
+            tierXml.push(`    <tier angle="${angleStr}" depth="${depthStr}" name="${escapeHtml(name)}" instructions="${escapeHtml(instructions)}" visible="${visibleAttr ? 'true' : 'false'}" guide="${guideAttr ? 'true' : 'false'}">${facetXml}\n  </tier>`);
          }
       }
 
-      return `<?xml version="1.0" encoding="UTF-8"?>\n<gem>\n  <index symmetry="0" mirror="0" gear="${gear}"/>\n  <render refractive_index="${fmt(refractiveIndex)}"/>\n${tierXml.join('\n')}\n</gem>\n`;
+      return `<GemCutStudio version="1000">\n    <index symmetry="${fmt(symmetry)}" mirror="${fmt(mirror)}" gear="${gear}"/>\n    <render refractive_index="${fmt(refractiveIndex)}"/>\n${tierXml.join('\n')}\n</GemCutStudio>\n`;
    }
 
    function scheduleDesignApply() {

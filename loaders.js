@@ -2,6 +2,7 @@
 
 const TABLE_FACET_MAX_ANGLE_DEG = 1.5;
 const EPS = 1e-9;
+const VERTEX_EPS = 1e-6;
 
 class StoneData {
    constructor(vertexData, triangleCount, facets = [], refractiveIndex = null, dispersion = null, sourceGear) {
@@ -250,7 +251,6 @@ function convertGCSTextToGEMBuffer(gcsText) {
    const writer = new BinaryWriter();
    const encoder = new TextEncoder();
    const SILLY = -99999.0;
-   const EPSILON = 1e-9;
 
    const indexEl = doc.querySelector('index');
    const symmetry = parseInt(indexEl?.getAttribute('symmetry') || '0', 10) || 0;
@@ -283,7 +283,7 @@ function convertGCSTextToGEMBuffer(gcsText) {
          let ny = parseFloat(facetEl.getAttribute('ny') || '0');
          let nz = parseFloat(facetEl.getAttribute('nz') || '0');
          const nLen = Math.hypot(nx, ny, nz);
-         if (!isFinite(nLen) || nLen < EPSILON) continue;
+         if (!isFinite(nLen) || nLen < EPS) continue;
          nx /= nLen;
          ny /= nLen;
          nz /= nLen;
@@ -307,7 +307,7 @@ function convertGCSTextToGEMBuffer(gcsText) {
             nz = -nz;
             d0 = -d0;
          }
-         if (!isFinite(d0) || d0 < EPSILON) continue;
+         if (!isFinite(d0) || d0 < EPS) continue;
 
          const rawLen = 0.9 / d0;
          const aRaw = nx * rawLen;
@@ -328,6 +328,7 @@ function convertGCSTextToGEMBuffer(gcsText) {
          const safeLabelBytes = labelBytes.length > 255 ? labelBytes.slice(0, 255) : labelBytes;
          writer.writeUint8(safeLabelBytes.length);
          writer.writeBytes(safeLabelBytes);
+         // console.log(`${label},${aRaw.toFixed(6)},${bRaw.toFixed(6)},${cRaw.toFixed(6)},${d0.toFixed(6)}`);
 
          for (const [x, y, z] of verts) {
             writer.writeInt32(1);
@@ -337,7 +338,6 @@ function convertGCSTextToGEMBuffer(gcsText) {
             writer.writeFloat64(z);
          }
          writer.writeInt32(0);
-         console.debug('Processing facet with vertices:', verts.length, 'label:', label, 'raw normal:', [nx, ny, nz], 'raw d:', d0);
       }
    }
 
@@ -428,7 +428,6 @@ function orderFacetVerts(planeIdx, vindices, planes, allVerts) {
 }
 
 function buildStoneFromHalfSpacePlanes(planes, refractiveIndex = null, sourceGear) {
-   const VERTEX_EPS = 1e-6;
 
    const allVerts = [];
    function addVertex(pt) {
@@ -1122,23 +1121,6 @@ async function loadGEM(url) {
    // For a convex polyhedron defined by half-spaces ax+by+cz <= d, every
    // vertex is the intersection of exactly 3 planes. We try all C(n,3)
    // combinations and keep points that satisfy ALL planes (within epsilon).
-   const EPSILON = 1e-8;
-   const VERTEX_EPS = 1e-6; // deduplicate tolerance
-
-   function intersect3Planes(p0, p1, p2) {
-      // Solve: [p0; p1; p2] * [x,y,z]^T = [d0, d1, d2]^T
-      const { a: a0, b: b0, c: c0, d: d0 } = p0;
-      const { a: a1, b: b1, c: c1, d: d1 } = p1;
-      const { a: a2, b: b2, c: c2, d: d2 } = p2;
-
-      const det = a0 * (b1 * c2 - b2 * c1) - b0 * (a1 * c2 - a2 * c1) + c0 * (a1 * b2 - a2 * b1);
-      if (Math.abs(det) < EPSILON) return null; // parallel/degenerate
-
-      const x = (d0 * (b1 * c2 - b2 * c1) - b0 * (d1 * c2 - d2 * c1) + c0 * (d1 * b2 - d2 * b1)) / det;
-      const y = (a0 * (d1 * c2 - d2 * c1) - d0 * (a1 * c2 - a2 * c1) + c0 * (a1 * d2 - a2 * d1)) / det;
-      const z = (a0 * (b1 * d2 - b2 * d1) - b0 * (a1 * d2 - a2 * d1) + d0 * (a1 * b2 - a2 * b1)) / det;
-      return [x, y, z];
-   }
 
 
    // Collect unique vertices
@@ -1759,7 +1741,6 @@ function normalizeDesignFacet(inputFacet = {}, fallbackIndex = 0) {
 // a list of design-style facets (as produced by groupExternalFacetsForDesign
 // or similar). Returns an array of faces: { name, instructions, normal, vertices:[ [x,y,z], ... ], angleDeg, signedAngleDeg, azimuthDeg }
 function generateFacesFromFacetList(facetList = [], gear = 96) {
-   const EPSILON = 1e-8;
 
    const normalizedInput = (facetList || []).map((f, i) => normalizeDesignFacet(f, i));
    // Hardcoded toggle: when true, reverse polygon winding for all generated faces.
@@ -1768,7 +1749,7 @@ function generateFacesFromFacetList(facetList = [], gear = 96) {
    // Build plane half-spaces from facet definitions (one plane per patterned index)
    const planes = [];
    for (const facet of normalizedInput) {
-      const symmetry = Math.max(1, Math.round(Number(facet.symmetry) || 1));
+      const symmetry = Math.min(gear, Math.round(Number(facet.symmetry) || gear));
       const step = Math.max(1, gear) / symmetry;
       const mirror = Boolean(facet.mirror);
 
@@ -1793,7 +1774,7 @@ function generateFacesFromFacetList(facetList = [], gear = 96) {
          let normal = computeNormalFromPolar(angleDeg, idx, gear, 0);
          let d = indexDistanceMap.get(idx) ?? Number.isFinite(Number(facet.distance)) ? Math.abs(Number(facet.distance)) : 1.0;
          const len = Math.hypot(normal[0], normal[1], normal[2]);
-         if (!Number.isFinite(len) || len < EPSILON) continue;
+         if (!Number.isFinite(len) || len < EPS) continue;
          normal = [normal[0] / len, normal[1] / len, normal[2] / len];
          if (!Number.isFinite(d)) d = 1.0;
          if (d < 0) { normal = [-normal[0], -normal[1], -normal[2]]; d = -d; }
@@ -1853,10 +1834,12 @@ function generateFacesFromFacetList(facetList = [], gear = 96) {
       let verts = ordered.map(vi => allVerts[vi]);
       if (FORCE_REVERSE_WINDING) verts = verts.reverse();
       const p = planes[pi];
-      const normal = [p.a, p.b, p.c];
-      const angleDeg = computeFacetAngleDeg(normal);
-      const signedAngleDeg = computeSignedFacetAngleDeg(normal);
-      const azimuth = (Math.atan2(normal[0], -normal[1]) * 180 / Math.PI) || 0;
+      const n = [p.a, p.b, p.c];
+      const angleDeg = computeFacetAngleDeg(n);
+      const isGirdle = Math.abs(angleDeg - 90) <= 1.0;
+      const normal = isGirdle ? [-n[0], n[1], n[2]] : n; // NOTE: no idea why i have to do that
+      const signedAngleDeg = computeSignedFacetAngleDeg(n);
+      const azimuth = (Math.atan2(n[0], -n[1]) * 180 / Math.PI) || 0;
       const azimuthDeg = ((azimuth % 360) + 360) % 360;
       // derive index_angle from the original pattern index when available to avoid mirrored pavilion angles
       let indexAngle = 0;
@@ -1866,20 +1849,18 @@ function generateFacesFromFacetList(facetList = [], gear = 96) {
          const step = 360 / Math.max(1, gear);
          let base = (idx * step) % 360;
          // For pavilion facets (signedAngleDeg < 0) that are NOT girdle facets, reverse rotation direction
-         const GIRDLE_EPS = 1.0;
-         const isGirdle = Math.abs(angleDeg - 90) <= GIRDLE_EPS;
          if (signedAngleDeg < 0 && !isGirdle) base = (360 - base) % 360;
          indexAngle = base;
          if (indexAngle < 0) indexAngle += 360;
       } else {
-         const azimuth = (Math.atan2(normal[0], -normal[1]) * 180 / Math.PI) || 0;
+         const azimuth = (Math.atan2(n[0], -n[1]) * 180 / Math.PI) || 0;
          indexAngle = ((azimuth % 360) + 360) % 360;
       }
 
       const faceObj = {
          name: p.name || '',
          instructions: p.instructions || '',
-         normal,
+         normal: normal,
          vertices: verts,
          angleDeg,
          signedAngleDeg,
@@ -1887,8 +1868,6 @@ function generateFacesFromFacetList(facetList = [], gear = 96) {
          indexAngle,
       };
       // Heuristic: ensure girdle facets are laterally aligned with expected polar direction.
-      const GIRDLE_EPS = 1.0;
-      const isGirdle = Math.abs(angleDeg - 90) <= GIRDLE_EPS;
       if (isGirdle && Number.isFinite(Number(p.index))) {
          const expected = computeNormalFromPolar(angleDeg, Number(p.index), gear, 0);
          const ex = expected[0] || 0;
