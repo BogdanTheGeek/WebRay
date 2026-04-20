@@ -1583,7 +1583,9 @@ function groupFacetInfo(facets = [], gear) {
                out.push(formatted);
             }
          }
-         entry.indexes = out;
+         entry.indexes = out.sort((a, b) => {
+            return (a % gear) - (b % gear);
+         });
       });
    }
 

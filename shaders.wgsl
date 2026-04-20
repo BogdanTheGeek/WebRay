@@ -412,6 +412,9 @@ fn trace_internal(rd_r: vec3<f32>, rd_g: vec3<f32>, rd_b: vec3<f32>,
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let V_world = normalize(input.worldPosition - uniforms.cameraPosition);
     var N_world = normalize(input.worldNormal);
+    let graph = uniforms.graphMode > 0.5;
+
+    let stoneColor = select(vec3<f32>(1.0), uniforms.stoneColor, !graph);
 
     let isFrontFace = dot(V_world, N_world) < 0.0;
     if (!isFrontFace) { N_world = -N_world; }
@@ -450,7 +453,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         // Silhouette rim
         let rim = pow(1.0 - NdotV, 4.0) * 0.25;
 
-        let col = uniforms.stoneColor * diffuse + vec3<f32>(spec + rim);
+        let col = stoneColor * diffuse + vec3<f32>(spec + rim);
         return vec4<f32>(aces_tonemap(col * 0.3), 1.0);
     }
 
@@ -471,11 +474,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let NdotV_frost = max(0.0, dot(-V_world, N_world));
         let rim = pow(1.0 - NdotV_frost, 1.6);
         let frostFresnel = 0.18 + 0.28 * pow(1.0 - NdotV_frost, 3.0);
-        let frostRefl = sample_env(reflect(V_world, N_world)) * mix(vec3<f32>(1.0), uniforms.stoneColor, 0.30) * frostFresnel;
-        let frostWhite = mix(vec3<f32>(0.88, 0.90, 0.92), uniforms.stoneColor, 0.42);
+        let frostRefl = sample_env(reflect(V_world, N_world)) * mix(vec3<f32>(1.0), stoneColor, 0.30) * frostFresnel;
+        let frostWhite = mix(vec3<f32>(0.88, 0.90, 0.92), stoneColor, 0.42);
         let frostDiffuse = frostWhite * (0.66 + 0.18 * upLight) + vec3<f32>(0.14) * rim;
         let frostColor = frostDiffuse + frostRefl;
-        if (uniforms.graphMode > 0.5) {
+        if (graph) {
             let rawLuminance = dot(frostColor, vec3<f32>(0.2126, 0.7152, 0.0722));
             return vec4<f32>(rawLuminance, rawLuminance * tableMask, tableMask, 1.0);
         }
@@ -510,14 +513,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let absorptionFactor = (1.0 - clarity) * 1.0;
     let transmission = exp(-absorptionFactor * tr.dist);
 
+
     // Apply to the internal light and window leakage
-    let finalInternalLight = tr.light * transmission * uniforms.stoneColor;
+    let finalInternalLight = tr.light * transmission * stoneColor;
     let baseColor = reflection + finalInternalLight * (1.0 - fresnel);
 
     // Dedicated graph mode: emit raw pre-tonemap luminance directly.
     // This avoids ACES tonemapping, 8-bit quantization bias, and the
     // artistic scintillation boost used in the normal display path.
-    if (uniforms.graphMode > 0.5) {
+    if (graph) {
         let rawLuminance = dot(baseColor, vec3<f32>(0.2126, 0.7152, 0.0722));
         return vec4<f32>(rawLuminance, rawLuminance * tableMask, tableMask, 1.0);
     }
