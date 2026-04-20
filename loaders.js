@@ -271,7 +271,6 @@ function convertGCSTextToGEMBuffer(gcsText) {
 
       for (const facetEl of tierEl.querySelectorAll('facet')) {
          const vertEls = Array.from(facetEl.querySelectorAll('vertex'));
-         console.debug('Processing facet with vertices:', vertEls.length);
          if (vertEls.length < 3) continue;
 
          const verts = vertEls.map((v) => [
@@ -338,6 +337,7 @@ function convertGCSTextToGEMBuffer(gcsText) {
             writer.writeFloat64(z);
          }
          writer.writeInt32(0);
+         console.debug('Processing facet with vertices:', verts.length, 'label:', label, 'raw normal:', [nx, ny, nz], 'raw d:', d0);
       }
    }
 
@@ -350,31 +350,85 @@ function convertGCSTextToGEMBuffer(gcsText) {
    return writer.finish();
 }
 
+const wrapIndex = (value, gear) => {
+   const g = Math.max(1, gear);
+   let wrapped = Math.round(value);
+   wrapped = ((wrapped - 1) % g + g) % g + 1;
+   return wrapped;
+};
+
+const mirrorIndex = (index, gear) => {
+   const idx = wrapIndex(index, gear);
+   if (idx === gear) return gear;
+   return wrapIndex(gear - idx, gear);
+};
+
+
+function intersect3Planes(p0, p1, p2) {
+   const { a: a0, b: b0, c: c0, d: d0 } = p0;
+   const { a: a1, b: b1, c: c1, d: d1 } = p1;
+   const { a: a2, b: b2, c: c2, d: d2 } = p2;
+
+   const det = a0 * (b1 * c2 - b2 * c1) - b0 * (a1 * c2 - a2 * c1) + c0 * (a1 * b2 - a2 * b1);
+   if (Math.abs(det) < EPS) return null;
+
+   const x = (d0 * (b1 * c2 - b2 * c1) - b0 * (d1 * c2 - d2 * c1) + c0 * (d1 * b2 - d2 * b1)) / det;
+   const y = (a0 * (d1 * c2 - d2 * c1) - d0 * (a1 * c2 - a2 * c1) + c0 * (a1 * d2 - a2 * d1)) / det;
+   const z = (a0 * (b1 * d2 - b2 * d1) - b0 * (a1 * d2 - a2 * d1) + d0 * (a1 * b2 - a2 * b1)) / det;
+   return [x, y, z];
+}
+
+function insideAllPlanes(pt, planes) {
+   const [x, y, z] = pt;
+   for (const p of planes) {
+      if (p.a * x + p.b * y + p.c * z > p.d + EPS) return false;
+   }
+   return true;
+}
+
+function orderFacetVerts(planeIdx, vindices, planes, allVerts) {
+   if (vindices.length < 3) return vindices;
+   const p = planes[planeIdx];
+   const normal = [p.a, p.b, p.c];
+
+   let cx = 0, cy = 0, cz = 0;
+   for (const vi of vindices) {
+      cx += allVerts[vi][0];
+      cy += allVerts[vi][1];
+      cz += allVerts[vi][2];
+   }
+   cx /= vindices.length;
+   cy /= vindices.length;
+   cz /= vindices.length;
+
+   let t0 = [1, 0, 0];
+   if (Math.abs(normal[0]) > 0.9) t0 = [0, 1, 0];
+   const t1 = [
+      normal[1] * t0[2] - normal[2] * t0[1],
+      normal[2] * t0[0] - normal[0] * t0[2],
+      normal[0] * t0[1] - normal[1] * t0[0],
+   ];
+   const tu = [
+      t1[1] * normal[2] - t1[2] * normal[1],
+      t1[2] * normal[0] - t1[0] * normal[2],
+      t1[0] * normal[1] - t1[1] * normal[0],
+   ];
+
+   const angles = vindices.map(vi => {
+      const dx = allVerts[vi][0] - cx;
+      const dy = allVerts[vi][1] - cy;
+      const dz = allVerts[vi][2] - cz;
+      const u = dx * tu[0] + dy * tu[1] + dz * tu[2];
+      const v = dx * t1[0] + dy * t1[1] + dz * t1[2];
+      return { vi, angle: Math.atan2(v, u) };
+   });
+
+   angles.sort((a, b) => a.angle - b.angle);
+   return angles.map(a => a.vi);
+}
+
 function buildStoneFromHalfSpacePlanes(planes, refractiveIndex = null, sourceGear) {
-   const EPSILON = 1e-8;
    const VERTEX_EPS = 1e-6;
-
-   function intersect3Planes(p0, p1, p2) {
-      const { a: a0, b: b0, c: c0, d: d0 } = p0;
-      const { a: a1, b: b1, c: c1, d: d1 } = p1;
-      const { a: a2, b: b2, c: c2, d: d2 } = p2;
-
-      const det = a0 * (b1 * c2 - b2 * c1) - b0 * (a1 * c2 - a2 * c1) + c0 * (a1 * b2 - a2 * b1);
-      if (Math.abs(det) < EPSILON) return null;
-
-      const x = (d0 * (b1 * c2 - b2 * c1) - b0 * (d1 * c2 - d2 * c1) + c0 * (d1 * b2 - d2 * b1)) / det;
-      const y = (a0 * (d1 * c2 - d2 * c1) - d0 * (a1 * c2 - a2 * c1) + c0 * (a1 * d2 - a2 * d1)) / det;
-      const z = (a0 * (b1 * d2 - b2 * d1) - b0 * (a1 * d2 - a2 * d1) + d0 * (a1 * b2 - a2 * b1)) / det;
-      return [x, y, z];
-   }
-
-   function insideAllPlanes(pt) {
-      const [x, y, z] = pt;
-      for (const p of planes) {
-         if (p.a * x + p.b * y + p.c * z > p.d + EPSILON) return false;
-      }
-      return true;
-   }
 
    const allVerts = [];
    function addVertex(pt) {
@@ -394,7 +448,7 @@ function buildStoneFromHalfSpacePlanes(planes, refractiveIndex = null, sourceGea
       for (let j = i + 1; j < n - 1; j++) {
          for (let k = j + 1; k < n; k++) {
             const pt = intersect3Planes(planes[i], planes[j], planes[k]);
-            if (!pt || !insideAllPlanes(pt)) continue;
+            if (!pt || !insideAllPlanes(pt, planes)) continue;
             const vi = addVertex(pt);
             for (const pi of [i, j, k]) {
                if (!facetVerts[pi].includes(vi)) facetVerts[pi].push(vi);
@@ -403,52 +457,11 @@ function buildStoneFromHalfSpacePlanes(planes, refractiveIndex = null, sourceGea
       }
    }
 
-   function orderFacetVerts(planeIdx, vindices) {
-      if (vindices.length < 3) return vindices;
-      const p = planes[planeIdx];
-      const normal = [p.a, p.b, p.c];
-
-      let cx = 0, cy = 0, cz = 0;
-      for (const vi of vindices) {
-         cx += allVerts[vi][0];
-         cy += allVerts[vi][1];
-         cz += allVerts[vi][2];
-      }
-      cx /= vindices.length;
-      cy /= vindices.length;
-      cz /= vindices.length;
-
-      let t0 = [1, 0, 0];
-      if (Math.abs(normal[0]) > 0.9) t0 = [0, 1, 0];
-      const t1 = [
-         normal[1] * t0[2] - normal[2] * t0[1],
-         normal[2] * t0[0] - normal[0] * t0[2],
-         normal[0] * t0[1] - normal[1] * t0[0],
-      ];
-      const tu = [
-         t1[1] * normal[2] - t1[2] * normal[1],
-         t1[2] * normal[0] - t1[0] * normal[2],
-         t1[0] * normal[1] - t1[1] * normal[0],
-      ];
-
-      const angles = vindices.map(vi => {
-         const dx = allVerts[vi][0] - cx;
-         const dy = allVerts[vi][1] - cy;
-         const dz = allVerts[vi][2] - cz;
-         const u = dx * tu[0] + dy * tu[1] + dz * tu[2];
-         const v = dx * t1[0] + dy * t1[1] + dz * t1[2];
-         return { vi, angle: Math.atan2(v, u) };
-      });
-
-      angles.sort((a, b) => a.angle - b.angle);
-      return angles.map(a => a.vi);
-   }
-
    const triangles = [];
    const facets = [];
 
    for (let pi = 0; pi < n; pi++) {
-      const verts = orderFacetVerts(pi, facetVerts[pi]);
+      const verts = orderFacetVerts(pi, facetVerts[pi], planes, allVerts);
       if (verts.length < 3) continue;
 
       const p = planes[pi];
@@ -873,12 +886,6 @@ function buildStoneFromFacetDesign(definition = {}) {
    const gear = definition.gear;
 
    const planes = [];
-   const wrapIndex = (value, gear) => {
-      const g = Math.max(1, gear);
-      let wrapped = Math.round(value);
-      wrapped = ((wrapped - 1) % g + g) % g + 1;
-      return wrapped;
-   };
 
    facets.forEach((facet, idx) => {
       const facetName = String(facet?.name || `F${idx + 1}`).trim();
@@ -901,12 +908,6 @@ function buildStoneFromFacetDesign(definition = {}) {
       const mirror = Boolean(facet?.mirror);
       const step = gear / symmetry;
       const indexSet = new Set();
-
-      const mirrorIndex = (index) => {
-         const idx = wrapIndex(index, gear);
-         if (idx === gear) return gear;
-         return wrapIndex(gear - idx, gear);
-      };
 
       const explicitIndexes = Array.isArray(facet?.indexes)
          ? [...new Set(
@@ -936,7 +937,7 @@ function buildStoneFromFacetDesign(definition = {}) {
             const primary = wrapIndex(startIndex + offset, gear);
             indexSet.add(primary);
             if (mirror) {
-               indexSet.add(mirrorIndex(primary));
+               indexSet.add(mirrorIndex(primary, gear));
             }
          }
       }
@@ -1139,13 +1140,6 @@ async function loadGEM(url) {
       return [x, y, z];
    }
 
-   function insideAllPlanes(pt) {
-      const [x, y, z] = pt;
-      for (const p of planes) {
-         if (p.a * x + p.b * y + p.c * z > p.d + EPSILON) return false;
-      }
-      return true;
-   }
 
    // Collect unique vertices
    const allVerts = [];
@@ -1166,7 +1160,7 @@ async function loadGEM(url) {
       for (let j = i + 1; j < n - 1; j++) {
          for (let k = j + 1; k < n; k++) {
             const pt = intersect3Planes(planes[i], planes[j], planes[k]);
-            if (!pt || !insideAllPlanes(pt)) continue;
+            if (!pt || !insideAllPlanes(pt, planes)) continue;
 
             const vi = addVertex(pt);
 
@@ -1178,60 +1172,12 @@ async function loadGEM(url) {
          }
       }
    }
-
-   // ── 4. Order each facet's vertices in CCW winding ────────────────────────
-   // Project onto the facet plane and sort by angle around centroid.
-   function orderFacetVerts(planeIdx, vindices) {
-      if (vindices.length < 3) return vindices;
-      const p = planes[planeIdx];
-      const normal = [p.a, p.b, p.c];
-
-      // Centroid
-      let cx = 0, cy = 0, cz = 0;
-      for (const vi of vindices) {
-         cx += allVerts[vi][0];
-         cy += allVerts[vi][1];
-         cz += allVerts[vi][2];
-      }
-      cx /= vindices.length;
-      cy /= vindices.length;
-      cz /= vindices.length;
-
-      // Build two tangent vectors in the plane
-      let t0 = [1, 0, 0];
-      if (Math.abs(normal[0]) > 0.9) t0 = [0, 1, 0];
-      // t1 = normal × t0
-      const t1 = [
-         normal[1] * t0[2] - normal[2] * t0[1],
-         normal[2] * t0[0] - normal[0] * t0[2],
-         normal[0] * t0[1] - normal[1] * t0[0],
-      ];
-      // t0 = t1 × normal  (orthogonalise)
-      const tu = [
-         t1[1] * normal[2] - t1[2] * normal[1],
-         t1[2] * normal[0] - t1[0] * normal[2],
-         t1[0] * normal[1] - t1[1] * normal[0],
-      ];
-
-      const angles = vindices.map(vi => {
-         const dx = allVerts[vi][0] - cx;
-         const dy = allVerts[vi][1] - cy;
-         const dz = allVerts[vi][2] - cz;
-         const u = dx * tu[0] + dy * tu[1] + dz * tu[2];
-         const v = dx * t1[0] + dy * t1[1] + dz * t1[2];
-         return { vi, angle: Math.atan2(v, u) };
-      });
-
-      angles.sort((a, b) => a.angle - b.angle);
-      return angles.map(a => a.vi);
-   }
-
    // ── 5. Tessellate and pack ────────────────────────────────────────────────
    const triangles = [];
    const facets = [];
 
    for (let pi = 0; pi < n; pi++) {
-      const verts = orderFacetVerts(pi, facetVerts[pi]);
+      const verts = orderFacetVerts(pi, facetVerts[pi], planes, allVerts);
       if (verts.length < 3) continue;
 
       const p = planes[pi];
@@ -1587,17 +1533,11 @@ function generatePatternIndexSet(startIndex, symmetry, mirror, gear) {
    const step = g / sym;
    const indexSet = new Set();
 
-   const mirrorIndex = (index) => {
-      const idx = wrapGearIndex(index, g);
-      if (idx === g) return g;
-      return wrapGearIndex(g - idx, g);
-   };
-
    for (let i = 0; i < sym; i++) {
       const offset = i * step;
       const primary = wrapGearIndex(startIndex + offset, g);
       indexSet.add(primary);
-      if (mirror) indexSet.add(mirrorIndex(primary));
+      if (mirror) indexSet.add(mirrorIndex(primary, g));
    }
    return [...indexSet].sort((a, b) => a - b);
 }
@@ -1815,6 +1755,155 @@ function normalizeDesignFacet(inputFacet = {}, fallbackIndex = 0) {
    return next;
 }
 
+// Generate polygonal faces (ordered vertices, normal and angles) from
+// a list of design-style facets (as produced by groupExternalFacetsForDesign
+// or similar). Returns an array of faces: { name, instructions, normal, vertices:[ [x,y,z], ... ], angleDeg, signedAngleDeg, azimuthDeg }
+function generateFacesFromFacetList(facetList = [], gear = 96) {
+   const EPSILON = 1e-8;
+
+   const normalizedInput = (facetList || []).map((f, i) => normalizeDesignFacet(f, i));
+   // Hardcoded toggle: when true, reverse polygon winding for all generated faces.
+   const FORCE_REVERSE_WINDING = true;
+
+   // Build plane half-spaces from facet definitions (one plane per patterned index)
+   const planes = [];
+   for (const facet of normalizedInput) {
+      const symmetry = Math.max(1, Math.round(Number(facet.symmetry) || 1));
+      const step = Math.max(1, gear) / symmetry;
+      const mirror = Boolean(facet.mirror);
+
+      const explicit = Array.isArray(facet.indexes) ? facet.indexes.map(v => wrapIndex(Math.round(v), gear)) : [];
+      const indexDistanceMap = (facet.indexDistances && typeof facet.indexDistances === 'object') ? Object.entries(facet.indexDistances).reduce((acc, [k, v]) => { const ki = wrapIndex(parseInt(k, 10)); acc.set(ki, Number(v)); return acc; }, new Map()) : new Map();
+
+      const indexSet = new Set();
+      if (explicit.length) {
+         for (const idx of explicit) indexSet.add(idx);
+      } else {
+         const start = wrapIndex(facet.startIndex || 1, gear);
+         for (let i = 0; i < symmetry; i++) {
+            const off = Math.round(i * step);
+            const primary = wrapIndex(start + off, gear);
+            indexSet.add(primary);
+            if (mirror) indexSet.add(mirrorIndex(primary, gear));
+         }
+      }
+
+      const angleDeg = Number.isFinite(Number(facet.angleDeg)) ? Number(facet.angleDeg) : 0;
+      for (const idx of indexSet) {
+         let normal = computeNormalFromPolar(angleDeg, idx, gear, 0);
+         let d = indexDistanceMap.get(idx) ?? Number.isFinite(Number(facet.distance)) ? Math.abs(Number(facet.distance)) : 1.0;
+         const len = Math.hypot(normal[0], normal[1], normal[2]);
+         if (!Number.isFinite(len) || len < EPSILON) continue;
+         normal = [normal[0] / len, normal[1] / len, normal[2] / len];
+         if (!Number.isFinite(d)) d = 1.0;
+         if (d < 0) { normal = [-normal[0], -normal[1], -normal[2]]; d = -d; }
+
+         planes.push({ a: normal[0], b: normal[1], c: normal[2], d, name: facet.name, instructions: facet.instructions, frosted: Boolean(facet.frosted), index: idx });
+      }
+   }
+
+   if (!planes.length) return [];
+
+   // Normalize plane coefficients
+   for (const p of planes) {
+      const l = Math.hypot(p.a, p.b, p.c) || 1;
+      p.a /= l; p.b /= l; p.c /= l; p.d /= l;
+   }
+
+   const allVerts = [];
+   function addVertex(pt) {
+      for (let i = 0; i < allVerts.length; i++) {
+         const v = allVerts[i];
+         if (Math.abs(v[0] - pt[0]) + Math.abs(v[1] - pt[1]) + Math.abs(v[2] - pt[2]) < 1e-6) return i;
+      }
+      allVerts.push(pt);
+      return allVerts.length - 1;
+   }
+
+   const n = planes.length;
+   const facetVerts = planes.map(() => []);
+   for (let i = 0; i < n - 2; i++) {
+      for (let j = i + 1; j < n - 1; j++) {
+         for (let k = j + 1; k < n; k++) {
+            const pt = intersect3Planes(planes[i], planes[j], planes[k]);
+            if (!pt || !insideAllPlanes(pt, planes)) continue;
+            const vi = addVertex(pt);
+            for (const pi of [i, j, k]) if (!facetVerts[pi].includes(vi)) facetVerts[pi].push(vi);
+         }
+      }
+   }
+
+   // Flip plane normals if centroid violates half-space (match orientation used elsewhere)
+   if (allVerts.length) {
+      let cx = 0, cy = 0, cz = 0;
+      for (const v of allVerts) { cx += v[0]; cy += v[1]; cz += v[2]; }
+      cx /= allVerts.length; cy /= allVerts.length; cz /= allVerts.length;
+      let flipCount = 0;
+      for (const p of planes) {
+         const val = p.a * cx + p.b * cy + p.c * cz;
+         if (val > p.d + 1e-8) { p.a = -p.a; p.b = -p.b; p.c = -p.c; p.d = -p.d; flipCount++; }
+      }
+      if (flipCount) console.debug('generateFacesFromFacetList: flipped', flipCount, 'planes to match centroid');
+   }
+
+   const faces = [];
+   for (let pi = 0; pi < n; pi++) {
+      const ordered = orderFacetVerts(pi, facetVerts[pi], planes, allVerts);
+      if (!ordered || ordered.length < 3) continue;
+      let verts = ordered.map(vi => allVerts[vi]);
+      if (FORCE_REVERSE_WINDING) verts = verts.reverse();
+      const p = planes[pi];
+      const normal = [p.a, p.b, p.c];
+      const angleDeg = computeFacetAngleDeg(normal);
+      const signedAngleDeg = computeSignedFacetAngleDeg(normal);
+      const azimuth = (Math.atan2(normal[0], -normal[1]) * 180 / Math.PI) || 0;
+      const azimuthDeg = ((azimuth % 360) + 360) % 360;
+      // derive index_angle from the original pattern index when available to avoid mirrored pavilion angles
+      let indexAngle = 0;
+      if (Number.isFinite(Number(p.index))) {
+         const idx = Number(p.index);
+         // Map index -> angle step
+         const step = 360 / Math.max(1, gear);
+         let base = (idx * step) % 360;
+         // For pavilion facets (signedAngleDeg < 0) that are NOT girdle facets, reverse rotation direction
+         const GIRDLE_EPS = 1.0;
+         const isGirdle = Math.abs(angleDeg - 90) <= GIRDLE_EPS;
+         if (signedAngleDeg < 0 && !isGirdle) base = (360 - base) % 360;
+         indexAngle = base;
+         if (indexAngle < 0) indexAngle += 360;
+      } else {
+         const azimuth = (Math.atan2(normal[0], -normal[1]) * 180 / Math.PI) || 0;
+         indexAngle = ((azimuth % 360) + 360) % 360;
+      }
+
+      const faceObj = {
+         name: p.name || '',
+         instructions: p.instructions || '',
+         normal,
+         vertices: verts,
+         angleDeg,
+         signedAngleDeg,
+         azimuthDeg,
+         indexAngle,
+      };
+      // Heuristic: ensure girdle facets are laterally aligned with expected polar direction.
+      const GIRDLE_EPS = 1.0;
+      const isGirdle = Math.abs(angleDeg - 90) <= GIRDLE_EPS;
+      if (isGirdle && Number.isFinite(Number(p.index))) {
+         const expected = computeNormalFromPolar(angleDeg, Number(p.index), gear, 0);
+         const ex = expected[0] || 0;
+         if (ex * faceObj.normal[0] < 0) {
+            // mirror vertices across X to align with expected side and flip normal
+            faceObj.vertices = faceObj.vertices.map(v => (Array.isArray(v) ? [-v[0], v[1], v[2]] : v));
+            faceObj.normal = [-faceObj.normal[0], -faceObj.normal[1], -faceObj.normal[2]];
+         }
+      }
+      faces.push(faceObj);
+   }
+
+   return faces;
+}
+
 const GIRDLE_ANGLE_EPS_DEG = 1.0;
 const isGirdleFacet = (facet) => {
    const angleDeg = computeFacetAngleDeg(facet.normal);
@@ -1930,5 +2019,6 @@ export {
    computeFacetNotesSummary,
    stretchStoneByVertices,
    computeNormalFromPolar,
+   generateFacesFromFacetList,
 };
 

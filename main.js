@@ -19,6 +19,7 @@ import {
    normalizeDesignFacet,
    computeFacetNotesSummary,
    stretchStoneByVertices,
+   generateFacesFromFacetList,
 } from './loaders.js';
 import { exportInProgress, setupExporter } from './video.js';
 
@@ -904,122 +905,81 @@ async function setupApp() {
       const refractiveIndex = Number.isFinite(riValue) && riValue > 1.0 ? riValue : 1.54;
       const facets = Array.isArray(definition.facets) ? definition.facets : [];
 
-      const esc = (value) => String(value ?? '')
-         .replaceAll('&', '&amp;')
-         .replaceAll('<', '&lt;')
-         .replaceAll('>', '&gt;')
-         .replaceAll('"', '&quot;');
-
       const normalizeVec = (vector) => {
          const len = Math.hypot(vector[0], vector[1], vector[2]);
          if (!Number.isFinite(len) || len <= 1e-9) return [0, 0, 1];
          return [vector[0] / len, vector[1] / len, vector[2] / len];
       };
 
-      const cross = (a, b) => [
-         a[1] * b[2] - a[2] * b[1],
-         a[2] * b[0] - a[0] * b[2],
-         a[0] * b[1] - a[1] * b[0],
-      ];
-
-      const computeNormalFromPolar = (angleDeg, index, facetGear) => {
-         if (Math.abs(angleDeg) <= 1e-8) {
-            return [0, 0, angleDeg >= 0 ? 1 : -1];
-         }
-         const incl = angleDeg * Math.PI / 180;
-         let c = Math.cos(incl);
-         let s = Math.sin(incl);
-         if (angleDeg < 0) {
-            c *= -1;
-            s *= -1;
-         }
-         const azi = index * 2 * Math.PI / facetGear;
-         return [
-            s * Math.sin(azi),
-            -s * Math.cos(azi),
-            c,
-         ];
-      };
-
-      const getFacetIndexes = (facet, facetGear) => {
-         const explicitIndexes = Array.isArray(facet?.indexes)
-            ? [...new Set(
-               facet.indexes
-                  .map((value) => parseInt(value, 10))
-                  .filter((value) => Number.isFinite(value) && value >= 0)
-                  .map((value) => (value === 0 ? facetGear : value))
-                  .map((value) => wrapGearIndex(value, facetGear)),
-            )].sort((a, b) => a - b)
-            : [];
-
-         if (explicitIndexes.length) return explicitIndexes;
-
-         const symmetry = Math.max(1, Math.min(facetGear, Math.round(parseFloat(facet?.symmetry) || 1)));
-         const startIndex = Math.round(parseFloat(facet?.startIndex) || 0);
-         const mirror = Boolean(facet?.mirror);
-         return generatePatternIndexSet(startIndex, symmetry, mirror, facetGear);
-      };
-
-      const getFacetDistanceByIndex = (facet, index, fallbackDistance) => {
-         if (facet?.indexDistances && typeof facet.indexDistances === 'object') {
-            const direct = parseFloat(facet.indexDistances[String(index)]);
-            if (Number.isFinite(direct) && direct > 0) return direct;
-            const zeroAlias = index === gear ? parseFloat(facet.indexDistances['0']) : NaN;
-            if (Number.isFinite(zeroAlias) && zeroAlias > 0) return zeroAlias;
-         }
-         return fallbackDistance;
-      };
-
       const fmt = (value) => {
          const num = Number(value);
          if (!Number.isFinite(num)) return '0';
-         return num.toFixed(9).replace(/\.?0+$/, '') || '0';
+         // Use high precision string, then trim unnecessary trailing zeros
+         const s = num.toPrecision(17);
+         return s.replace(/\.?(?:0)+$/, '').replace(/\.$/, '');
       };
 
       const tierXml = [];
-      facets.forEach((rawFacet, idx) => {
-         const facet = normalizeDesignFacet(rawFacet, idx);
-         const facetName = String(facet?.name || `F${idx + 1}`).trim() || `F${idx + 1}`;
-         const facetInstructions = String(facet?.instructions || '').trim();
-         const facetGearValue = parseInt(rawFacet.gear, 10);
-         const facetGear = Number.isFinite(facetGearValue) && facetGearValue > 0
-            ? Math.round(facetGearValue)
-            : gear;
-         const indexes = getFacetIndexes(facet, facetGear);
-         const defaultDistance = Math.max(1e-5, Math.abs(parseFloat(facet?.distance) || 1));
+      // Normalize input facets for tier metadata, and generate planar faces
+      const normalizedFacets = facets.map((f, i) => normalizeDesignFacet(f, i));
+      const faces = generateFacesFromFacetList(facets, gear);
+      // Group faces by tier name+instructions so each original design facet becomes a <tier>
+      const groups = new Map();
+      for (const face of faces) {
+         const key = `${face.name}\u0000${face.instructions}`;
+         if (!groups.has(key)) groups.set(key, { name: face.name || '', instructions: face.instructions || '', faces: [] });
+         groups.get(key).faces.push(face);
+      }
 
-         const facetXml = indexes.map((index) => {
-            const distance = Math.max(1e-5, Math.abs(getFacetDistanceByIndex(facet, index, defaultDistance)));
-            const normal = normalizeVec(computeNormalFromPolar(facet.angleDeg, index, facetGear));
-            const center = [normal[0] * distance, normal[1] * distance, normal[2] * distance];
-            const ref = Math.abs(normal[2]) < 0.9 ? [0, 0, 1] : [0, 1, 0];
-            const tangentU = normalizeVec(cross(ref, normal));
-            const tangentV = normalizeVec(cross(normal, tangentU));
-            const size = Math.max(1e-3, distance * 0.02);
+      // No geometric modifications here — rely on generateFacesFromFacetList output.
 
-            const v0 = [
-               center[0] + tangentU[0] * size,
-               center[1] + tangentU[1] * size,
-               center[2] + tangentU[2] * size,
-            ];
-            const v1 = [
-               center[0] + tangentV[0] * size,
-               center[1] + tangentV[1] * size,
-               center[2] + tangentV[2] * size,
-            ];
-            const v2 = [
-               center[0] - (tangentU[0] + tangentV[0]) * size,
-               center[1] - (tangentU[1] + tangentV[1]) * size,
-               center[2] - (tangentU[2] + tangentV[2]) * size,
-            ];
-
-            return `\n      <facet nx="${fmt(normal[0])}" ny="${fmt(normal[1])}" nz="${fmt(normal[2])}">\n        <vertex x="${fmt(v0[0])}" y="${fmt(v0[1])}" z="${fmt(v0[2])}"/>\n        <vertex x="${fmt(v1[0])}" y="${fmt(v1[1])}" z="${fmt(v1[2])}"/>\n        <vertex x="${fmt(v2[0])}" y="${fmt(v2[1])}" z="${fmt(v2[2])}"/>\n      </facet>`;
-         }).join('');
-
-         if (facetXml) {
-            tierXml.push(`  <tier name="${esc(facetName)}" instructions="${esc(facetInstructions)}">${facetXml}\n  </tier>`);
+      for (const { name, instructions, faces: grpFaces } of groups.values()) {
+         // Sort faces in this tier by their index angle (azimuth) ascending
+         grpFaces.sort((a, b) => {
+            const va = Number.isFinite(Number(a.indexAngle)) ? Number(a.indexAngle) : Number(a.azimuthDeg || 0);
+            const vb = Number.isFinite(Number(b.indexAngle)) ? Number(b.indexAngle) : Number(b.azimuthDeg || 0);
+            return va - vb;
+         });
+         // find a matching source facet (normalized) to extract angle/depth/flags
+         const source = normalizedFacets.find(f => String((f.name || '')).trim() === String((name || '')).trim() && String((f.instructions || '')).trim() === String((instructions || '')).trim()) || null;
+         const angleAttr = source && Number.isFinite(Number(source.angleDeg)) ? Number(source.angleDeg) : (grpFaces[0]?.signedAngleDeg ?? 0);
+         // depth fallback: normalized source distance or plane distance from first face
+         let depthAttr = source && Number.isFinite(Number(source.distance)) ? Number(source.distance) : null;
+         if (!Number.isFinite(depthAttr) && grpFaces[0] && Array.isArray(grpFaces[0].vertices) && grpFaces[0].vertices.length) {
+            const n0 = grpFaces[0].normal || [0, 0, 1];
+            const v0 = grpFaces[0].vertices[0];
+            depthAttr = Math.abs((n0[0] * v0[0]) + (n0[1] * v0[1]) + (n0[2] * v0[2]));
          }
-      });
+         const visibleAttr = source && typeof source.visible !== 'undefined' ? Boolean(source.visible) : true;
+         const guideAttr = source && typeof source.guide !== 'undefined' ? Boolean(source.guide) : false;
+
+         const facetXml = grpFaces.map((face) => {
+            const normal = normalizeVec(face.normal || [0, 0, 1]);
+            const vertices = Array.isArray(face.vertices) ? face.vertices.slice() : [];
+            if (vertices.length < 3) {
+               console.warn('buildDesignGcsText: skipping face with <3 vertices', name, instructions, face);
+               return '';
+            }
+            // ensure plane distance not near zero
+            const d0 = Math.abs(normal[0] * vertices[0][0] + normal[1] * vertices[0][1] + normal[2] * vertices[0][2]);
+            if (!Number.isFinite(d0) || d0 < 1e-9) {
+               console.warn('buildDesignGcsText: skipping face with near-zero plane distance', name, instructions, d0, face);
+               return '';
+            }
+            const vertsXml = vertices.map(v => `        <vertex x="${fmt(v[0])}" y="${fmt(v[1])}" z="${fmt(v[2])}"/>`).join('\n');
+            const outNormal = normalizeVec(face.normal || normal);
+            const rawIdxAngle = Number.isFinite(Number(face.indexAngle)) ? Number(face.indexAngle) : (Number.isFinite(Number(face.azimuthDeg)) ? Number(face.azimuthDeg) : 0);
+            const idxAngleStr = fmt(rawIdxAngle);
+            return `\n      <facet nx="${fmt(outNormal[0])}" ny="${fmt(outNormal[1])}" nz="${fmt(outNormal[2])}" index_angle="${idxAngleStr}">\n${vertsXml}\n      </facet>`;
+         }).join('');
+         if (facetXml) {
+            // Map signed angle (-90..+90) to 0..180 for GCS output
+            const angleForXml = (Number(angleAttr) < 0) ? (180 + Number(angleAttr)) : Number(angleAttr);
+            const angleStr = fmt(angleForXml);
+            const depthStr = fmt(depthAttr ?? 0);
+            tierXml.push(`  <tier angle="${angleStr}" depth="${depthStr}" name="${escapeHtml(name)}" instructions="${escapeHtml(instructions)}" visible="${visibleAttr ? 'true' : 'false'}" guide="${guideAttr ? 'true' : 'false'}">${facetXml}\n  </tier>`);
+         }
+      }
 
       return `<?xml version="1.0" encoding="UTF-8"?>\n<gem>\n  <index symmetry="0" mirror="0" gear="${gear}"/>\n  <render refractive_index="${fmt(refractiveIndex)}"/>\n${tierXml.join('\n')}\n</gem>\n`;
    }
@@ -1218,6 +1178,7 @@ async function setupApp() {
             facets: designFacets.map((facet, idx) => normalizeDesignFacet(facet, idx)),
          };
          const gcsText = buildDesignGcsText(designDefinition);
+         console.log('Generated GCS text for design:', gcsText);
          const gemBuffer = convertGCSTextToGEMBuffer(gcsText);
          const baseName = currentModelFilename.replace(/\.[^.]+$/, '') || 'design';
          const outName = `${baseName}-design.gem`;
@@ -2007,16 +1968,19 @@ async function setupApp() {
       const isDesign = options.isDesign ?? false;
       currentModelFilename = filename;
 
-      const meshNormalization = normalizeMesh(stone.vertexData);
-      const meshScale = Number.isFinite(meshNormalization?.scale) ? meshNormalization.scale : null;
-      if (Array.isArray(stone.facets) && Number.isFinite(meshScale)) {
-         stone.facets = stone.facets.map((facet) => {
-            if (!facet || !Number.isFinite(facet.d)) return facet;
-            return {
-               ...facet,
-               d: facet.d * meshScale,
-            };
-         });
+      // WARN: code can create weird exports due to scale, so I disabled it.
+      if (0) {
+         const meshNormalization = normalizeMesh(stone.vertexData);
+         const meshScale = Number.isFinite(meshNormalization?.scale) ? meshNormalization.scale : null;
+         if (Array.isArray(stone.facets) && Number.isFinite(meshScale)) {
+            stone.facets = stone.facets.map((facet) => {
+               if (!facet || !Number.isFinite(facet.d)) return facet;
+               return {
+                  ...facet,
+                  d: facet.d * meshScale,
+               };
+            });
+         }
       }
       modelBoundsRadius = Math.max(0.1, computeMeshBoundsRadius(stone.vertexData));
 
