@@ -1170,8 +1170,28 @@ async function setupApp() {
          setDesignStatus('Add at least one facet before save.');
          return;
       }
+
+      const designDefinition = {
+         gear: parseInt(designGearEl.value, 10),
+         refractiveIndex: ui.ri,
+         facets: designFacets.map((facet, idx) => normalizeDesignFacet(facet, idx)),
+      };
+
+
       if (('showSaveFilePicker' in window) === false) {
-         window.alert('The File System Access API is not supported in this browser.');
+         const gemBuffer = convertGCSTextToGEMBuffer(buildDesignGcsText(designDefinition));
+         const baseName = currentModelFilename.replace(/\.[^.]+$/, '') || 'design';
+         const outName = `${baseName}.gem`;
+         const blob = new Blob([gemBuffer], { type: 'application/octet-stream' });
+         const url = URL.createObjectURL(blob);
+         const anchor = document.createElement('a');
+         anchor.href = url;
+         anchor.download = outName;
+         document.body.appendChild(anchor);
+         anchor.click();
+         document.body.removeChild(anchor);
+         URL.revokeObjectURL(url);
+         setDesignStatus(`Saved ${outName}`);
          return;
       }
 
@@ -1192,12 +1212,6 @@ async function setupApp() {
 
          const file = await handle.getFile();
          const extension = file.name.split('.').pop();
-
-         const designDefinition = {
-            gear: parseInt(designGearEl.value, 10),
-            refractiveIndex: ui.ri,
-            facets: designFacets.map((facet, idx) => normalizeDesignFacet(facet, idx)),
-         };
 
          let content = "";
          if (extension === 'gcs') {
