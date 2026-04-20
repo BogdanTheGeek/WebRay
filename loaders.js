@@ -271,6 +271,7 @@ function convertGCSTextToGEMBuffer(gcsText) {
 
       for (const facetEl of tierEl.querySelectorAll('facet')) {
          const vertEls = Array.from(facetEl.querySelectorAll('vertex'));
+         console.debug('Processing facet with vertices:', vertEls.length);
          if (vertEls.length < 3) continue;
 
          const verts = vertEls.map((v) => [
@@ -315,7 +316,8 @@ function convertGCSTextToGEMBuffer(gcsText) {
          const cRaw = nz * rawLen;
 
          writer.writeFloat64(aRaw);
-         writer.writeFloat64(bRaw);
+         // Flip Y component of the normal to match Y-flipped vertices
+         writer.writeFloat64(-bRaw);
          writer.writeFloat64(cRaw);
          writer.writeInt32(0);
 
@@ -331,7 +333,8 @@ function convertGCSTextToGEMBuffer(gcsText) {
          for (const [x, y, z] of verts) {
             writer.writeInt32(1);
             writer.writeFloat64(x);
-            writer.writeFloat64(y);
+            // Flip Y axis when writing vertices
+            writer.writeFloat64(-y);
             writer.writeFloat64(z);
          }
          writer.writeInt32(0);
@@ -1239,7 +1242,7 @@ async function loadGEM(url) {
          name: p.name,
          instructions: p.instructions,
          frosted: Boolean(p.frosted),
-         normal: [nx, ny, nz],
+         normal: [nx, -ny, nz],
          d: p.d,
          vertexCount: verts.length,
          triangleCount,
@@ -1258,20 +1261,21 @@ async function loadGEM(url) {
    }
 
    // Pack into flat Float32Array matching loadSTL output format.
+   // GEM format flips the Y axis compared to our convention.
    const triCount = triangles.length;
    const floatsPerVertex = 7;
    const vertexData = new Float32Array(triCount * 3 * floatsPerVertex);
 
    for (let i = 0; i < triCount; i++) {
       const { v0, v1, v2, normal, frosted } = triangles[i];
-      const vs = [v0, v1, v2];
+      const vs = [v0, v2, v1];
       for (let v = 0; v < 3; v++) {
          const idx = (i * 3 + v) * floatsPerVertex;
          vertexData[idx + 0] = vs[v][0];
-         vertexData[idx + 1] = vs[v][1];
+         vertexData[idx + 1] = -vs[v][1];
          vertexData[idx + 2] = vs[v][2];
          vertexData[idx + 3] = normal[0];
-         vertexData[idx + 4] = normal[1];
+         vertexData[idx + 4] = -normal[1];
          vertexData[idx + 5] = normal[2];
          vertexData[idx + 6] = frosted ? 1.0 : 0.0;
       }
