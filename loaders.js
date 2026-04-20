@@ -88,7 +88,7 @@ function normalizeFacetMetadata(name, instructions) {
 //
 // Vertices are pre-computed — no plane intersection needed.
 // Facets with < 3 vertices are skipped. Fan triangulation from vertex 0.
-// Y axis is negated (same GemCad convention as .gem loader).
+// Y axis uses the same coordinate convention as the renderer (Z = table = up).
 // ---------------------------------------------------------------------------
 async function loadGCS(url) {
    const response = await fetch(url);
@@ -478,14 +478,14 @@ function buildStoneFromHalfSpacePlanes(planes, refractiveIndex = null, sourceGea
 
    for (let i = 0; i < triCount; i++) {
       const { v0, v1, v2, normal, frosted } = triangles[i];
-      const vs = [v0, v2, v1];
+      const vs = [v0, v1, v2];
       for (let v = 0; v < 3; v++) {
          const idx = (i * 3 + v) * floatsPerVertex;
          vertexData[idx + 0] = vs[v][0];
-         vertexData[idx + 1] = -vs[v][1];
+         vertexData[idx + 1] = vs[v][1];
          vertexData[idx + 2] = vs[v][2];
          vertexData[idx + 3] = normal[0];
-         vertexData[idx + 4] = -normal[1];
+         vertexData[idx + 4] = normal[1];
          vertexData[idx + 5] = normal[2];
          vertexData[idx + 6] = frosted ? 1.0 : 0.0;
       }
@@ -515,7 +515,7 @@ function stretchStoneByVertices(stone, scaleFactor, crown = true) {
          for (let v = 0; v < vertsPerTri; v++) {
             const idx = base + v * floatsPerVertex;
             const x = vertexData[idx + 0];
-            const y = -vertexData[idx + 1]; // stored Y inverted
+            const y = vertexData[idx + 1];
             const z = vertexData[idx + 2];
             pts.push([x, y, z]);
          }
@@ -1269,7 +1269,7 @@ async function loadGEM(url) {
          name: p.name,
          instructions: p.instructions,
          frosted: Boolean(p.frosted),
-         normal: [nx, -ny, nz],
+         normal: [nx, ny, nz],
          d: p.d,
          vertexCount: verts.length,
          triangleCount,
