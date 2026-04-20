@@ -13,8 +13,6 @@ import {
    hasUniqueTableFacet,
    groupFacetInfo,
    formatFacetIndexLines,
-   wrapGearIndex,
-   generatePatternIndexSet,
    groupExternalFacetsForDesign,
    normalizeDesignFacet,
    computeFacetNotesSummary,
@@ -580,7 +578,7 @@ async function setupApp() {
    }
 
    if (!device) {
-      alert('WebGPU is not supported. Try Chrome/Edge.');
+      alert('WebGPU is not supported. Try a different browser.');
       return null;
    }
 
@@ -1167,33 +1165,56 @@ async function setupApp() {
       scheduleDesignApply();
    });
 
-   designSaveGemBtn?.addEventListener('click', () => {
+   designSaveGemBtn?.addEventListener('click', async () => {
       if (!designFacets.length) {
          setDesignStatus('Add at least one facet before save.');
          return;
       }
+      if (('showSaveFilePicker' in window) === false) {
+         window.alert('The File System Access API is not supported in this browser.');
+         return;
+      }
 
       try {
+         const handle = await window.showSaveFilePicker({
+            suggestedName: currentModelFilename.replace(/\.[^.]+$/, ''),
+            types: [
+               {
+                  description: 'GemCad File',
+                  accept: { 'application/octet-stream': ['.gem'] },
+               },
+               {
+                  description: 'GemCutStudio Design (GCS) File',
+                  accept: { 'application/xml': ['.gcs'] },
+               },
+            ],
+         });
+
+         const file = await handle.getFile();
+         const extension = file.name.split('.').pop();
+
          const designDefinition = {
             gear: parseInt(designGearEl.value, 10),
             refractiveIndex: ui.ri,
             facets: designFacets.map((facet, idx) => normalizeDesignFacet(facet, idx)),
          };
-         const gcsText = buildDesignGcsText(designDefinition);
-         console.log('Generated GCS text for design:', gcsText);
-         const gemBuffer = convertGCSTextToGEMBuffer(gcsText);
-         const baseName = currentModelFilename.replace(/\.[^.]+$/, '') || 'design';
-         const outName = `${baseName}-design.gem`;
-         const blob = new Blob([gemBuffer], { type: 'application/octet-stream' });
-         const url = URL.createObjectURL(blob);
-         const anchor = document.createElement('a');
-         anchor.href = url;
-         anchor.download = outName;
-         document.body.appendChild(anchor);
-         anchor.click();
-         document.body.removeChild(anchor);
-         URL.revokeObjectURL(url);
-         setDesignStatus(`Saved ${outName}`);
+
+         let content = "";
+         if (extension === 'gcs') {
+            content = buildDesignGcsText(designDefinition);
+         }
+         else if (extension === 'gem') {
+            content = convertGCSTextToGEMBuffer(buildDesignGcsText(designDefinition));
+         } else {
+            setDesignStatus('Unsupported file type selected.');
+            return;
+         }
+
+         const writable = await handle.createWritable();
+         await writable.write(content);
+         await writable.close();
+
+         setDesignStatus(`Saved ${file.name}`);
       } catch (err) {
          console.error(err);
          setDesignStatus(`Save failed: ${err?.message || 'invalid design'}`);
