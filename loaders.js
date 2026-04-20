@@ -595,52 +595,17 @@ function stretchStoneByVertices(stone, scaleFactor, crown = true) {
    for (let i = 0; i < facets.length; i++) {
       const pts = newFacetVerts[i];
       if (!pts || pts.length < 3) continue;
-      // find non-collinear triple
-      let normal = null;
-      for (let a = 0; a < pts.length - 2 && !normal; a++) {
-         const p0 = pts[a];
-         for (let b = a + 1; b < pts.length - 1 && !normal; b++) {
-            const p1 = pts[b];
-            for (let c = b + 1; c < pts.length && !normal; c++) {
-               const p2 = pts[c];
-               const ux = p1[0] - p0[0];
-               const uy = p1[1] - p0[1];
-               const uz = p1[2] - p0[2];
-               const vx = p2[0] - p0[0];
-               const vy = p2[1] - p0[1];
-               const vz = p2[2] - p0[2];
-               const nx = uy * vz - uz * vy;
-               const ny = uz * vx - ux * vz;
-               const nz = ux * vy - uy * vx;
-               const nlen = Math.hypot(nx, ny, nz);
-               if (nlen > EPS) {
-                  normal = [nx / nlen, ny / nlen, nz / nlen];
-                  // ensure normal sign matches original facet normal z
-                  const origSign = Math.sign((facets[i].normal?.[2]) ?? 1);
-                  if ((normal[2] * origSign) < 0) {
-                     normal = [-normal[0], -normal[1], -normal[2]];
-                  }
-               }
-            }
-         }
-      }
-      if (!normal) {
-         // fallback: use original facet normal
-         normal = facets[i].normal ? facets[i].normal.slice() : [0, 0, 1];
-      }
-      // If this is a girdle facet, lock its angle to 90deg by forcing
-      // the normal's Z component to zero (preserve XY azimuth). Use a
-      // centroid fallback when XY direction cannot be derived from the
-      // computed normal.
+      const orig = facets[i].normal || [0, 0, 1];
       const isG = isGirdleFacet(facets[i]);
+      const angle = computeSignedFacetAngleDeg(orig);
+      const isTable = Math.abs(angle) <= ANG_EPS && (orig[2] ?? 1) > 0;
+      const isTarget = !isG && (crown ? (angle > ANG_EPS || isTable) : (angle < -ANG_EPS));
+      const effectiveS = isTarget ? s : 1;
+      let normal;
       if (isG) {
-         // project normal to XY plane
-         let nx2 = normal[0];
-         let ny2 = normal[1];
-         let lenXY = Math.hypot(nx2, ny2);
+         const lenXY = Math.hypot(orig[0], orig[1]);
          if (lenXY > 1e-8) {
-            nx2 /= lenXY; ny2 /= lenXY;
-            normal = [nx2, ny2, 0];
+            normal = [orig[0] / lenXY, orig[1] / lenXY, 0];
          } else {
             // fallback: derive XY direction from polygon centroid
             let cx = 0, cy = 0;
@@ -656,9 +621,14 @@ function stretchStoneByVertices(stone, scaleFactor, crown = true) {
             }
          }
          // ensure same hemisphere as original facet normal
-         const orig = facets[i].normal;
-         const dot = (orig[0] * normal[0]) + (orig[1] * normal[1]) + ((orig[2] || 0) * normal[2]);
+         const dot = orig[0] * normal[0] + orig[1] * normal[1];
          if (dot < 0) normal = [-normal[0], -normal[1], -normal[2]];
+      } else {
+         const nx = orig[0];
+         const ny = orig[1];
+         const nz = orig[2] / effectiveS;
+         const nlen = Math.hypot(nx, ny, nz);
+         normal = nlen > EPS ? [nx / nlen, ny / nlen, nz / nlen] : orig.slice();
       }
 
       // compute d using first vertex
