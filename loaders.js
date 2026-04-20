@@ -1269,7 +1269,7 @@ async function loadGEM(url) {
          name: p.name,
          instructions: p.instructions,
          frosted: Boolean(p.frosted),
-         normal: [nx, ny, nz],
+         normal: [nx, -ny, nz],
          d: p.d,
          vertexCount: verts.length,
          triangleCount,
@@ -1288,23 +1288,20 @@ async function loadGEM(url) {
    }
 
    // Pack into flat Float32Array matching loadSTL output format.
-   // GemCad's Y axis is inverted relative to the renderer's convention,
-   // so negate Y on both positions and normals. Swapping v1↔v2 restores
-   // the CCW winding that the negation would otherwise flip.
    const triCount = triangles.length;
    const floatsPerVertex = 7;
    const vertexData = new Float32Array(triCount * 3 * floatsPerVertex);
 
    for (let i = 0; i < triCount; i++) {
       const { v0, v1, v2, normal, frosted } = triangles[i];
-      const vs = [v0, v2, v1]; // swap v1↔v2 to fix winding after Y-flip
+      const vs = [v0, v1, v2];
       for (let v = 0; v < 3; v++) {
          const idx = (i * 3 + v) * floatsPerVertex;
          vertexData[idx + 0] = vs[v][0];
-         vertexData[idx + 1] = -vs[v][1]; // flip Y
+         vertexData[idx + 1] = vs[v][1];
          vertexData[idx + 2] = vs[v][2];
          vertexData[idx + 3] = normal[0];
-         vertexData[idx + 4] = -normal[1]; // flip Y
+         vertexData[idx + 4] = normal[1];
          vertexData[idx + 5] = normal[2];
          vertexData[idx + 6] = frosted ? 1.0 : 0.0;
       }

@@ -2595,6 +2595,7 @@ async function setupApp() {
       mat4.identity(modelMat);
       mat4.rotateX(modelMat, modelMat, effectiveRenderRotX);
       mat4.rotateY(modelMat, modelMat, effectiveRenderRotY);
+      mat4.rotateZ(modelMat, modelMat, Math.PI);
 
       const aspect = canvas.width / canvas.height;
       // Focal length: maintain stone size by scaling camera distance proportionally.
