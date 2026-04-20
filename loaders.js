@@ -1638,178 +1638,32 @@ function inferSymmetryMirrorFromIndexes(indexes, gear) {
          .map((value) => wrapGearIndex(value, g)),
    )].sort((a, b) => a - b);
 
-   if (!normalized.length) {
-      return { startIndex: 0, symmetry: 1, mirror: false };
-   }
+   if (!normalized.length) return { startIndex: 0, symmetry: 1, mirror: false };
+   if (normalized.length === 1) return { startIndex: normalized[0] === g ? 0 : normalized[0], symmetry: 1, mirror: false };
 
-   if (normalized.length === 1) {
-      return { startIndex: normalized[0] === g ? 0 : normalized[0], symmetry: 1, mirror: false };
-   }
-
-   const detectUniformMirror = () => {
-      const count = normalized.length;
-      if (count < 4 || count % 2 !== 0) return null;
-
-      const deltas = [];
-      for (let i = 0; i < count; i++) {
-         const curr = normalized[i];
-         const next = normalized[(i + 1) % count];
-         const delta = (next - curr + g) % g;
-         if (delta <= 0) return null;
+   // Compute deltas between consecutive indexes (wrap around)
+   const deltas = [];
+   for (let i = 0; i < normalized.length; i++) {
+      const curr = normalized[i];
+      const next = normalized[(i + 1) % normalized.length];
+      const delta = (next - curr + g) % g;
+      if (delta <= 0) {
+         deltas.push(null);
+      } else {
          deltas.push(delta);
       }
-
-      const firstDelta = deltas[0];
-      if (!deltas.every((delta) => Math.abs(delta - firstDelta) < 1e-6)) return null;
-      if (firstDelta <= 0) return null;
-
-      const inferredSymmetry = Math.round(g / (2 * firstDelta));
-      if (!Number.isFinite(inferredSymmetry) || inferredSymmetry < 1 || inferredSymmetry > g) return null;
-      if (g % inferredSymmetry !== 0) return null;
-
-      const startIndex = normalized[0] === g ? 0 : normalized[0];
-      const generated = generatePatternIndexSet(startIndex, inferredSymmetry, true, g);
-      if (generated.length !== normalized.length) return null;
-      for (let i = 0; i < generated.length; i++) {
-         if (generated[i] !== normalized[i]) return null;
-      }
-
-      return { startIndex, symmetry: inferredSymmetry, mirror: true };
-   };
-
-   const uniformMirror = detectUniformMirror();
-   if (uniformMirror) return uniformMirror;
-
-   const detectPeriodicNoMirror = () => {
-      const target = new Set(normalized);
-      let bestCandidate = null;
-      for (let symmetry = 2; symmetry <= g; symmetry++) {
-         if (g % symmetry !== 0) continue;
-         const step = g / symmetry;
-         const residueBuckets = new Map();
-
-         for (const index of normalized) {
-            const residue = ((index - 1) % step) + 1;
-            if (!residueBuckets.has(residue)) residueBuckets.set(residue, []);
-            residueBuckets.get(residue).push(index);
-         }
-
-         const startCandidates = [...residueBuckets.keys()].sort((a, b) => a - b);
-         const phaseCount = startCandidates.length;
-         if (phaseCount <= 0 || phaseCount >= normalized.length) continue;
-         if (normalized.length !== symmetry * phaseCount) continue;
-
-         let matchesExactly = true;
-         for (const start of startCandidates) {
-            for (let i = 0; i < symmetry; i++) {
-               const expected = wrapGearIndex(start + i * step, g);
-               if (!target.has(expected)) {
-                  matchesExactly = false;
-                  break;
-               }
-            }
-            if (!matchesExactly) break;
-         }
-
-         if (!matchesExactly) continue;
-
-         const candidate = {
-            startIndex: startCandidates[0] === g ? 0 : startCandidates[0],
-            symmetry,
-            mirror: false,
-            phaseCount,
-         };
-
-         if (!bestCandidate
-            || candidate.phaseCount < bestCandidate.phaseCount
-            || (candidate.phaseCount === bestCandidate.phaseCount && candidate.symmetry > bestCandidate.symmetry)
-            || (candidate.phaseCount === bestCandidate.phaseCount
-               && candidate.symmetry === bestCandidate.symmetry
-               && candidate.startIndex < bestCandidate.startIndex)
-         ) {
-            bestCandidate = candidate;
-         }
-      }
-
-      if (!bestCandidate) return null;
-      return {
-         startIndex: bestCandidate.startIndex,
-         symmetry: bestCandidate.symmetry,
-         mirror: false,
-      };
-   };
-
-   const periodicNoMirror = detectPeriodicNoMirror();
-   if (periodicNoMirror) return periodicNoMirror;
-
-   const targetSet = new Set(normalized);
-   const targetCount = normalized.length;
-   let best = null;
-
-   const preferMirror = targetCount > 1 && (targetCount % 2 === 1);
-   const evaluateSymmetryRange = (symmetryList) => {
-      for (const symmetry of symmetryList) {
-         for (const mirror of [false, true]) {
-            for (let startIndex = 1; startIndex <= g; startIndex++) {
-               const generated = generatePatternIndexSet(startIndex, symmetry, mirror, g);
-               const generatedSet = new Set(generated);
-               let intersectionCount = 0;
-               for (const index of targetSet) {
-                  if (generatedSet.has(index)) intersectionCount += 1;
-               }
-               if (intersectionCount <= 0) continue;
-
-               const missCount = targetCount - intersectionCount;
-               const extraCount = generatedSet.size - intersectionCount;
-               const isExactMatch = missCount === 0 && extraCount === 0;
-               const expectedUniqueCount = mirror
-                  ? Math.min(g, Math.max(1, 2 * symmetry))
-                  : symmetry;
-               const mirrorPenalty = preferMirror
-                  ? (mirror ? 0 : 0.25)
-                  : (mirror ? 0.25 : 0);
-               const score = missCount * 1000
-                  + extraCount * 25
-                  + Math.abs(targetCount - expectedUniqueCount) * 0.5
-                  + mirrorPenalty
-                  + symmetry * 0.0001;
-
-               if (!best
-                  || (isExactMatch && !best.isExactMatch)
-                  || (isExactMatch === best.isExactMatch && score < best.score)
-               ) {
-                  best = { startIndex, symmetry, mirror, score, isExactMatch };
-               }
-            }
-         }
-      }
-   };
-
-   const integerStepSymmetries = [];
-   for (let symmetry = 1; symmetry <= g; symmetry++) {
-      if (g % symmetry === 0) integerStepSymmetries.push(symmetry);
    }
 
-   evaluateSymmetryRange(integerStepSymmetries);
-   if (!best) {
-      const allSymmetries = [];
-      for (let symmetry = 1; symmetry <= g; symmetry++) allSymmetries.push(symmetry);
-      evaluateSymmetryRange(allSymmetries);
+   const allEqual = deltas.every((d) => d !== null && Math.abs(d - deltas[0]) < 1e-6);
+
+   if (allEqual) {
+      // Even spacing → no mirror, symmetry equals number of positions
+      return { startIndex: normalized[0] === g ? 0 : normalized[0], symmetry: normalized.length, mirror: false };
    }
 
-   if (!best) {
-      return {
-         startIndex: normalized[0] === g ? 0 : normalized[0],
-         symmetry: Math.min(g, Math.max(1, normalized.length)),
-         mirror: false,
-      };
-   }
-
-   return {
-      startIndex: best.startIndex === g ? 0 : best.startIndex,
-      symmetry: best.symmetry,
-      mirror: best.mirror,
-   };
+   // Otherwise assume mirrored pattern: mirror doubles the unique positions
+   const inferredSymmetry = Math.max(1, Math.min(g, Math.floor(normalized.length / 2)));
+   return { startIndex: normalized[0] === g ? 0 : normalized[0], symmetry: inferredSymmetry, mirror: true };
 }
 
 function computeSignedFacetAngleDeg(normal) {
