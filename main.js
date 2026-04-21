@@ -296,6 +296,14 @@ function buildUI(ui, cbs) {
       b.classList.toggle('active', parseInt(b.dataset.mode) === ui.lightMode)
    );
 
+   function setLightMode(mode) {
+      console.log('Setting light mode to', mode);
+      ui.lightMode = mode;
+      panel.querySelectorAll('#modes .mode').forEach(b => b.classList.toggle('active', parseInt(b.dataset.mode) === mode));
+      cbs.onRenderOutputChanged?.();
+   }
+
+
    const gemTopTabsEl = panel.querySelector('#gemTopTabs');
    const gemControlsTabPanelEl = panel.querySelector('#gemControlsTabPanel');
    const gemDesignTabPanelEl = panel.querySelector('#gemDesignTabPanel');
@@ -306,6 +314,12 @@ function buildUI(ui, cbs) {
       gemTopTabsEl?.querySelectorAll('.mode').forEach((btn) => {
          btn.classList.toggle('active', btn.dataset.gemTab === tabName);
       });
+
+      const mode = isDesign ? 4 : 3; // Flat for design, default for controls
+      if (mode !== ui.lightMode) {
+         setLightMode(mode);
+      }
+
    };
    gemTopTabsEl?.addEventListener('click', (e) => {
       const button = e.target.closest('.mode[data-gem-tab]');
