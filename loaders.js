@@ -350,18 +350,11 @@ function convertGCSTextToGEMBuffer(gcsText) {
    return writer.finish();
 }
 
-const wrapIndex = (value, gear) => {
-   const g = Math.max(1, gear);
-   let wrapped = Math.round(value);
-   wrapped = ((wrapped - 1) % g + g) % g + 1;
-   return wrapped;
-};
-
-const mirrorIndex = (index, gear) => {
-   const idx = wrapIndex(index, gear);
+function mirrorIndex(index, gear) {
+   const idx = wrapGearIndex(index, gear);
    if (idx === gear) return gear;
-   return wrapIndex(gear - idx, gear);
-};
+   return wrapGearIndex(gear - idx, gear);
+}
 
 
 function intersect3Planes(p0, p1, p2) {
@@ -899,7 +892,7 @@ function buildStoneFromFacetDesign(definition = {}) {
       const angleDeg = Number.isFinite(angle) ? Math.max(-90.0, Math.min(90.0, angle)) : 0;
 
       const startRaw = parseFloat(facet?.startIndex);
-      const startIndex = Number.isFinite(startRaw) ? wrapIndex(startRaw, gear) : 1;
+      const startIndex = Number.isFinite(startRaw) ? wrapGearIndex(startRaw, gear) : 1;
 
       const distanceRaw = parseFloat(facet?.distance);
       const d = Number.isFinite(distanceRaw) ? Math.max(1e-5, Math.abs(distanceRaw)) : 1.0;
@@ -914,13 +907,13 @@ function buildStoneFromFacetDesign(definition = {}) {
                .map((value) => parseInt(value, 10))
                .filter((value) => Number.isFinite(value) && value >= 0)
                .map((value) => (value === 0 ? gear : value))
-               .map((value) => wrapIndex(value, gear)),
+               .map((value) => wrapGearIndex(value, gear)),
          )]
          : [];
 
       const indexDistanceOverrides = facet?.indexDistances && typeof facet.indexDistances === 'object'
          ? Object.entries(facet.indexDistances)
-            .map(([index, value]) => [wrapIndex(parseInt(index, 10), gear), parseFloat(value)])
+            .map(([index, value]) => [wrapGearIndex(parseInt(index, 10), gear), parseFloat(value)])
             .filter(([index, value]) => Number.isFinite(index) && Number.isFinite(value) && value >= 0)
             .reduce((acc, [index, value]) => {
                acc.set(index, Math.max(1e-5, Math.abs(value)));
@@ -933,7 +926,7 @@ function buildStoneFromFacetDesign(definition = {}) {
       } else {
          for (let i = 0; i < symmetry; i++) {
             const offset = i * step;
-            const primary = wrapIndex(startIndex + offset, gear);
+            const primary = wrapGearIndex(startIndex + offset, gear);
             indexSet.add(primary);
             if (mirror) {
                indexSet.add(mirrorIndex(primary, gear));
@@ -1503,10 +1496,7 @@ function parseFacetGearIndex(normal, gear) {
 }
 
 function wrapGearIndex(value, gear) {
-   const g = gear;
-   let wrapped = Math.round(value);
-   wrapped = ((wrapped - 1) % g + g) % g + 1;
-   return wrapped;
+   return value % gear;
 }
 
 function generatePatternIndexSet(startIndex, symmetry, mirror, gear) {
@@ -1653,9 +1643,7 @@ function groupExternalFacetsForDesign(facets = [], gear) {
             values.forEach((value) => indexedDistanceCandidates.push(value));
          });
 
-         const inferredStartWrapped = inferred.startIndex === 0
-            ? gear
-            : wrapGearIndex(inferred.startIndex, gear);
+         const inferredStartWrapped = wrapGearIndex(inferred.startIndex, gear);
          const startIndexDistanceCandidates = preferredFacetDistanceByIndex.get(inferredStartWrapped)?.length
             ? preferredFacetDistanceByIndex.get(inferredStartWrapped)
             : (sourceFacetDistanceByIndex.get(inferredStartWrapped) || []);
@@ -1753,17 +1741,17 @@ function generateFacesFromFacetList(facetList = [], gear = 96) {
       const step = Math.max(1, gear) / symmetry;
       const mirror = Boolean(facet.mirror);
 
-      const explicit = Array.isArray(facet.indexes) ? facet.indexes.map(v => wrapIndex(Math.round(v), gear)) : [];
-      const indexDistanceMap = (facet.indexDistances && typeof facet.indexDistances === 'object') ? Object.entries(facet.indexDistances).reduce((acc, [k, v]) => { const ki = wrapIndex(parseInt(k, 10)); acc.set(ki, Number(v)); return acc; }, new Map()) : new Map();
+      const explicit = Array.isArray(facet.indexes) ? facet.indexes.map(v => wrapGearIndex(Math.round(v), gear)) : [];
+      const indexDistanceMap = (facet.indexDistances && typeof facet.indexDistances === 'object') ? Object.entries(facet.indexDistances).reduce((acc, [k, v]) => { const ki = wrapGearIndex(parseInt(k, 10)); acc.set(ki, Number(v)); return acc; }, new Map()) : new Map();
 
       const indexSet = new Set();
       if (explicit.length) {
          for (const idx of explicit) indexSet.add(idx);
       } else {
-         const start = wrapIndex(facet.startIndex || 1, gear);
+         const start = wrapGearIndex(facet.startIndex, gear);
          for (let i = 0; i < symmetry; i++) {
             const off = Math.round(i * step);
-            const primary = wrapIndex(start + off, gear);
+            const primary = wrapGearIndex(start + off, gear);
             indexSet.add(primary);
             if (mirror) indexSet.add(mirrorIndex(primary, gear));
          }
@@ -1988,7 +1976,6 @@ export {
    groupFacetInfo,
    formatFacetIndexLines,
    parseFacetGearIndex,
-   wrapGearIndex,
    generatePatternIndexSet,
    inferSymmetryMirrorFromIndexes,
    computeSignedFacetAngleDeg,
