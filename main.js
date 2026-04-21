@@ -1177,6 +1177,28 @@ async function setupApp() {
       designFacets.push(nextFacet);
       renderDesignFacetList();
       scheduleDesignApply();
+      const lastName = designNameEl.value;
+      let newName = lastName;
+
+      const matchNumbered = lastName.match(/^(.*?)(\d+)?$/);
+      if (matchNumbered) {
+         const prefix = matchNumbered[1];
+         const num = parseInt(matchNumbered[2], 10);
+         if (Number.isFinite(num)) {
+            newName = `${prefix}${num + 1}`;
+         }
+      }
+      const matchAlphabetic = lastName.match(/^([a-zA-Z])$/);
+      if (matchAlphabetic) {
+         const letter = matchAlphabetic[1];
+         if (letter.length === 1) {
+            const nextChar = String.fromCharCode(letter.charCodeAt(0) + 1);
+            if (/[a-zA-Z]/.test(nextChar)) {
+               newName = nextChar;
+            }
+         }
+      }
+      designNameEl.value = newName;
    });
 
    designSaveGemBtn?.addEventListener('click', async () => {
