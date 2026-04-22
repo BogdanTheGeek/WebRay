@@ -1431,7 +1431,8 @@ function groupFacetInfo(facets = [], gear) {
       const name = (facet.name || '').trim() || '?';
       const instructions = (facet.instructions || '').trim();
       const angle = computeSignedFacetAngleDeg(facet.normal);
-      const angleKey = Math.abs(angle).toFixed(2);
+      const angleKey = angle.toFixed(2);
+      const angleLabel = Math.abs(angle).toFixed(2);
       const key = `${angleKey}\u0000${instructions}`;
       let entry = grouped.get(key);
       if (!entry) {
@@ -1439,7 +1440,7 @@ function groupFacetInfo(facets = [], gear) {
             section: getFacetSection(angle),
             name,
             angle,
-            angleLabel: `${angleKey}°`,
+            angleLabel: `${angleLabel}°`,
             indexes: [],
             instructions,
          };
