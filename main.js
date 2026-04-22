@@ -182,6 +182,20 @@ function rgbToHex(rgb) {
    return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
 }
 
+function easeInOutSine(x) {
+   return -(Math.cos(Math.PI * x) - 1) / 2;
+}
+function easeOutSine(x) {
+   return Math.sin((x * Math.PI) / 2);
+}
+function easeLinear(x) {
+   return x;
+}
+function upDownBell(x) {
+   if (x < 0.5) return 2 * x;
+   else return 2 * (1 - x);
+}
+
 function escapeHtml(text) {
    return String(text)
       .replaceAll('&', '&amp;')
@@ -1879,24 +1893,13 @@ async function setupApp() {
       return Math.round(angleRad / ORIENTATION_CACHE_ANGLE_STEP_RAD) * ORIENTATION_CACHE_ANGLE_STEP_RAD;
    }
 
-   function easeInOutSine(x) {
-      return -(Math.cos(Math.PI * x) - 1) / 2;
-   }
-   function easeLinear(x) {
-      return x;
-   }
-   function upDownBell(x) {
-      if (x < 0.5) return 2 * x;
-      else return 2 * (1 - x);
-   }
-
-   function sampleTiltAnimation(timeInCycleSec, ampRad) {
+   function sampleTiltAnimation(timeInCycleSec, ampRad, easingFunc = easeInOutSine) {
       const cycle = ((timeInCycleSec % TILT_ANIM_CYCLE_SEC) + TILT_ANIM_CYCLE_SEC) % TILT_ANIM_CYCLE_SEC;
       const step = Math.floor(cycle / TILT_ANIM_STEP_SEC);
       const frac = (cycle % TILT_ANIM_STEP_SEC) / TILT_ANIM_STEP_SEC;
       const norm = upDownBell(frac);
       // TODO: add animation switch
-      const bell = easeInOutSine(norm);
+      const bell = easingFunc(norm);
       return {
          x: step === 0 ? bell * ampRad : 0,
          y: step === 1 ? bell * ampRad : 0,
