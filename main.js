@@ -2956,4 +2956,4 @@ async function setupApp() {
 // Startup
 // ---------------------------------------------------------------------------
 const app = await setupApp();
-if (app) app.loadModel('stone.gem', 'stone.gem');
+if (app) app.loadModel('Eye_of_Zul.asc', './models/Eye_of_Zul.asc');
