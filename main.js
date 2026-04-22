@@ -1032,6 +1032,7 @@ async function setupApp() {
       }
       designGearEl.value = String(gear);
 
+
       const grouped = groupExternalFacetsForDesign(facets, gear);
       designFacets = grouped.map((facet, idx) => normalizeDesignFacet(facet, idx));
       renderDesignFacetList();

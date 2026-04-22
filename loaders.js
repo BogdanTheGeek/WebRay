@@ -12,6 +12,7 @@ class StoneData {
       this.refractiveIndex = refractiveIndex;
       this.dispersion = dispersion;
       this.sourceGear = sourceGear;
+      console.debug('StoneData created:', this);
    }
 }
 
@@ -708,18 +709,26 @@ const polarPlane = (angle, index, gear, gearOff = 0) => {
 async function loadASC(url) {
    const response = await fetch(url);
    const text = await response.text();
-   const lines = text.split(/\r?\n/);
+
+   // Pre-process: join continuation lines (lines that start with whitespace)
+   // back onto the previous non-empty line. This handles the pc01006 pattern
+   // where " G First" appears on its own line after an `a` line.
+   const rawLines = text.split(/\r?\n/);
+   const lines = [];
+   for (const raw of rawLines) {
+      // A continuation line starts with whitespace and is not blank
+      if (raw.length > 0 && /^\s/.test(raw) && lines.length > 0) {
+         lines[lines.length - 1] += ' ' + raw.trim();
+      } else {
+         lines.push(raw);
+      }
+   }
 
    let igear = 96;
    let gearOff = 0;
-   let currentAngle = 0;
-   let currentRho = 0;
-   let currentName = '';
-   let currentInstructions = '';
    let refractiveIndex = 1.54;
 
    const planes = [];
-
    let sawHeader = false;
 
    for (const rawLine of lines) {
@@ -730,107 +739,122 @@ async function loadASC(url) {
       const parts = line.split(/\s+/);
       if (!parts.length || !parts[0]) continue;
 
+      // ── Header ──────────────────────────────────────────────────────────────
       if (!sawHeader) {
          if (parts[0] !== 'GemCad') throw new Error('ASC: missing GemCad header');
          sawHeader = true;
          continue;
       }
 
-      let i = 0;
-      while (i < parts.length) {
+      const ch = parts[0];
+
+      // ── g  gear <count> <offset> ────────────────────────────────────────────
+      // Gear count may be negative (e.g. "g -64 32.0"); use Math.abs for igear.
+      if (ch === 'g') {
+         const raw = parseInt(parts[1], 10);
+         if (isFinite(raw) && raw !== 0) igear = Math.abs(raw);
+         const nextOff = parseFloat(parts[2]);
+         if (isFinite(nextOff)) gearOff = nextOff;
+         continue;
+      }
+
+      // ── I  refractive index ─────────────────────────────────────────────────
+      if (ch === 'I') {
+         const ri = parseFloat(parts[1]);
+         if (isFinite(ri) && ri > 1.0) refractiveIndex = ri;
+         continue;
+      }
+
+      // ── H / F / y  — title / footnote / symmetry — skip ────────────────────
+      if (ch === 'H' || ch === 'F' || ch === 'y') continue;
+
+      // ── a  facet line ────────────────────────────────────────────────────────
+      if (ch !== 'a') continue;
+
+      const angle = parseFloat(parts[1]);
+      const rho = parseFloat(parts[2]);
+      if (!isFinite(angle) || !isFinite(rho)) continue;
+
+      // Scan tokens from index 3 onwards, collecting:
+      //   - numeric index tokens (before, between, or after name segments)
+      //   - name (last `n <token>` pair wins, matching GemCad behaviour)
+      //   - instructions (everything after the first `G` token)
+      const gearIndices = [];  // all numeric gear index tokens
+      let currentName = '';
+      let instructions = '';
+      let awaitingName = false;
+
+      for (let i = 3; i < parts.length; i++) {
          const tok = parts[i];
-         if (!tok) {
-            i++;
-            continue;
-         }
 
-         const ch = tok.charAt(0);
-
-         if (ch === 'a') {
-            if (i + 2 < parts.length) {
-               const angle = parseFloat(parts[i + 1]);
-               const rho = parseFloat(parts[i + 2]);
-               if (isFinite(angle) && isFinite(rho)) {
-                  currentAngle = angle;
-                  currentRho = rho * 0.9;
-               }
-               i += 3;
-               continue;
-            }
-            i++;
-            continue;
-         }
-
-         if (ch === 'n') {
-            currentName = i + 1 < parts.length ? parts[i + 1] : '';
-            i += 2;
-            continue;
-         }
-
-         if (ch === 'G') {
-            currentInstructions = line.slice(line.indexOf(tok) + tok.length).trim();
+         // `G` ends index/name scanning; everything after is the instruction text
+         if (tok === 'G') {
+            instructions = parts.slice(i + 1).join(' ');
             break;
          }
 
-         if (ch === 'g') {
-            if (i + 1 < parts.length) {
-               const nextGear = parseInt(parts[i + 1], 10);
-               if (isFinite(nextGear) && nextGear > 0) igear = nextGear;
-            }
-            if (i + 2 < parts.length) {
-               const nextOff = parseFloat(parts[i + 2]);
-               if (isFinite(nextOff)) gearOff = nextOff;
-            }
-            i += 3;
+         // `n` signals that the very next token is a facet name
+         if (tok === 'n') {
+            awaitingName = true;
             continue;
          }
 
-         if (ch === 'I') {
-            if (i + 1 < parts.length) {
-               const ri = parseFloat(parts[i + 1]);
-               if (isFinite(ri) && ri > 1.0) refractiveIndex = ri;
-            }
-            i += 2;
+         if (awaitingName) {
+            currentName = tok;
+            awaitingName = false;
             continue;
          }
 
-         if (ch === 'H' || ch === 'F' || ch === 'y') {
-            break;
+         // Numeric token — gear index (may be negative, e.g. -64)
+         const idx = parseFloat(tok);
+         if (isFinite(idx)) {
+            gearIndices.push(idx);
          }
+      }
 
-         const index = parseFloat(tok);
-         if (!isFinite(index)) {
-            i++;
+      // Emit one half-space plane per gear index.
+      // If there are no gear indices at all (e.g. `a 0.000000 0.201 96 n T`)
+      // the single index is already consumed as part of rho — GemCad convention
+      // is that `a <angle> <rho> <singleIndex> n <name>` with no further indices
+      // still produces one plane.  Handle that by rechecking parts[3] when the
+      // index list is empty after the scan.
+      let indicesToProcess = gearIndices;
+      if (indicesToProcess.length === 0) {
+         // parts[3] might be the sole index that was skipped because we started
+         // scanning at 3 but immediately hit 'n'.  Re-check explicitly.
+         const sole = parseFloat(parts[3]);
+         if (isFinite(sole) && parts[3] !== 'n' && parts[3] !== 'G') {
+            indicesToProcess = [sole];
+         } else {
+            // e.g. `a 0.000000 0.418 64 n D` — index is parts[3], name skipped it
+            // already handled above; just skip this plane.
             continue;
          }
+      }
+
+      for (const rawIdx of indicesToProcess) {
+         // Negative indices are a GemCad notation for "offset by gearOff";
+         // the physical position is the absolute value.
+         const index = Math.abs(rawIdx);
 
          let normal;
          let d;
-         if (currentAngle === 0) {
-            if (currentRho > 0) {
-               normal = [0, 0, 1];
-               d = currentRho;
-            } else {
-               normal = [0, 0, -1];
-               d = -currentRho;
-            }
+
+         if (angle === 0) {
+            // Flat table / culet
+            normal = rho >= 0 ? [0, 0, 1] : [0, 0, -1];
+            d = Math.abs(rho);
          } else {
-            normal = polarPlane(currentAngle, index, igear);
-            d = currentRho;
+            normal = polarPlane(Math.abs(angle), index, igear);
+            d = Math.abs(rho);
+            // Negative angle → pavilion (below girdle) → flip Z
+            if (angle < 0) normal[2] = -normal[2];
          }
 
          const len = Math.hypot(normal[0], normal[1], normal[2]);
-         if (!isFinite(len) || len < 1e-9 || !isFinite(d) || Math.abs(d) <= 1e-12) {
-            i++;
-            continue;
-         }
+         if (!isFinite(len) || len < 1e-9 || !isFinite(d) || Math.abs(d) <= 1e-12) continue;
 
-         if (d < 0) {
-            normal = [-normal[0], -normal[1], -normal[2]];
-            d = -d;
-         }
-
-         const normalizedFacet = normalizeFacetMetadata(currentName, currentInstructions);
+         const normalizedFacet = normalizeFacetMetadata(currentName, instructions);
          planes.push({
             a: normal[0] / len,
             b: normal[1] / len,
@@ -840,16 +864,11 @@ async function loadASC(url) {
             instructions: normalizedFacet.instructions,
             frosted: normalizedFacet.frosted,
          });
-         i++;
       }
    }
 
-   if (!sawHeader) {
-      throw new Error('ASC: missing GemCad header');
-   }
-   if (!planes.length) {
-      throw new Error('ASC: no facets found');
-   }
+   if (!sawHeader) throw new Error('ASC: missing GemCad header');
+   if (!planes.length) throw new Error('ASC: no facets found');
 
    return buildStoneFromHalfSpacePlanes(planes, refractiveIndex, igear);
 }
@@ -911,16 +930,6 @@ function buildStoneFromFacetDesign(definition = {}) {
          )]
          : [];
 
-      const indexDistanceOverrides = facet?.indexDistances && typeof facet.indexDistances === 'object'
-         ? Object.entries(facet.indexDistances)
-            .map(([index, value]) => [wrapGearIndex(parseInt(index, 10), gear), parseFloat(value)])
-            .filter(([index, value]) => Number.isFinite(index) && Number.isFinite(value) && value >= 0)
-            .reduce((acc, [index, value]) => {
-               acc.set(index, Math.max(1e-5, Math.abs(value)));
-               return acc;
-            }, new Map())
-         : new Map();
-
       if (explicitIndexes.length > 0) {
          explicitIndexes.forEach((value) => indexSet.add(value));
       } else {
@@ -950,7 +959,7 @@ function buildStoneFromFacetDesign(definition = {}) {
 
       for (const index of indexSet) {
          let normal = computeNormalFromPolar(angleDeg, index, gear, 0);
-         let planeD = indexDistanceOverrides.get(index) ?? d;
+         let planeD = d;
          const len = Math.hypot(normal[0], normal[1], normal[2]);
          if (!Number.isFinite(len) || len < 1e-9) continue;
 
@@ -1024,34 +1033,16 @@ async function loadGEM(url) {
    // ── 1. Parse plane records ───────────────────────────────────────────────
    const planes = []; // each: { a, b, c, d, name, instructions }  (unit normal, d = 0.9/|abc|)
 
-   function readFacetLabel(byteLength) {
-      const safeLength = Math.max(0, Math.min(byteLength, buffer.byteLength - offset));
-      const bytes = new Uint8Array(buffer, offset, safeLength);
-      offset += safeLength;
+   function readFacetLabel(nameView) {
+      const byteLength = nameView.byteLength;
+      const bytes = new Uint8Array(nameView.buffer, nameView.byteOffset, byteLength);
+      const str = new TextDecoder().decode(bytes);
 
-      let name = '';
-      let instructions = '';
-      let active = '';
-      let hasSplit = false;
-
-      for (let i = 0; i < bytes.length; i++) {
-         const ch = String.fromCharCode(bytes[i]);
-         if (ch === '\n' || ch === '\0') break;
-         if (ch === '\t' && !hasSplit) {
-            name = active;
-            active = '';
-            hasSplit = true;
-            continue;
-         }
-         active += ch;
-      }
-
-      if (hasSplit) instructions = active;
-      else name = active;
-
+      // match "name\tinstructions" with optional tab. If no tab, all goes to name and instructions is empty.
+      const match = (/^([^\t]*)\t?(.*)$/).exec(str) || ['', '', ''];
       return {
-         name: name.trim(),
-         instructions: instructions.trim(),
+         name: match[1].trim(),
+         instructions: match[2].trim(),
       };
    }
 
@@ -1065,12 +1056,14 @@ async function loadGEM(url) {
 
       const len = Math.sqrt(a_raw * a_raw + b_raw * b_raw + c_raw * c_raw);
       if (len === 0) continue; // zero-length normal, skip plane
+      const angle = Math.acos(c_raw / len) * 180 / Math.PI;
 
       const plane = {
          a: a_raw / len,
          b: b_raw / len,
          c: c_raw / len,
          d: 0.9 / len,   // matches stone.cpp: d = 1/len * 0.9
+         angleDeg: angle,
          name: '',
          instructions: '',
          frosted: false,
@@ -1083,12 +1076,14 @@ async function loadGEM(url) {
       // read name (1-byte length prefix)
       if (offset >= buffer.byteLength) break;
       const nameLen = view.getUint8(offset); offset += 1;
+      const nameView = new DataView(buffer, offset, nameLen);
       if (nameLen > 0) {
-         const label = readFacetLabel(nameLen);
+         const label = readFacetLabel(nameView);
          const normalized = normalizeFacetMetadata(label.name, label.instructions);
-         plane.name = normalized.name;
-         plane.instructions = normalized.instructions;
-         plane.frosted = normalized.frosted;
+         planes[planes.length - 1].name = normalized.name;
+         planes[planes.length - 1].instructions = normalized.instructions;
+         planes[planes.length - 1].frosted = normalized.frosted;
+         offset += nameLen;
       }
 
       // skip cached vertex data: read int32 tags until tag != 1
@@ -1099,14 +1094,30 @@ async function loadGEM(url) {
       }
    }
 
+   // Find facets with a name and use that name for all planes that match the angle and d within epsilon. This is a heuristic to recover facet labels that some versions of GemCad omit from planes other than the first in a group of parallel planes.
+   const NAMING_EPS = 1e-4;
+   for (const p of planes) {
+      if (!p.name) {
+         for (const q of planes) {
+            if (q.name && Math.abs(p.angleDeg - q.angleDeg) < NAMING_EPS && Math.abs(p.d - q.d) < NAMING_EPS) {
+               p.name = q.name;
+               p.instructions = q.instructions;
+               p.frosted = q.frosted;
+               break;
+            }
+         }
+      }
+   }
+
    // ── 2. Read optional tail ────────────────────────────────────────────────
    let refractiveIndex = 1.77; // default: corundum, reasonable fallback
    let sourceGear = null;
+   let sym = 0, mirrorSym = 0;
    if (offset + I32 * 3 + F64 <= buffer.byteLength) {
-      offset += I32; // nsym
-      offset += I32; // mirror_sym
+      sym = view.getInt32(offset, true); offset += I32; // nsym
+      mirrorSym = view.getInt32(offset, true); offset += I32; // mirror_sym
       const tailGear = view.getInt32(offset, true); offset += I32; // igear
-      if (Number.isFinite(tailGear) && tailGear > 0) sourceGear = tailGear;
+      sourceGear = Math.abs(tailGear); // For some reason, gear is sometimes negative.
       refractiveIndex = view.getFloat64(offset, true);
    }
 
@@ -1431,12 +1442,12 @@ function groupFacetInfo(facets = [], gear) {
       const name = (facet.name || '').trim() || '?';
       const instructions = (facet.instructions || '').trim();
       const angle = computeSignedFacetAngleDeg(facet.normal);
-      const angleKey = angle.toFixed(2);
       const angleLabel = Math.abs(angle).toFixed(2);
-      const key = `${angleKey}\u0000${instructions}`;
+      const key = makeKeyFromFacet(facet);
       let entry = grouped.get(key);
       if (!entry) {
          entry = {
+            ...facet,
             section: getFacetSection(angle),
             name,
             angle,
@@ -1563,15 +1574,18 @@ function getFacetDistanceValue(facet) {
    return 1;
 }
 
-function groupExternalFacetsForDesign(facets = [], gear) {
-   const makeKeyFromFacet = (facet) => {
-      const angle = computeSignedFacetAngleDeg(facet.normal);
-      const angleKey = angle.toFixed(2);
-      const section = getFacetSection(angle);
-      const instructions = String(facet?.instructions || '').trim();
-      return `${section}\u0000${angleKey}\u0000${instructions}`;
-   };
+const makeKeyFromFacet = (facet) => {
+   const angle = computeSignedFacetAngleDeg(facet.normal);
+   const angleKey = angle.toFixed(2);
+   const name = String(facet?.name || '').trim();
+   const dKey = Number.isFinite(facet?.d) ? Math.abs(facet.d).toFixed(4) : 'NaN';
+   // const section = getFacetSection(angle);
+   // const instructions = String(facet?.instructions || '').trim();
+   const key = `${name}\u0000${angleKey}\u0000${dKey}`;
+   return key;
+};
 
+function groupExternalFacetsForDesign(facets = [], gear) {
    const sourceByKey = new Map();
    facets.forEach((facet) => {
       const key = makeKeyFromFacet(facet);
@@ -1580,13 +1594,14 @@ function groupExternalFacetsForDesign(facets = [], gear) {
    });
 
    const groupedSections = groupFacetInfo(facets, gear);
+   console.log('Grouped Sections:', groupedSections);
    const sectionOrder = ['PAVILION', 'CROWN', 'OTHER'];
    const groupedFacets = [];
 
    for (const sectionName of sectionOrder) {
       const entries = groupedSections.get(sectionName) || [];
       for (const entry of entries) {
-         const key = `${sectionName}\u0000${entry.angle.toFixed(2)}\u0000${entry.instructions || ''}`;
+         const key = makeKeyFromFacet(entry);
          const sourceFacets = sourceByKey.get(key) || [];
          const entryNameUpper = String(entry.name || '').trim().toUpperCase();
          const nameMatchedFacets = entryNameUpper
@@ -1605,66 +1620,6 @@ function groupExternalFacetsForDesign(facets = [], gear) {
 
          const indexes = indexedFromNotes.length ? indexedFromNotes : indexedFromSource;
          const inferred = inferSymmetryMirrorFromIndexes(indexes, gear);
-         const buildDistanceMapByIndex = (facetList) => {
-            const byIndex = new Map();
-            (facetList || []).forEach((facet) => {
-               const gearIndex = parseFacetGearIndex(facet.normal, gear);
-               const normalizedIndex = gearIndex === 0 ? gear : wrapGearIndex(gearIndex, gear);
-               const facetDistance = getFacetDistanceValue(facet);
-               if (!Number.isFinite(facetDistance) || facetDistance < 0) return;
-               if (!byIndex.has(normalizedIndex)) byIndex.set(normalizedIndex, []);
-               byIndex.get(normalizedIndex).push(facetDistance);
-            });
-            return byIndex;
-         };
-
-         const sourceFacetDistanceByIndex = buildDistanceMapByIndex(sourceFacets);
-         const preferredFacetDistanceByIndex = buildDistanceMapByIndex(preferredFacets);
-         const indexDistances = {};
-         for (const [index, values] of sourceFacetDistanceByIndex.entries()) {
-            if (!values?.length) continue;
-            const sorted = values.slice().sort((a, b) => a - b);
-            indexDistances[String(index)] = sorted[Math.floor(sorted.length / 2)];
-         }
-
-         const normalizedIndexes = [...new Set(
-            (indexes || [])
-               .map((value) => parseInt(value, 10))
-               .filter((value) => Number.isFinite(value) && value >= 0)
-               .map((value) => (value === 0 ? gear : value))
-               .map((value) => wrapGearIndex(value, gear)),
-         )];
-
-         const indexedDistanceCandidates = [];
-         normalizedIndexes.forEach((index) => {
-            const values = preferredFacetDistanceByIndex.get(index)?.length
-               ? preferredFacetDistanceByIndex.get(index)
-               : sourceFacetDistanceByIndex.get(index);
-            if (!values?.length) return;
-            values.forEach((value) => indexedDistanceCandidates.push(value));
-         });
-
-         const inferredStartWrapped = wrapGearIndex(inferred.startIndex, gear);
-         const startIndexDistanceCandidates = preferredFacetDistanceByIndex.get(inferredStartWrapped)?.length
-            ? preferredFacetDistanceByIndex.get(inferredStartWrapped)
-            : (sourceFacetDistanceByIndex.get(inferredStartWrapped) || []);
-
-         const allDistanceCandidates = (preferredFacets.length ? preferredFacets : sourceFacets)
-            .map((facet) => getFacetDistanceValue(facet))
-            .filter((value) => Number.isFinite(value) && value >= 0);
-
-         const activeDistanceCandidates = indexedDistanceCandidates.length
-            ? indexedDistanceCandidates
-            : allDistanceCandidates;
-         activeDistanceCandidates.sort((a, b) => a - b);
-         const startIndexDistance = startIndexDistanceCandidates.length
-            ? startIndexDistanceCandidates
-               .slice()
-               .sort((a, b) => a - b)[Math.floor(startIndexDistanceCandidates.length / 2)]
-            : null;
-         const medianDistance = activeDistanceCandidates.length
-            ? activeDistanceCandidates[Math.floor(activeDistanceCandidates.length / 2)]
-            : null;
 
          groupedFacets.push({
             id: `${Date.now()}-${groupedFacets.length}-${Math.random().toString(36).slice(2, 8)}`,
@@ -1676,13 +1631,8 @@ function groupExternalFacetsForDesign(facets = [], gear) {
                ? computeSignedFacetAngleDeg(sampleFacet.normal)
                : entry.angle,
             startIndex: inferred.startIndex,
-            distance: Number.isFinite(startIndexDistance)
-               ? startIndexDistance
-               : Number.isFinite(medianDistance)
-                  ? medianDistance
-                  : 1,
+            distance: entry.d,
             indexes: indexes.length ? [...new Set(indexes)] : undefined,
-            indexDistances: Object.keys(indexDistances).length ? indexDistances : undefined,
          });
       }
    }
@@ -1702,15 +1652,6 @@ function normalizeDesignFacet(inputFacet = {}, fallbackIndex = 0) {
             .filter((value) => Number.isFinite(value) && value > 0),
       )].sort((a, b) => a - b)
       : null;
-   const parsedIndexDistances = inputFacet.indexDistances && typeof inputFacet.indexDistances === 'object'
-      ? Object.entries(inputFacet.indexDistances)
-         .map(([index, distance]) => [parseInt(index, 10), parseFloat(distance)])
-         .filter(([index, distance]) => Number.isFinite(index) && index > 0 && Number.isFinite(distance) && distance >= 0)
-         .reduce((acc, [index, distance]) => {
-            acc[String(index)] = distance;
-            return acc;
-         }, {})
-      : null;
    const next = {
       id: inputFacet.id || `${Date.now()}-${fallbackIndex}-${Math.random().toString(36).slice(2, 8)}`,
       name: String(inputFacet.name || `F${fallbackIndex + 1}`).trim() || `F${fallbackIndex + 1}`,
@@ -1721,7 +1662,6 @@ function normalizeDesignFacet(inputFacet = {}, fallbackIndex = 0) {
       startIndex: Math.max(0, Math.min(360, Math.round(Number.isFinite(parsedStartIndex) ? parsedStartIndex : 0))),
       distance: Math.max(0, Number.isFinite(parsedDistance) ? parsedDistance : 0),
       indexes: parsedIndexes && parsedIndexes.length ? parsedIndexes : undefined,
-      indexDistances: parsedIndexDistances && Object.keys(parsedIndexDistances).length ? parsedIndexDistances : undefined,
    };
    return next;
 }
@@ -1743,7 +1683,6 @@ function generateFacesFromFacetList(facetList = [], gear = 96) {
       const mirror = Boolean(facet.mirror);
 
       const explicit = Array.isArray(facet.indexes) ? facet.indexes.map(v => wrapGearIndex(Math.round(v), gear)) : [];
-      const indexDistanceMap = (facet.indexDistances && typeof facet.indexDistances === 'object') ? Object.entries(facet.indexDistances).reduce((acc, [k, v]) => { const ki = wrapGearIndex(parseInt(k, 10)); acc.set(ki, Number(v)); return acc; }, new Map()) : new Map();
 
       const indexSet = new Set();
       if (explicit.length) {
@@ -1761,7 +1700,7 @@ function generateFacesFromFacetList(facetList = [], gear = 96) {
       const angleDeg = Number.isFinite(Number(facet.angleDeg)) ? Number(facet.angleDeg) : 0;
       for (const idx of indexSet) {
          let normal = computeNormalFromPolar(angleDeg, idx, gear, 0);
-         let d = indexDistanceMap.get(idx) ?? Number.isFinite(Number(facet.distance)) ? Math.abs(Number(facet.distance)) : 1.0;
+         let d = facet.distance;
          const len = Math.hypot(normal[0], normal[1], normal[2]);
          if (!Number.isFinite(len) || len < EPS) continue;
          normal = [normal[0] / len, normal[1] / len, normal[2] / len];
