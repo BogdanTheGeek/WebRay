@@ -1,0 +1,111 @@
+{
+  "PAVILION": [
+    {
+      "name": "P1",
+      "angle": "-43.00",
+      "indexes": "04-12-20-28-36-44-52-60-68-76-84-92",
+      "instructions": "Cut to centerpoint.",
+      "frosted": false,
+      "d": "0.5121"
+    },
+    {
+      "name": "G1",
+      "angle": "-90.00",
+      "indexes": "06-26-38-58-70-90",
+      "instructions": "Set stone size.",
+      "frosted": false,
+      "d": "0.8991"
+    },
+    {
+      "name": "G2",
+      "angle": "-90.00",
+      "indexes": "03-29-35-61-67-93",
+      "instructions": "Meet P1, G1",
+      "frosted": false,
+      "d": "0.8588"
+    },
+    {
+      "name": "P2",
+      "angle": "-65.00",
+      "indexes": "06-26-38-58-70-90",
+      "instructions": "Level girdle.",
+      "frosted": false,
+      "d": "0.6794"
+    },
+    {
+      "name": "P3",
+      "angle": "-65.99",
+      "indexes": "03-29-35-61-67-93",
+      "instructions": "Level girdle.",
+      "frosted": false,
+      "d": "0.6540"
+    },
+    {
+      "name": "P4",
+      "angle": "-41.00",
+      "indexes": "08-16-24-40-48-56-72-80-88",
+      "instructions": "Meet P1, P2, P3",
+      "frosted": false,
+      "d": "0.5109"
+    }
+  ],
+  "CROWN": [
+    {
+      "name": "C1",
+      "angle": "40.00",
+      "indexes": "03-29-35-61-67-93",
+      "instructions": "Set girdle width.",
+      "frosted": false,
+      "d": "0.8254"
+    },
+    {
+      "name": "C2",
+      "angle": "41.69",
+      "indexes": "06-26-38-58-70-90",
+      "instructions": "Level girdle.",
+      "frosted": false,
+      "d": "0.8646"
+    },
+    {
+      "name": "C3",
+      "angle": "38.00",
+      "indexes": "05-27-37-59-69-91",
+      "instructions": "Meet G1, G2, C1, C2",
+      "frosted": false,
+      "d": "0.8289"
+    },
+    {
+      "name": "C4",
+      "angle": "37.00",
+      "indexes": "04-28-36-60-68-92",
+      "instructions": "Meet G1, G2, C1, C2, C3",
+      "frosted": false,
+      "d": "0.8122"
+    },
+    {
+      "name": "C5",
+      "angle": "26.91",
+      "indexes": "02-30-34-62-66-94",
+      "instructions": "Meet C1, C4; C3, C4",
+      "frosted": false,
+      "d": "0.7795"
+    },
+    {
+      "name": "T",
+      "angle": "0.00",
+      "indexes": "Table",
+      "instructions": "Meet C3, C4, C5",
+      "frosted": false,
+      "d": "0.6769"
+    }
+  ],
+  "summary": {
+    "lw": "1.0234",
+    "pw": "0.5082",
+    "cw": "0.1630",
+    "gearUsed": 96,
+    "nonGirdleCount": 64,
+    "girdleCount": 12,
+    "totalCount": 76
+  }
+}

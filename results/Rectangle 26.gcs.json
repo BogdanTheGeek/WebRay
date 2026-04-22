@@ -1,0 +1,103 @@
+{
+  "PAVILION": [
+    {
+      "name": "G1",
+      "angle": "90.00",
+      "indexes": "96-48",
+      "instructions": "Establish width",
+      "frosted": false,
+      "d": "0.5000"
+    },
+    {
+      "name": "G2",
+      "angle": "90.00",
+      "indexes": "24-72",
+      "instructions": "Establish Length",
+      "frosted": false,
+      "d": "1.0000"
+    },
+    {
+      "name": "P1",
+      "angle": "-60.00",
+      "indexes": "96-48",
+      "instructions": "Establish Girdle line",
+      "frosted": false,
+      "d": "0.3413"
+    },
+    {
+      "name": "P2",
+      "angle": "-60.00",
+      "indexes": "24-72",
+      "instructions": "Level Girdle",
+      "frosted": false,
+      "d": "0.7743"
+    },
+    {
+      "name": "P3",
+      "angle": "-42.00",
+      "indexes": "04-44-52-92",
+      "instructions": "Meet Girdle",
+      "frosted": false,
+      "d": "0.3601"
+    },
+    {
+      "name": "P4",
+      "angle": "-42.00",
+      "indexes": "20-28-68-76",
+      "instructions": "Meet Girdle",
+      "frosted": false,
+      "d": "0.5967"
+    }
+  ],
+  "CROWN": [
+    {
+      "name": "C1",
+      "angle": "55.00",
+      "indexes": "96-48",
+      "instructions": "Establish Girdle thickness",
+      "frosted": false,
+      "d": "0.5437"
+    },
+    {
+      "name": "C2",
+      "angle": "55.00",
+      "indexes": "24-72",
+      "instructions": "Meet Girdle",
+      "frosted": false,
+      "d": "0.9533"
+    },
+    {
+      "name": "C3",
+      "angle": "30.00",
+      "indexes": "96-48",
+      "instructions": "1/4th from girdle",
+      "frosted": false,
+      "d": "0.5446"
+    },
+    {
+      "name": "C4",
+      "angle": "30.00",
+      "indexes": "24-72",
+      "instructions": "Meet C3",
+      "frosted": false,
+      "d": "0.7946"
+    },
+    {
+      "name": "T",
+      "angle": "0.00",
+      "indexes": "Table",
+      "instructions": "Table floats 2/3rds from keel to C1",
+      "frosted": false,
+      "d": "0.4845"
+    }
+  ],
+  "summary": {
+    "lw": "2.0001",
+    "pw": "0.6679",
+    "cw": "0.2507",
+    "gearUsed": 96,
+    "nonGirdleCount": 21,
+    "girdleCount": 4,
+    "totalCount": 25
+  }
+}

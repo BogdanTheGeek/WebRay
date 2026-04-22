@@ -11,11 +11,9 @@ import {
    buildBVH,
    buildStoneFromFacetDesign,
    hasUniqueTableFacet,
-   groupFacetInfo,
-   formatFacetIndexLines,
+   buildFacetInfo,
    groupExternalFacetsForDesign,
    normalizeDesignFacet,
-   computeFacetNotesSummary,
    stretchStoneByVertices,
    generateFacesFromFacetList,
 } from './loaders.js';
@@ -59,6 +57,43 @@ let framePending = false;
 let frame = () => { }; // Replaced by setupApp() return value; declared here to avoid closure issues with requestRender()
 const ROT_EPSILON = 1e-4;
 
+function easeInOutSine(x) {
+   return -(Math.cos(Math.PI * x) - 1) / 2;
+}
+function easeOutSine(x) {
+   return Math.sin((x * Math.PI) / 2);
+}
+function easeLinear(x) {
+   return x;
+}
+
+function easeInOutQuad(x) {
+   return x < 0.5 ? 2 * x * x : 1 - Math.pow(-2 * x + 2, 2) / 2;
+}
+
+function upDownBell(x) {
+   if (x < 0.5) return 2 * x;
+   else return 2 * (1 - x);
+}
+
+function easeToSvgIcon(easeFunc, steps = 100) {
+   // Generate an SVG path string representing the easing function curve in a unit square (0,0 to 1,1)
+   let path = `M 0 ${easeFunc(0)}`;
+   for (let i = 1; i <= steps; i++) {
+      const x = i / steps;
+      const y = easeFunc(x);
+      path += ` L ${x} ${y}`;
+   }
+   return path;
+}
+
+const easingFuncs = {
+   'easeLinear': { func: easeLinear, icon: easeToSvgIcon(easeLinear) },
+   'easeOutSine': { func: easeOutSine, icon: easeToSvgIcon(easeOutSine) },
+   'easeInOutSine': { func: easeInOutSine, icon: easeToSvgIcon(easeInOutSine) },
+   'easeInOutQuad': { func: easeInOutQuad, icon: easeToSvgIcon(easeInOutQuad) },
+};
+
 // ---------------------------------------------------------------------------
 // Module-level state — shared across model reloads
 // ---------------------------------------------------------------------------
@@ -67,6 +102,7 @@ const ui = {
    cod: presets[0][2],
    clarity: 1.0,
    lightMode: 3,
+   easingFuncName: Object.keys(easingFuncs)[0],
    color: [1, 1, 1],
    backgroundColor: [13 / 255, 13 / 255, 13 / 255],
    exitHighlight: [0, 0, 0],
@@ -180,20 +216,6 @@ function rgbToHex(rgb) {
    const g = Math.max(0, Math.min(255, Math.round((rgb?.[1] ?? 0) * 255)));
    const b = Math.max(0, Math.min(255, Math.round((rgb?.[2] ?? 0) * 255)));
    return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
-}
-
-function easeInOutSine(x) {
-   return -(Math.cos(Math.PI * x) - 1) / 2;
-}
-function easeOutSine(x) {
-   return Math.sin((x * Math.PI) / 2);
-}
-function easeLinear(x) {
-   return x;
-}
-function upDownBell(x) {
-   if (x < 0.5) return 2 * x;
-   else return 2 * (1 - x);
 }
 
 function escapeHtml(text) {
@@ -316,6 +338,30 @@ function buildUI(ui, cbs) {
       panel.querySelectorAll('#modes .mode').forEach(b => b.classList.toggle('active', parseInt(b.dataset.mode) === mode));
       cbs.onRenderOutputChanged?.();
    }
+   const easingButtonsContainer = panel.querySelector('#easing');
+   for (const [name, { icon }] of Object.entries(easingFuncs)) {
+
+      easingButtonsContainer.innerHTML += `
+      <button class="mode" data-ease="${name}" title="${name}">
+         <svg viewBox="-0.1 -0.1 1.2 1.2" width="16" height="16" fill="none" stroke="currentColor" stroke-width="0.1">
+            <path d="${icon}" />
+         </svg>
+      </button>`;
+   }
+
+   panel.querySelectorAll('#easing .mode').forEach(b => b.classList.toggle('active', b.dataset.ease === ui.easingFuncName));
+
+   easingButtonsContainer.addEventListener('click', (e) => {
+      const btn = e.target.closest('.mode[data-ease]');
+      if (!btn) return;
+      const easeName = btn.dataset.ease;
+      const ease = easingFuncs[easeName]?.func;
+      if (ease) {
+         ui.easingFuncName = easeName;
+         easingButtonsContainer.querySelectorAll('.mode').forEach(b => b.classList.toggle('active', b.dataset.ease === easeName));
+      }
+      cbs.onRenderOutputChanged?.();
+   });
 
 
    const gemTopTabsEl = panel.querySelector('#gemTopTabs');
@@ -1112,55 +1158,10 @@ async function setupApp() {
       });
    }
 
-   function renderFacetInfo(facets = [], summary = null) {
+   function renderFacetInfo(stone) {
+      const facets = stone?.facets || [];
       latestFacetInfo = facets;
-      facetListEl.innerHTML = '';
-
-      if (!facets.length) {
-         facetListEl.innerHTML = '<div class="facetEmpty">No facet notes were found for this model.</div>';
-         return;
-      }
-
-      const groupedSections = groupFacetInfo(facets, summary.gearUsed);
-      const sectionOrder = ['PAVILION', 'CROWN', 'OTHER'];
-      const html = [];
-
-      for (const sectionName of sectionOrder) {
-         const entries = groupedSections.get(sectionName) || [];
-         if (!entries.length) continue;
-
-         html.push(`
-            <div class="facetSection">
-               <div class="facetSectionTitle">${sectionName}</div>
-               ${entries.map((entry) => {
-            const instruction = entry.instructions ? escapeHtml(entry.instructions) : '—';
-            return `
-                     <div class="facetGroup">
-                        <div class="facetGroupName">${escapeHtml(entry.name)}</div>
-                        <div class="facetGroupAngle">${escapeHtml(entry.angleLabel)}</div>
-                        <div class="facetGroupIndexes">${escapeHtml(formatFacetIndexLines(entry.indexes))}</div>
-                        <div class="facetGroupInst">${instruction}</div>
-                     </div>
-                  `;
-         }).join('')}
-            </div>
-         `);
-      }
-
-      const summaryHtml = summary
-         ? `
-            <div class="facetSummaryCompact">
-               <div class="facetSectionTitle" style="width:100%">STONE INFO</div>
-               <span><strong>L/W</strong> ${escapeHtml(summary.lw.toFixed(4))}</span>
-               <span><strong>P/W</strong> ${escapeHtml(summary.pw.toFixed(4))}</span>
-               <span><strong>C/W</strong> ${escapeHtml(summary.cw.toFixed(4))}</span>
-               <span><strong>Gear</strong> ${escapeHtml(String(summary.gearUsed))}</span>
-               <span><strong>Facets</strong> ${escapeHtml(`${summary.nonGirdleCount}+${summary.girdleCount}=${summary.totalCount}`)}</span>
-            </div>
-         `
-         : '';
-
-      facetListEl.innerHTML = (summaryHtml + html.join('')) || '<div class="facetEmpty">No facet notes were found for this model.</div>';
+      facetListEl.innerHTML = buildFacetInfo(stone);
    }
 
    // Toggles a panel's collapsed state. DOM class is the sole source of truth.
@@ -1894,12 +1895,13 @@ async function setupApp() {
       return Math.round(angleRad / ORIENTATION_CACHE_ANGLE_STEP_RAD) * ORIENTATION_CACHE_ANGLE_STEP_RAD;
    }
 
-   function sampleTiltAnimation(timeInCycleSec, ampRad, easingFunc = easeInOutSine) {
+   function sampleTiltAnimation(timeInCycleSec, ampRad) {
       const cycle = ((timeInCycleSec % TILT_ANIM_CYCLE_SEC) + TILT_ANIM_CYCLE_SEC) % TILT_ANIM_CYCLE_SEC;
       const step = Math.floor(cycle / TILT_ANIM_STEP_SEC);
       const frac = (cycle % TILT_ANIM_STEP_SEC) / TILT_ANIM_STEP_SEC;
       const norm = upDownBell(frac);
       // TODO: add animation switch
+      const easingFunc = easingFuncs[ui.easingFuncName].func;
       const bell = easingFunc(norm);
       return {
          x: step === 0 ? bell * ampRad : 0,
@@ -2123,14 +2125,14 @@ async function setupApp() {
       uiControls.setFileName(filename);
       modelHasTableFacet = hasUniqueTableFacet(stone.facets || []);
       if (Array.isArray(stone.facets) && stone.facets.length > 0) {
-         renderFacetInfo(stone.facets, computeFacetNotesSummary(stone));
+         renderFacetInfo(stone);
          setFacetStatus(
             isDesign
                ? `${stone.facets.length} generated facets from design`
                : `${stone.facets.length} facets parsed from ${filename}`,
          );
       } else {
-         renderFacetInfo([], computeFacetNotesSummary(stone));
+         renderFacetInfo(null);
          if (isDesign) {
             setFacetStatus('Design produced no valid facets');
          } else {
@@ -2289,12 +2291,14 @@ async function setupApp() {
       console.log(`Loading ${filename}...`);
 
       const ext = filename.toLowerCase().match(/\.\w+$/)?.[0] ?? '';
+      const response = await fetch(url);
+      const data = await response.arrayBuffer();
       let stone;
       switch (ext) {
-         case '.gem': stone = await loadGEM(url); break;
-         case '.gcs': stone = await loadGCS(url); break;
-         case '.asc': stone = await loadASC(url); break;
-         default: stone = await loadSTL(url); break;
+         case '.gem': stone = await loadGEM(data); break;
+         case '.gcs': stone = await loadGCS(data); break;
+         case '.asc': stone = await loadASC(data); break;
+         default: stone = await loadSTL(data); break;
       }
 
       designGearEl.value = stone.sourceGear;

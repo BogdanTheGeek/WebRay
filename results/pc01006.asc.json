@@ -1,0 +1,71 @@
+{
+  "PAVILION": [
+    {
+      "name": "1",
+      "angle": "90.00",
+      "indexes": "02-06-10-14-18-22-26-30-34-38-42-46-50-54-58-62",
+      "instructions": "First",
+      "frosted": false,
+      "d": "1.0898"
+    },
+    {
+      "name": "2",
+      "angle": "-42.10",
+      "indexes": "02-06-10-14-18-22-26-30-34-38-42-46-50-54-58-62",
+      "instructions": "Second",
+      "frosted": false,
+      "d": "0.6732"
+    },
+    {
+      "name": "3",
+      "angle": "-41.00",
+      "indexes": "04-12-20-28-36-44-52-60",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.6706"
+    }
+  ],
+  "CROWN": [
+    {
+      "name": "A",
+      "angle": "42.30",
+      "indexes": "02-06-10-14-18-22-26-30-34-38-42-46-50-54-58-62",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.8189"
+    },
+    {
+      "name": "B",
+      "angle": "35.00",
+      "indexes": "04-12-20-28-36-44-52-60",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.7320"
+    },
+    {
+      "name": "C",
+      "angle": "19.80",
+      "indexes": "64-08-16-24-32-40-48-56",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.6059"
+    },
+    {
+      "name": "D",
+      "angle": "0.00",
+      "indexes": "Table",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.4182"
+    }
+  ],
+  "summary": {
+    "lw": 1,
+    "pw": "0.4346",
+    "cw": "0.1362",
+    "gearUsed": 64,
+    "nonGirdleCount": 57,
+    "girdleCount": 16,
+    "totalCount": 73
+  }
+}

@@ -1,0 +1,71 @@
+{
+  "PAVILION": [
+    {
+      "name": "P1",
+      "angle": "-42.80",
+      "indexes": "05-27-37-59-69-91",
+      "instructions": "Cut to centerpoint.",
+      "frosted": false,
+      "d": "0.5178"
+    },
+    {
+      "name": "G1",
+      "angle": "90.00",
+      "indexes": "08-24-40-56-72-88",
+      "instructions": "Set stone size.",
+      "frosted": false,
+      "d": "0.8831"
+    },
+    {
+      "name": "P2",
+      "angle": "-50.69",
+      "indexes": "08-24-40-56-72-88",
+      "instructions": "Level girdle.",
+      "frosted": false,
+      "d": "0.5638"
+    },
+    {
+      "name": "P3",
+      "angle": "-37.88",
+      "indexes": "06-26-38-58-70-90",
+      "instructions": "Meet P1, P2",
+      "frosted": false,
+      "d": "0.5252"
+    }
+  ],
+  "CROWN": [
+    {
+      "name": "C1",
+      "angle": "45.00",
+      "indexes": "08-24-40-56-72-88",
+      "instructions": "Set girdle width.",
+      "frosted": false,
+      "d": "0.7827"
+    },
+    {
+      "name": "C2",
+      "angle": "30.00",
+      "indexes": "16-48-80",
+      "instructions": "Meet G1, C1",
+      "frosted": false,
+      "d": "0.7037"
+    },
+    {
+      "name": "T",
+      "angle": "0.00",
+      "indexes": "Table",
+      "instructions": "Meet C1, C2",
+      "frosted": false,
+      "d": "0.6654"
+    }
+  ],
+  "summary": {
+    "lw": "1.1547",
+    "pw": "0.4834",
+    "cw": "0.2500",
+    "gearUsed": 96,
+    "nonGirdleCount": 28,
+    "girdleCount": 6,
+    "totalCount": 34
+  }
+}

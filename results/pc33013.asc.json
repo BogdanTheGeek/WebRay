@@ -1,0 +1,135 @@
+{
+  "PAVILION": [
+    {
+      "name": "?",
+      "angle": "-90.00",
+      "indexes": "96-48",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.5004"
+    },
+    {
+      "name": "?",
+      "angle": "-90.00",
+      "indexes": "20-68",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.8365"
+    },
+    {
+      "name": "?",
+      "angle": "-51.39",
+      "indexes": "96-48",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.3910"
+    },
+    {
+      "name": "?",
+      "angle": "-51.39",
+      "indexes": "20-68",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.6537"
+    },
+    {
+      "name": "?",
+      "angle": "-44.42",
+      "indexes": "01-49",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.3830"
+    },
+    {
+      "name": "?",
+      "angle": "-41.00",
+      "indexes": "02-50",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.3881"
+    },
+    {
+      "name": "?",
+      "angle": "-41.94",
+      "indexes": "18-66",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.5800"
+    },
+    {
+      "name": "?",
+      "angle": "-44.71",
+      "indexes": "19-67",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.6008"
+    }
+  ],
+  "CROWN": [
+    {
+      "name": "?",
+      "angle": "40.00",
+      "indexes": "96-48",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.3485"
+    },
+    {
+      "name": "?",
+      "angle": "40.00",
+      "indexes": "20-68",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.5646"
+    },
+    {
+      "name": "?",
+      "angle": "33.29",
+      "indexes": "01-49",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.3296"
+    },
+    {
+      "name": "?",
+      "angle": "30.22",
+      "indexes": "02-50",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.3281"
+    },
+    {
+      "name": "?",
+      "angle": "31.05",
+      "indexes": "18-66",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.4777"
+    },
+    {
+      "name": "?",
+      "angle": "33.56",
+      "indexes": "19-67",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.5013"
+    },
+    {
+      "name": "?",
+      "angle": "0.00",
+      "indexes": "Table",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.2891"
+    }
+  ],
+  "summary": {
+    "lw": "1.9988",
+    "pw": "0.5139",
+    "cw": "0.2538",
+    "gearUsed": 96,
+    "nonGirdleCount": 25,
+    "girdleCount": 4,
+    "totalCount": 29
+  }
+}

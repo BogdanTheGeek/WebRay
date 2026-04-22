@@ -1,5 +1,14 @@
 "use strict";
 
+let XMLParser = null;
+
+if (typeof window === 'undefined') {
+   const { DOMParser } = await import('@xmldom/xmldom');
+   XMLParser = DOMParser;
+} else {
+   XMLParser = window.DOMParser;
+}
+
 const TABLE_FACET_MAX_ANGLE_DEG = 1.5;
 const EPS = 1e-9;
 const VERTEX_EPS = 1e-6;
@@ -12,13 +21,11 @@ class StoneData {
       this.refractiveIndex = refractiveIndex;
       this.dispersion = dispersion;
       this.sourceGear = sourceGear;
-      console.debug('StoneData created:', this);
+      // console.debug('StoneData created:', this);
    }
 }
 
-async function loadSTL(url) {
-   const response = await fetch(url);
-   const buffer = await response.arrayBuffer();
+async function loadSTL(buffer) {
 
    const countView = new DataView(buffer, 80, 4);
    const triangleCount = countView.getUint32(0, true);
@@ -92,20 +99,20 @@ function normalizeFacetMetadata(name, instructions) {
 // Facets with < 3 vertices are skipped. Fan triangulation from vertex 0.
 // Y axis uses the same coordinate convention as the renderer (Z = table = up).
 // ---------------------------------------------------------------------------
-async function loadGCS(url) {
-   const response = await fetch(url);
-   const text = await response.text();
-   const parser = new DOMParser();
+async function loadGCS(data) {
+   const decoder = new TextDecoder('utf-8');
+   const text = decoder.decode(data);
+   const parser = new XMLParser();
    const doc = parser.parseFromString(text, 'application/xml');
 
-   if (doc.querySelector('parsererror')) {
+   if (doc.getElementsByTagName('parsererror').length > 0) {
       throw new Error('GCS: XML parse error');
    }
 
    // Refractive index + dispersion
    let refractiveIndex = 1.76;
    let dispersion = 0.044;
-   const renderEl = doc.querySelector('render');
+   const renderEl = doc.getElementsByTagName('render')[0];
    if (renderEl) {
       const ri = parseFloat(renderEl.getAttribute('refractive_index'));
       if (isFinite(ri)) refractiveIndex = ri;
@@ -113,17 +120,17 @@ async function loadGCS(url) {
       if (isFinite(disp)) dispersion = disp;
    }
 
-   const sourceGear = parseInt(doc.querySelector('index')?.getAttribute('gear'), 10);
+   const sourceGear = parseInt(doc.getElementsByTagName('index')[0]?.getAttribute('gear'), 10);
 
    const floatsPerVertex = 7;
    const triangles = [];
    const facets = [];
 
-   for (const tierEl of doc.querySelectorAll('tier')) {
+   for (const tierEl of doc.getElementsByTagName('tier')) {
       const tierName = (tierEl.getAttribute('name') || '').trim();
       const tierInst = (tierEl.getAttribute('instructions') || '').trim();
 
-      for (const facetEl of tierEl.querySelectorAll('facet')) {
+      for (const facetEl of tierEl.getElementsByTagName('facet')) {
          const nx = parseFloat(facetEl.getAttribute('nx') || '0');
          const ny = parseFloat(facetEl.getAttribute('ny') || '0');
          const nz = parseFloat(facetEl.getAttribute('nz') || '0');
@@ -131,7 +138,7 @@ async function loadGCS(url) {
          const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
          const normal = [nx / len, ny / len, nz / len];
 
-         const vertEls = facetEl.querySelectorAll('vertex');
+         const vertEls = facetEl.getElementsByTagName('vertex');
          if (vertEls.length < 3) continue;
 
          // GCS vertices are in CW order from outside — swap v1↔v2 in the fan
@@ -196,10 +203,65 @@ async function loadGCS(url) {
    return new StoneData(vertexData, triCount, facets, refractiveIndex, dispersion, sourceGear);
 }
 
+function buildFacetInfo(stone) {
+   if (!stone || !stone.facets || stone.facets.length === 0) {
+      return '<div class="facetEmpty">No facet notes were found for this model.</div>';
+   }
+   const facets = stone.facets;
+
+   function escapeHtml(text) {
+      return String(text)
+         .replaceAll('&', '&amp;')
+         .replaceAll('<', '&lt;')
+         .replaceAll('>', '&gt;')
+         .replaceAll('"', '&quot;')
+         .replaceAll("'", '&#39;');
+   }
+
+   const summary = computeFacetNotesSummary(stone);
+   const groupedSections = groupFacetInfo(facets, summary.gearUsed);
+   const sectionOrder = ['PAVILION', 'CROWN', 'OTHER'];
+   const html = [];
+
+   for (const sectionName of sectionOrder) {
+      const entries = groupedSections.get(sectionName) || [];
+      if (!entries.length) continue;
+
+      html.push(`
+            <div class="facetSection">
+               <div class="facetSectionTitle">${sectionName}</div>
+               ${entries.map((entry) => {
+         const instruction = entry.instructions ? escapeHtml(entry.instructions) : '—';
+         return `
+                     <div class="facetGroup">
+                        <div class="facetGroupName">${escapeHtml(entry.name)}</div>
+                        <div class="facetGroupAngle">${escapeHtml(entry.angleLabel)}</div>
+                        <div class="facetGroupIndexes">${escapeHtml(formatFacetIndexLines(entry.indexes))}</div>
+                        <div class="facetGroupInst">${instruction}</div>
+                     </div>
+                  `;
+      }).join('')}
+            </div>
+         `);
+   }
+
+   const summaryHtml = `
+            <div class="facetSummaryCompact">
+               <div class="facetSectionTitle" style="width:100%">STONE INFO</div>
+               <span><strong>L/W</strong> ${escapeHtml(summary.lw.toFixed(4))}</span>
+               <span><strong>P/W</strong> ${escapeHtml(summary.pw.toFixed(4))}</span>
+               <span><strong>C/W</strong> ${escapeHtml(summary.cw.toFixed(4))}</span>
+               <span><strong>Gear</strong> ${escapeHtml(String(summary.gearUsed))}</span>
+               <span><strong>Facets</strong> ${escapeHtml(`${summary.nonGirdleCount}+${summary.girdleCount}=${summary.totalCount}`)}</span>
+            </div>`;
+
+   return (summaryHtml + html.join('')) || '<div class="facetEmpty">No facet notes were found for this model.</div>';
+}
+
 function convertGCSTextToGEMBuffer(gcsText) {
-   const parser = new DOMParser();
+   const parser = new XMLParser();
    const doc = parser.parseFromString(String(gcsText || ''), 'application/xml');
-   if (doc.querySelector('parsererror')) {
+   if (doc.getElementsByTagName('parsererror').length > 0) {
       throw new Error('GCS: XML parse error');
    }
 
@@ -253,25 +315,25 @@ function convertGCSTextToGEMBuffer(gcsText) {
    const encoder = new TextEncoder();
    const SILLY = -99999.0;
 
-   const indexEl = doc.querySelector('index');
+   const indexEl = doc.getElementsByTagName('index')[0];
    const symmetry = parseInt(indexEl?.getAttribute('symmetry') || '0', 10) || 0;
    const mirror = parseInt(indexEl?.getAttribute('mirror') || '0', 10) || 0;
    const gear = parseInt(indexEl?.getAttribute('gear') || '0', 10) || 0;
 
    let refractiveIndex = 1.76;
-   const renderEl = doc.querySelector('render');
+   const renderEl = doc.getElementsByTagName('render')[0];
    if (renderEl) {
       const ri = parseFloat(renderEl.getAttribute('refractive_index'));
       if (isFinite(ri)) refractiveIndex = ri;
    }
 
-   for (const tierEl of doc.querySelectorAll('tier')) {
+   for (const tierEl of doc.getElementsByTagName('tier')) {
       const tierName = (tierEl.getAttribute('name') || '').trim();
       const tierInst = (tierEl.getAttribute('instructions') || '').trim();
       const normalizedTier = normalizeFacetMetadata(tierName, tierInst);
 
-      for (const facetEl of tierEl.querySelectorAll('facet')) {
-         const vertEls = Array.from(facetEl.querySelectorAll('vertex'));
+      for (const facetEl of tierEl.getElementsByTagName('facet')) {
+         const vertEls = Array.from(facetEl.getElementsByTagName('vertex'));
          if (vertEls.length < 3) continue;
 
          const verts = vertEls.map((v) => [
@@ -706,9 +768,9 @@ const polarPlane = (angle, index, gear, gearOff = 0) => {
    return [a, b, c];
 };
 
-async function loadASC(url) {
-   const response = await fetch(url);
-   const text = await response.text();
+async function loadASC(data) {
+   const decoder = new TextDecoder('utf-8');
+   const text = decoder.decode(data);
 
    // Pre-process: join continuation lines (lines that start with whitespace)
    // back onto the previous non-empty line. This handles the pc01006 pattern
@@ -1021,9 +1083,7 @@ function buildStoneFromFacetDesign(definition = {}) {
 // So we must reconstruct vertices ourselves by plane intersection, exactly
 // as stone.cpp::newFacet() does via half-space clipping of a convex hull.
 // ---------------------------------------------------------------------------
-async function loadGEM(url) {
-   const response = await fetch(url);
-   const buffer = await response.arrayBuffer();
+async function loadGEM(buffer) {
    const view = new DataView(buffer);
    let offset = 0;
    const SILLY = -99999.0;
@@ -1594,7 +1654,7 @@ function groupExternalFacetsForDesign(facets = [], gear) {
    });
 
    const groupedSections = groupFacetInfo(facets, gear);
-   console.log('Grouped Sections:', groupedSections);
+   // console.log('Grouped Sections:', groupedSections);
    const sectionOrder = ['PAVILION', 'CROWN', 'OTHER'];
    const groupedFacets = [];
 
@@ -1904,6 +1964,7 @@ export {
    loadGCS,
    loadASC,
    loadGEM,
+   buildFacetInfo,
    convertGCSTextToGEMBuffer,
    normalizeMesh,
    computeMeshBoundsRadius,

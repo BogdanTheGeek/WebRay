@@ -1,0 +1,23 @@
+{
+  "name": "webray",
+  "version": "1.0.0",
+  "description": "Lapidary Tool",
+  "homepage": "https://github.com/BogdanTheGeek/WebRay#readme",
+  "bugs": {
+    "url": "https://github.com/BogdanTheGeek/WebRay/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/BogdanTheGeek/WebRay.git"
+  },
+  "license": "GPL-2.0",
+  "author": "Bogdan Ionescu",
+  "type": "module",
+  "main": "test.js",
+  "scripts": {
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "@xmldom/xmldom": "^0.9.10"
+  }
+}

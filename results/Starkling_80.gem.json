@@ -1,0 +1,95 @@
+{
+  "PAVILION": [
+    {
+      "name": "1",
+      "angle": "-46.50",
+      "indexes": "80-16-32-48-64",
+      "instructions": "Temp CenTerPoint",
+      "frosted": false,
+      "d": "0.6002"
+    },
+    {
+      "name": "2",
+      "angle": "-90.00",
+      "indexes": "80-16-32-48-64",
+      "instructions": "Set stone size",
+      "frosted": false,
+      "d": "0.7608"
+    },
+    {
+      "name": "3",
+      "angle": "-41.50",
+      "indexes": "02-14-18-30-34-46-50-62-66-78",
+      "instructions": "CTP",
+      "frosted": false,
+      "d": "0.6078"
+    },
+    {
+      "name": "4",
+      "angle": "-42.34",
+      "indexes": "80-16-32-48-64",
+      "instructions": "CTP, meet 3",
+      "frosted": false,
+      "d": "0.5998"
+    }
+  ],
+  "CROWN": [
+    {
+      "name": "A",
+      "angle": "64.70",
+      "indexes": "80-16-32-48-64",
+      "instructions": "Set girdle thickness",
+      "frosted": false,
+      "d": "0.6678"
+    },
+    {
+      "name": "B",
+      "angle": "39.00",
+      "indexes": "08-24-40-56-72",
+      "instructions": "Meet girdle, A",
+      "frosted": false,
+      "d": "0.5554"
+    },
+    {
+      "name": "C",
+      "angle": "40.00",
+      "indexes": "80-16-32-48-64",
+      "instructions": "No meets, cut over the virtual CTP",
+      "frosted": false,
+      "d": "0.5336"
+    },
+    {
+      "name": "D",
+      "angle": "33.00",
+      "indexes": "02-14-18-30-34-46-50-62-66-78",
+      "instructions": "Meet A, B, C",
+      "frosted": false,
+      "d": "0.4973"
+    },
+    {
+      "name": "E",
+      "angle": "23.20",
+      "indexes": "08-24-40-56-72",
+      "instructions": "Meet B, D",
+      "frosted": false,
+      "d": "0.4724"
+    },
+    {
+      "name": "F",
+      "angle": "0.00",
+      "indexes": "Table",
+      "instructions": "Meet D, E",
+      "frosted": false,
+      "d": "0.4210"
+    }
+  ],
+  "summary": {
+    "lw": "1.0515",
+    "pw": "0.4358",
+    "cw": "0.2750",
+    "gearUsed": 80,
+    "nonGirdleCount": 51,
+    "girdleCount": 5,
+    "totalCount": 56
+  }
+}
