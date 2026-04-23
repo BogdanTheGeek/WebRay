@@ -18,6 +18,7 @@ import {
    generateFacesFromFacetList,
 } from './loaders.js';
 import { exportInProgress, setupExporter } from './video.js';
+import { renderOrtho } from './ortho.js';
 
 const shaderSource = await (await fetch('shaders.wgsl')).text();
 const computeShaderSource = await (await fetch('compute.wgsl')).text();
@@ -288,6 +289,7 @@ function applyBodyBackground(ui) {
 function setConvertStatus(message) {
    if (convertStatusEl) convertStatusEl.textContent = message;
 }
+
 // ---------------------------------------------------------------------------
 // UI panel — markup and CSS live in index.html; this function wires up
 // event listeners and initialises values from the ui state object.
@@ -602,6 +604,142 @@ function buildUI(ui, cbs) {
       tiltVal.textContent = ui.tiltAngleDeg.toFixed(0);
       requestRender();
    });
+
+   // Instruction page printing
+   function printPreview() {
+      const views = {
+         top: [0, 0, 1],
+         right: [-1, 0, 0],
+         back: [0, 0, -1],
+         front: [0, 1, 0],
+      };
+
+      // render into temporary canvases in the current window
+      const dataURLs = {};
+      const gear = parseInt(designGearEl.value, 10);
+      const designDefinition = {
+         gear: gear,
+         refractiveIndex: ui.ri,
+         facets: designFacets.map((facet, idx) => normalizeDesignFacet(facet, idx)),
+      };
+      const stone = buildStoneFromFacetDesign(designDefinition);
+      const faces = generateFacesFromFacetList(designDefinition.facets, gear);
+      const summary = buildFacetInfo(stone);
+      const size = 500;
+      for (const [name, view] of Object.entries(views)) {
+         const tmp = document.createElement('canvas');
+         tmp.width = size;
+         tmp.height = size;
+         renderOrtho(faces, view, tmp, 1 / modelBoundsRadius, gear);
+         dataURLs[name] = tmp.toDataURL();
+      }
+
+      // build html using <img> tags with the captured pixel data
+      const imgs = Object.entries(dataURLs)
+         .map(([name, url]) => `<img id="${name}" src="${url}" style="width:32%;aspect-ratio:1;">`)
+         .join('\n');
+
+      const printWindow = window.open('', '', 'width=800,height=600');
+      printWindow.document.write(`
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+body { font-family: Arial; margin: 20px; }
+.header { font-size: 24px; font-weight: bold; }
+#facetSplitTabs {
+   display: flex;
+   gap: 4px;
+   margin: 0 0 8px;
+   flex: 0 0 auto;
+}
+#facetSplitTabs .tabBtn {
+   flex: 1;
+   padding: 4px 6px;
+   text-align: center;
+   font-size: 11px;
+   border-radius: 6px;
+   cursor: pointer;
+   border: 1px solid;
+   background: rgba(255,255,255,.05);
+   transition: all .15s;
+   user-select: none;
+}
+#facetSplitTabs .tabBtn.active {
+   background: #7eb8f7;
+   border-color: #7eb8f7;
+   font-weight: 600;
+}
+.facetSplitPanel {
+   display: none;
+   flex: 1 1 auto;
+   min-height: 0;
+   flex-direction: column;
+}
+.facetSplitPanel.active { display: flex; }
+#facetEditPanel { overflow: auto; }
+#facetInstructionsPanel { min-height: 0; }
+#facetInfoList {
+   flex: 1 1 auto; min-height: 0; overflow: auto;
+   display: flex; flex-direction: column; gap: 10px; padding-right: 2px;
+}
+.facetSection {
+   background: rgba(255,255,255,0.03);
+   border-radius: 8px; padding: 8px 10px 10px;
+}
+.facetSectionTitle {
+   font-size: 12px; font-weight: 600;
+   letter-spacing: .05em; text-transform: uppercase; margin: 0 0 6px;
+}
+.facetGroup {
+   display: grid;
+   grid-template-columns: 40px 58px minmax(0,1fr) minmax(0,1.2fr);
+   gap: 4px 10px; align-items: start; padding: 4px 0;
+}
+.facetGroup + .facetGroup { border-top: 1px solid; }
+.facetGroupName,
+.facetGroupAngle { font-size: 12px; font-weight: 600; }
+.facetGroupIndexes,
+.facetGroupInst {
+   font-size: 11px; line-height: 1.45;
+   white-space: pre-wrap; word-break: break-word;
+}
+.facetGroupIndexes { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.facetGroupInst {  }
+.facetEmpty { font-size: 12px; padding: 10px 2px; }
+.facetSummaryCompact {
+   display: flex;
+   flex-wrap: wrap;
+   gap: 6px 10px;
+   margin: 0 0 8px;
+   padding: 6px 8px;
+   border-radius: 8px;
+   border: 1px solid rgba(255,255,255,0.08);
+   background: rgba(255,255,255,0.03);
+   font-size: 11px;
+   line-height: 1.3;
+}
+.facetSummaryCompact strong {
+   font-weight: 600;
+   margin-right: 3px;
+}
+.wrapper { }
+
+  </style>
+</head>
+<body>
+  <div class="header">${currentModelFilename}</div>
+  <div class="wrapper">
+  ${imgs}
+  ${summary}
+  </div>
+</body>
+</html>`);
+      printWindow.document.close();
+      printWindow.onload = () => printWindow.print();
+   }
+   document.getElementById('printInstructions').addEventListener('click', printPreview);
+
 
    // External API for model-loading to push updates into the live panel
    return {
@@ -2075,6 +2213,7 @@ async function setupApp() {
          }
       }
       modelBoundsRadius = Math.max(0.1, computeMeshBoundsRadius(stone.vertexData));
+      console.log(`Model bounds radius: ${modelBoundsRadius.toFixed(3)}`);
 
       const { nodeBuffer, triBuffer } = buildBVH(stone.vertexData, stone.triangleCount);
 
