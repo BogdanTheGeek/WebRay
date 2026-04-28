@@ -115,7 +115,6 @@ function drawDimension(ctx, x1, y1, x2, y2, label, { offset = 0, color = '#000',
 }
 
 function getStoneDimensions(faces, view) {
-   console.log(faces);
    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
    let girdleMin = Infinity, girdleMax = -Infinity;
    faces.forEach(f => {
@@ -143,13 +142,22 @@ function getStoneDimensions(faces, view) {
 function renderOrtho(faces, view, canvas, scale = 1.0, gear) {
 
    const visible = faces.filter(f => dot3(f.normal, view) > 0.01);
-   // only pick the first facet of eatch type for labeling, to avoid duplicates
-   const visibleUnique = new Map();
+
+   const visibleArea = new Map();
    for (const f of visible) {
       const key = `${f.name}:${f.signedAngleDeg.toFixed(2)}`;
-      if (!visibleUnique.has(key)) visibleUnique.set(key, f);
+      const proj = projectOrtho(f.vertices, view);
+      // calculate area of projected face using shoelace formula
+      const area = Math.abs(proj.reduce((sum, p, i) => {
+         const next = proj[(i + 1) % proj.length];
+         return sum + (p[0] * next[1] - next[0] * p[1]);
+      }, 0) / 2);
+
+      if (!visibleArea.has(key) || (area * 0.99) > visibleArea.get(key).area) {
+         visibleArea.set(key, { area, f });
+      }
    }
-   const labels = Array.from(visibleUnique.values());
+   const labels = Array.from(visibleArea.values()).map(v => v.f);
 
    let viewIndex = '';
    if (view[0] === 0 && view[1] === 0 && view[2] === 1) viewIndex = 'top';
@@ -250,24 +258,7 @@ function renderOrtho(faces, view, canvas, scale = 1.0, gear) {
       cy - dimensions.maxY * scaled
    ];
 
-   function shiftLine(arr, offsetX = 0, offsetY = 0) {
-      return [
-         arr[0] + offsetX, arr[1] + offsetY,
-         arr[2] + offsetX, arr[3] + offsetY
-      ];
-   }
-
-   console.log("Calculated dimensions for labeling...", { dimensions, vertRight, vertLeft, horizTop, horizBottom, vertTop, vertBottom });
-
-
-   // const vertLeft = [edgeOffset, edgeOffset * 2, edgeOffset, H - edgeOffset * 2];
-   // const vertRight = [W - edgeOffset, edgeOffset * 2, W - edgeOffset, H - edgeOffset * 2];
-   // const horizTop = [edgeOffset * 2, edgeOffset, W - edgeOffset * 2, edgeOffset];
-   // const horizBottom = [edgeOffset * 2, H - edgeOffset, W - edgeOffset * 2, H - edgeOffset];
-
-
    if (viewIndex === 'top') {
-      console.log('Drawing gear indices for top view...');
       drawGearIndices(ctx, gear, cx, cy, Math.min(W, H) / 2 - 12);
    }
    else if (viewIndex === 'right') {
