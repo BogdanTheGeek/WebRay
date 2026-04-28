@@ -61,7 +61,7 @@ function drawDimension(ctx, x1, y1, x2, y2, label, { offset = 0, color = '#000',
    ctx.save();
    ctx.strokeStyle = color;
    ctx.fillStyle = color;
-   ctx.lineWidth = 1;
+   ctx.lineWidth = 2;
 
    // main dimension line
    ctx.beginPath();
@@ -78,10 +78,10 @@ function drawDimension(ctx, x1, y1, x2, y2, label, { offset = 0, color = '#000',
    });
 
    // leader lines from original points to offset line
-   ctx.setLineDash([2, 3]);
-   ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(ax, ay); ctx.stroke();
-   ctx.beginPath(); ctx.moveTo(x2, y2); ctx.lineTo(bx, by); ctx.stroke();
-   ctx.setLineDash([]);
+   // ctx.setLineDash([2, 3]);
+   // ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(ax, ay); ctx.stroke();
+   // ctx.beginPath(); ctx.moveTo(x2, y2); ctx.lineTo(bx, by); ctx.stroke();
+   // ctx.setLineDash([]);
 
    // label in the middle
    const mx = (ax + bx) / 2, my = (ay + by) / 2;
@@ -91,18 +91,53 @@ function drawDimension(ctx, x1, y1, x2, y2, label, { offset = 0, color = '#000',
    ctx.textBaseline = 'middle';
 
    // white knockout
-   ctx.lineWidth = 3;
+   ctx.lineWidth = 6;
    ctx.strokeStyle = '#ffffff';
    ctx.lineJoin = 'round';
    ctx.save();
    ctx.translate(mx, my);
    // ctx.rotate(angle);
-   ctx.strokeText(label, 0, -6);
+   // ctx.strokeText(label, 0, 0);
+   // draw a white box behind the text for better visibility
+   const metrics = ctx.measureText(label);
+   const padding = 4;
+   const boxWidth = metrics.width + padding * 2;
+   const boxHeight = fontSize + padding * 2;
+   ctx.fillStyle = '#ffffff';
+   ctx.fillRect(-boxWidth / 2, -boxHeight / 2, boxWidth, boxHeight);
+
+   // actual text
    ctx.fillStyle = color;
-   ctx.fillText(label, 0, -6);
+   ctx.fillText(label, 0, 0);
    ctx.restore();
 
    ctx.restore();
+}
+
+function getStoneDimensions(faces, view) {
+   console.log(faces);
+   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+   let girdleMin = Infinity, girdleMax = -Infinity;
+   faces.forEach(f => {
+      const pts = projectOrtho(f.vertices, view);
+      pts.forEach(p => {
+         if (p[0] < minX) minX = p[0];
+         if (p[0] > maxX) maxX = p[0];
+         if (p[1] < minY) minY = p[1];
+         if (p[1] > maxY) maxY = p[1];
+      });
+      if (f.angleDeg > 89 && f.angleDeg < 91) { // girdle facets are ~90 degrees to view
+         pts.forEach(p => {
+            if (p[1] < girdleMin) girdleMin = p[1];
+            if (p[1] > girdleMax) girdleMax = p[1];
+         });
+      }
+   });
+   return {
+      minX, maxX, minY, maxY,
+      girdleMin,
+      girdleMax,
+   };
 }
 
 function renderOrtho(faces, view, canvas, scale = 1.0, gear) {
@@ -177,11 +212,58 @@ function renderOrtho(faces, view, canvas, scale = 1.0, gear) {
    ctx.textAlign = 'left';
    ctx.textBaseline = 'alphabetic';
 
-   const edgeOffset = 50;
-   const vertLeft = [edgeOffset, edgeOffset * 2, edgeOffset, H - edgeOffset * 2];
-   const vertRight = [W - edgeOffset, edgeOffset * 2, W - edgeOffset, H - edgeOffset * 2];
-   const horizTop = [edgeOffset * 2, edgeOffset, W - edgeOffset * 2, edgeOffset];
-   const horizBottom = [edgeOffset * 2, H - edgeOffset, W - edgeOffset * 2, H - edgeOffset];
+   const dimensions = getStoneDimensions(visible, view);
+   const vertRight = [
+      cx + dimensions.maxX * scaled,
+      cy - dimensions.minY * scaled,
+      cx + dimensions.maxX * scaled,
+      cy - dimensions.maxY * scaled
+   ];
+   const vertLeft = [
+      cx + dimensions.minX * scaled,
+      cy - dimensions.minY * scaled,
+      cx + dimensions.minX * scaled,
+      cy - dimensions.maxY * scaled
+   ];
+   const horizTop = [
+      cx + dimensions.minX * scaled,
+      cy - dimensions.maxY * scaled,
+      cx + dimensions.maxX * scaled,
+      cy - dimensions.maxY * scaled
+   ];
+   const horizBottom = [
+      cx + dimensions.minX * scaled,
+      cy - dimensions.minY * scaled,
+      cx + dimensions.maxX * scaled,
+      cy - dimensions.minY * scaled,
+   ];
+   const vertBottom = [
+      cx + dimensions.minX * scaled,
+      cy - dimensions.minY * scaled,
+      cx + dimensions.minX * scaled,
+      cy - dimensions.girdleMin * scaled
+   ];
+   const vertTop = [
+      cx + dimensions.minX * scaled,
+      cy - dimensions.girdleMax * scaled,
+      cx + dimensions.minX * scaled,
+      cy - dimensions.maxY * scaled
+   ];
+
+   function shiftLine(arr, offsetX = 0, offsetY = 0) {
+      return [
+         arr[0] + offsetX, arr[1] + offsetY,
+         arr[2] + offsetX, arr[3] + offsetY
+      ];
+   }
+
+   console.log("Calculated dimensions for labeling...", { dimensions, vertRight, vertLeft, horizTop, horizBottom, vertTop, vertBottom });
+
+
+   // const vertLeft = [edgeOffset, edgeOffset * 2, edgeOffset, H - edgeOffset * 2];
+   // const vertRight = [W - edgeOffset, edgeOffset * 2, W - edgeOffset, H - edgeOffset * 2];
+   // const horizTop = [edgeOffset * 2, edgeOffset, W - edgeOffset * 2, edgeOffset];
+   // const horizBottom = [edgeOffset * 2, H - edgeOffset, W - edgeOffset * 2, H - edgeOffset];
 
 
    if (viewIndex === 'top') {
@@ -189,9 +271,12 @@ function renderOrtho(faces, view, canvas, scale = 1.0, gear) {
       drawGearIndices(ctx, gear, cx, cy, Math.min(W, H) / 2 - 12);
    }
    else if (viewIndex === 'right') {
-      drawDimension(ctx, ...vertRight, 'L');
+      drawDimension(ctx, ...vertRight, 'L', { offset: 15 });
    } else if (viewIndex === 'front') {
-      drawDimension(ctx, ...horizBottom, 'W');
+      drawDimension(ctx, ...horizBottom, 'W', { offset: 15 });
+      // drawDimension(ctx, ...horizTop, 'W', { offset: -15 });
+      drawDimension(ctx, ...vertTop, 'C', { offset: -15 });
+      drawDimension(ctx, ...vertBottom, 'P', { offset: -15 });
    }
 }
 
