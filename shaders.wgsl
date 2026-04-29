@@ -28,6 +28,7 @@ struct Uniforms {
     headShadowR:          f32,          // 260
     headShadowG:          f32,          // 264
     headShadowB:          f32,          // 268
+    convexFacetMode:      f32,          // 272
 };
 
 @group(0) @binding(0) var<uniform>       uniforms:  Uniforms;
@@ -45,6 +46,12 @@ struct BVHNode {
     bmax: vec4<f32>, // xyz = max, w = triCountOrNegRight
 };
 @group(0) @binding(2) var<storage, read> bvhNodes: array<BVHNode>;
+
+struct Facet {
+    normal: vec4<f32>, // xyz = outward normal, w = plane distance
+    data: vec4<f32>,   // x = frosted/material/etc.
+};
+@group(0) @binding(3) var<storage, read> facets: array<Facet>;
 
 // ─────────────────────────────────────────────────
 // Vertex shader
@@ -249,14 +256,14 @@ fn ray_triangle(ro: vec3<f32>, rd: vec3<f32>, triIdx: i32) -> f32 {
 // ─────────────────────────────────────────────────
 struct HitResult { t: f32, normal: vec3<f32>, frosted: f32 };
 
-fn bvh_intersect(ro: vec3<f32>, rd: vec3<f32>, tMax_in: f32) -> HitResult {
+fn bvh_intersect(ro: vec3<f32>, rd: vec3<f32>) -> HitResult {
     var result: HitResult;
     result.t       = -1.0;
     result.normal  = vec3<f32>(0.0, 1.0, 0.0);
     result.frosted = 0.0;
 
     let inv_rd = vec3<f32>(1.0) / rd;
-    var tBest = tMax_in;
+    var tBest = 1e9;
     var bestTri = -1;
 
     const stackSize = 32;
@@ -333,6 +340,38 @@ fn bvh_intersect(ro: vec3<f32>, rd: vec3<f32>, tMax_in: f32) -> HitResult {
     return result;
 }
 
+fn intersect_convex_facets(ro: vec3<f32>, rd: vec3<f32>) -> HitResult {
+    var bestT = 1e9;
+    var bestI = -1;
+    let facetCount = i32(facets[0].data.w);
+
+    for (var i = 0; i < facetCount; i += 1) {
+        let f = facets[i];
+        let n = f.normal.xyz;
+        let d = f.normal.w;
+
+        // Plane: dot(n, p) + d = 0
+        let denom = dot(n, rd);
+
+        // Ignore planes facing away or nearly parallel.
+        if (denom > 0) {
+            let t = (d - dot(n, ro)) / denom;
+            // let t = -(dot(n, ro) + d) / denom;
+
+            if (t > 1e-4 && t < bestT) {
+                bestT = t;
+                bestI = i;
+            }
+        }
+    }
+
+    var hit: HitResult;
+    hit.t = bestT;
+    hit.normal = facets[bestI].normal.xyz;
+    hit.frosted = facets[bestI].data.x;
+    return hit;
+}
+
 // ─────────────────────────────────────────────────
 // trace_internal return value (per R/G/B channel):
 //   light  — brilliance: energy returned toward the viewer
@@ -364,7 +403,13 @@ fn trace_internal(rd_r: vec3<f32>, rd_g: vec3<f32>, rd_b: vec3<f32>,
 
     for (var bounce = 0; bounce < 10; bounce++) {
         // Single BVH traversal using the green (middle) navigator ray
-        let hit = bvh_intersect(origin, g, 1e9);
+        // let hit = bvh_intersect(origin, g);
+        var hit: HitResult;
+        if (uniforms.convexFacetMode > 0.5) {
+             hit = intersect_convex_facets(origin, g);
+        } else {
+             hit = bvh_intersect(origin, g);
+        }
 
         if (hit.t < 0.0) {
             // All channels escaped — sample environment per direction

@@ -114,6 +114,7 @@ const ui = {
    renderScale: 0,
    renderScaleMax: 1,
    exportQualityPx: 1080,
+   convexFacetMode: 0,
 };
 
 // Camera / interaction (survive model reloads)
@@ -862,12 +863,12 @@ async function setupApp() {
    //   240: exitHighlight + str     (16 b)
    //   256: flatShading + headShadow RGB (16 b)
    const uniformBuffer = device.createBuffer({
-      size: 272,
+      size: 288,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
    });
 
    const graphUniformBuffers = Array.from({ length: GRAPH_TILE_COUNT }, () => device.createBuffer({
-      size: 272,
+      size: 288,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
    }));
 
@@ -1212,7 +1213,8 @@ async function setupApp() {
       const gear = parseInt(sourceGear, 10);
       const hasSourceGear = Number.isFinite(gear) && gear > 0;
       if (!hasSourceGear) {
-         throw new Error('Invalid source gear for design facets', { sourceGear });
+         console.warn('Invalid source gear for design facets', { sourceGear });
+         return;
       }
       designGearEl.value = String(gear);
 
@@ -1611,7 +1613,7 @@ async function setupApp() {
    graphResizeObserver.observe(graphPanel);
    graphResizeObserver.observe(graphCanvas);
 
-   const uniformScratch = new Float32Array(272 / 4);
+   const uniformScratch = new Float32Array(288 / 4);
 
    function packUniformData(out, modelMatrix, projectionMatrix, time, lightMode, graphMode, flatShading) {
       out.set(modelMatrix, 0);
@@ -1642,6 +1644,7 @@ async function setupApp() {
       out[65] = ui.headShadowColor[0];
       out[66] = ui.headShadowColor[1];
       out[67] = ui.headShadowColor[2];
+      out[68] = ui.convexFacetMode;
    }
 
    function writeUniformsToBuffer(buffer, modelMatrix, projectionMatrix, time, lightMode, graphMode = 0.0) {
@@ -2199,7 +2202,7 @@ async function setupApp() {
       currentModelFilename = filename;
 
       // WARN: code can create weird exports due to scale, so I disabled it.
-      if (0) {
+      if (options.scaling) {
          const meshNormalization = normalizeMesh(stone.vertexData);
          const meshScale = Number.isFinite(meshNormalization?.scale) ? meshNormalization.scale : null;
          if (Array.isArray(stone.facets) && Number.isFinite(meshScale)) {
@@ -2214,6 +2217,31 @@ async function setupApp() {
       }
       modelBoundsRadius = Math.max(0.1, computeMeshBoundsRadius(stone.vertexData));
       console.log(`Model bounds radius: ${modelBoundsRadius.toFixed(3)}`);
+
+      function buildFacetsBuffer(facets) {
+         /*struct Facet {
+             normal: vec4<f32>, // xyz = outward normal, w = plane distance
+             data: vec4<f32>,   // x = frosted/material/etc.
+         };*/
+         const bufferData = new Float32Array(facets.length * 8);
+         facets.forEach((facet, i) => {
+            const base = i * 8;
+            bufferData[base + 0] = facet.normal[0];
+            bufferData[base + 1] = facet.normal[1];
+            bufferData[base + 2] = facet.normal[2];
+            bufferData[base + 3] = facet.d;
+            bufferData[base + 4] = facet.frosted ? 1 : 0;
+            bufferData[base + 5] = 0; // padding for now, could be used for material ID or something
+            bufferData[base + 6] = 0;
+            bufferData[base + 7] = facets.length;
+         });
+         return bufferData;
+      }
+
+      const sentinelFacet = { normal: [0, 0, 0], d: 0, frosted: false };
+      console.log(stone);
+
+      const facetsBuffer = buildFacetsBuffer(stone.facets.length > 0 ? stone.facets : [sentinelFacet]);
 
       const { nodeBuffer, triBuffer } = buildBVH(stone.vertexData, stone.triangleCount);
 
@@ -2231,22 +2259,27 @@ async function setupApp() {
       const vertexBuffer = makeBuf(stone.vertexData, GPUBufferUsage.VERTEX);
       const triStorageBuffer = makeBuf(triBuffer, GPUBufferUsage.STORAGE);
       const bvhStorageBuffer = makeBuf(nodeBuffer, GPUBufferUsage.STORAGE);
+      const facetsStorageBuffer = makeBuf(facetsBuffer, GPUBufferUsage.STORAGE);
 
       const bindGroup = device.createBindGroup({
+         label: 'Main model bind group',
          layout: pipeline.getBindGroupLayout(0),
          entries: [
             { binding: 0, resource: { buffer: uniformBuffer } },
             { binding: 1, resource: { buffer: triStorageBuffer } },
             { binding: 2, resource: { buffer: bvhStorageBuffer } },
+            { binding: 3, resource: { buffer: facetsStorageBuffer } },
          ],
       });
 
       const graphBindGroups = graphUniformBuffers.map((graphUniformBuffer) => device.createBindGroup({
+         label: 'Graph bind group',
          layout: graphPipeline.getBindGroupLayout(0),
          entries: [
             { binding: 0, resource: { buffer: graphUniformBuffer } },
             { binding: 1, resource: { buffer: triStorageBuffer } },
             { binding: 2, resource: { buffer: bvhStorageBuffer } },
+            { binding: 3, resource: { buffer: facetsStorageBuffer } },
          ],
       }));
 
@@ -2433,16 +2466,23 @@ async function setupApp() {
       const response = await fetch(url);
       const data = await response.arrayBuffer();
       let stone;
+      let convexFacetMode = 1;
+      let scaling = false;
       switch (ext) {
          case '.gem': stone = await loadGEM(data); break;
          case '.gcs': stone = await loadGCS(data); break;
          case '.asc': stone = await loadASC(data); break;
-         default: stone = await loadSTL(data); break;
+         default:
+            stone = await loadSTL(data);
+            convexFacetMode = 0;
+            scaling = true;
+            break;
       }
 
+      ui.convexFacetMode = convexFacetMode;
       designGearEl.value = stone.sourceGear;
 
-      await applyStoneData(filename, stone, { syncDesignFromStone: true, isDesign: false });
+      await applyStoneData(filename, stone, { syncDesignFromStone: true, isDesign: false, scaling });
    }
 
    function shouldKeepRendering() {
