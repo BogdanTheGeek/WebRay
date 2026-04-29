@@ -31,8 +31,20 @@ struct Uniforms {
 };
 
 @group(0) @binding(0) var<uniform>       uniforms:  Uniforms;
-@group(0) @binding(1) var<storage, read> triangles: array<f32>;
-@group(0) @binding(2) var<storage, read> bvhNodes:  array<f32>;
+
+struct Tri {
+    v0: vec4<f32>,      // xyz = v0, w unused/frosted maybe
+    e1: vec4<f32>,      // xyz = v1 - v0
+    e2: vec4<f32>,      // xyz = v2 - v0
+    normal: vec4<f32>,  // xyz = normal, w = frosted
+};
+@group(0) @binding(1) var<storage, read> triangles: array<Tri>;
+
+struct BVHNode {
+    bmin: vec4<f32>, // xyz = min, w = leftOrTriStart
+    bmax: vec4<f32>, // xyz = max, w = triCountOrNegRight
+};
+@group(0) @binding(2) var<storage, read> bvhNodes: array<BVHNode>;
 
 // ─────────────────────────────────────────────────
 // Vertex shader
@@ -141,9 +153,9 @@ fn sample_env_view(dirView: vec3<f32>) -> vec3<f32> {
         if (d.z > 0.0) {
             intensity = rnd_sky(d) * 0.85;
             // Static spotlights (removed time-varying motion)
-            let p1 = normalize(vec3<f32>(0.0, 1.0, 0.0));
-            let p2 = normalize(vec3<f32>(0.5, 0.7, 0.5));
-            let p3 = normalize(vec3<f32>(-0.5, 0.6, 0.4));
+            const p1 = vec3<f32>(0.0, 1.0, 0.0);
+            const p2 = vec3<f32>(0.5, 0.7, 0.5);
+            const p3 = vec3<f32>(-0.57, 0.68, 0.46);
             intensity += pow(max(0.0, dot(d, p1)), 80.0) * 2.5;
             intensity += pow(max(0.0, dot(d, p2)), 80.0) * 1.8;
             intensity += pow(max(0.0, dot(d, p3)), 60.0) * 1.5;
@@ -178,8 +190,16 @@ fn sample_env(dirWorld: vec3<f32>) -> vec3<f32> {
 }
 
 fn aces_tonemap(x: vec3<f32>) -> vec3<f32> {
-    let a = 2.51; let b = 0.03; let c = 2.43; let d = 0.59; let e = 0.14;
+    const a = 2.51; const b = 0.03; const c = 2.43; const d = 0.59; const e = 0.14;
     return clamp((x*(a*x+b))/(x*(c*x+d)+e), vec3<f32>(0.0), vec3<f32>(1.0));
+}
+
+fn aces_tonemap_fast(x: vec3<f32>) -> vec3<f32> {
+    // Pre-compute common values
+    let x2 = x * x;
+    let num = (x2 * 2.51 + x * 0.03);
+    let den = (x2 * 2.43 + x * 0.59 + 0.14);
+    return clamp(num / den, vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
 // ─────────────────────────────────────────────────
@@ -198,25 +218,30 @@ fn ray_aabb(ro: vec3<f32>, inv_rd: vec3<f32>,
 // Möller–Trumbore ray–triangle
 // ─────────────────────────────────────────────────
 fn ray_triangle(ro: vec3<f32>, rd: vec3<f32>, triIdx: i32) -> f32 {
-    let base = triIdx * 13;
-    let v0   = vec3<f32>(triangles[base + 0], triangles[base + 1], triangles[base + 2]);
-    let v1   = vec3<f32>(triangles[base + 3], triangles[base + 4], triangles[base + 5]);
-    let v2   = vec3<f32>(triangles[base + 6], triangles[base + 7], triangles[base + 8]);
-    let e1   = v1 - v0;
-    let e2   = v2 - v0;
-    let h    = cross(rd, e2);
-    let det  = dot(e1, h);
+    let tri = triangles[triIdx];
+
+    let v0 = tri.v0.xyz;
+    let e1 = tri.e1.xyz;
+    let e2 = tri.e2.xyz;
+
+    let h = cross(rd, e2);
+    let det = dot(e1, h);
+
     if (abs(det) < 1e-6) { return -1.0; }
+
     let inv_det = 1.0 / det;
-    let s       = ro - v0;
-    let u       = dot(s, h) * inv_det;
+    let s = ro - v0;
+    let u = dot(s, h) * inv_det;
+
     if (u < 0.0 || u > 1.0) { return -1.0; }
+
     let q = cross(s, e1);
     let v = dot(rd, q) * inv_det;
+
     if (v < 0.0 || u + v > 1.0) { return -1.0; }
+
     let t = dot(e2, q) * inv_det;
-    if (t < 1e-4) { return -1.0; }
-    return t;
+    return select(-1.0, t, t >= 1e-4);
 }
 
 // ─────────────────────────────────────────────────
@@ -226,73 +251,85 @@ struct HitResult { t: f32, normal: vec3<f32>, frosted: f32 };
 
 fn bvh_intersect(ro: vec3<f32>, rd: vec3<f32>, tMax_in: f32) -> HitResult {
     var result: HitResult;
-    result.t      = -1.0;
-    result.normal = vec3<f32>(0.0, 1.0, 0.0);
+    result.t       = -1.0;
+    result.normal  = vec3<f32>(0.0, 1.0, 0.0);
     result.frosted = 0.0;
-    let inv_rd    = vec3<f32>(1.0) / rd;
-    var tBest     = tMax_in;
-    var stack: array<i32, 32>;
-    stack[0]  = 0;
+
+    let inv_rd = vec3<f32>(1.0) / rd;
+    var tBest = tMax_in;
+    var bestTri = -1;
+
+    const stackSize = 32;
+    var stack: array<i32, stackSize>;
+    stack[0] = 0;
     var stackTop = 1;
+
     while (stackTop > 0) {
-        stackTop--;
+        stackTop -= 1;
+
         let nodeIdx = stack[stackTop];
-        let b       = nodeIdx * 8;
-        let bmin    = vec3<f32>(bvhNodes[b + 0], bvhNodes[b + 1], bvhNodes[b + 2]);
-        let bmax    = vec3<f32>(bvhNodes[b + 4], bvhNodes[b + 5], bvhNodes[b + 6]);
-        let ab      = ray_aabb(ro, inv_rd, bmin, bmax);
-        if (ab.y < ab.x || ab.x > tBest) { continue; }
-        let leftOrTriStart  = i32(bvhNodes[b + 3]);
-        let triCountOrRight = bvhNodes[b + 7];
+        let node = bvhNodes[nodeIdx];
+
+        let ab = ray_aabb(ro, inv_rd, node.bmin.xyz, node.bmax.xyz);
+        if (ab.y < ab.x || ab.x > tBest) {
+            continue;
+        }
+
+        let leftOrTriStart = i32(node.bmin.w);
+        let triCountOrRight = node.bmax.w;
+
         if (triCountOrRight > 0.0) {
             let triStart = leftOrTriStart;
             let triCount = i32(triCountOrRight);
-            for (var i = 0; i < triCount; i++) {
-                let t = ray_triangle(ro, rd, triStart + i);
+
+            for (var i = 0; i < triCount; i += 1) {
+                let triIdx = triStart + i;
+                let t = ray_triangle(ro, rd, triIdx);
+
                 if (t > 0.0 && t < tBest) {
-                    tBest         = t;
-                    result.t      = t;
-                    let nb        = (triStart + i) * 13 + 9;
-                    result.normal = vec3<f32>(triangles[nb], triangles[nb+1], triangles[nb+2]);
-                    result.frosted = triangles[nb + 3];
+                    tBest = t;
+                    result.t = t;
+                    bestTri = triIdx;
                 }
             }
         } else {
-            let leftChild  = leftOrTriStart;
+            let leftChild = leftOrTriStart;
             let rightChild = i32(-triCountOrRight) - 1;
-            // Pre-test both children so we only push hits, and push the
-            // farther child first so the nearer one is popped next.
-            let bL   = leftChild * 8;
-            let abL  = ray_aabb(ro, inv_rd,
-                           vec3<f32>(bvhNodes[bL+0], bvhNodes[bL+1], bvhNodes[bL+2]),
-                           vec3<f32>(bvhNodes[bL+4], bvhNodes[bL+5], bvhNodes[bL+6]));
-            let hitL = abL.y >= abL.x && abL.x <= tBest;
 
-            let bR   = rightChild * 8;
-            let abR  = ray_aabb(ro, inv_rd,
-                           vec3<f32>(bvhNodes[bR+0], bvhNodes[bR+1], bvhNodes[bR+2]),
-                           vec3<f32>(bvhNodes[bR+4], bvhNodes[bR+5], bvhNodes[bR+6]));
+            let leftNode = bvhNodes[leftChild];
+            let rightNode = bvhNodes[rightChild];
+
+            let abL = ray_aabb(ro, inv_rd, leftNode.bmin.xyz, leftNode.bmax.xyz);
+            let abR = ray_aabb(ro, inv_rd, rightNode.bmin.xyz, rightNode.bmax.xyz);
+
+            let hitL = abL.y >= abL.x && abL.x <= tBest;
             let hitR = abR.y >= abR.x && abR.x <= tBest;
 
-            if (hitL && hitR && stackTop + 1 < 32) {
-                // Push farther child first (nearer popped first → earlier tBest shrink)
+            if (hitL && hitR && stackTop + 1 < stackSize) {
                 if (abL.x <= abR.x) {
-                    stack[stackTop]     = rightChild;
+                    stack[stackTop] = rightChild;
                     stack[stackTop + 1] = leftChild;
                 } else {
-                    stack[stackTop]     = leftChild;
+                    stack[stackTop] = leftChild;
                     stack[stackTop + 1] = rightChild;
                 }
                 stackTop += 2;
-            } else if (hitL && stackTop < 32) {
+            } else if (hitL && stackTop < stackSize) {
                 stack[stackTop] = leftChild;
                 stackTop += 1;
-            } else if (hitR && stackTop < 32) {
+            } else if (hitR && stackTop < stackSize) {
                 stack[stackTop] = rightChild;
                 stackTop += 1;
             }
         }
     }
+
+    if (bestTri >= 0) {
+        let tri = triangles[bestTri];
+        result.normal = tri.normal.xyz;
+        result.frosted = tri.normal.w;
+    }
+
     return result;
 }
 
@@ -331,11 +368,13 @@ fn trace_internal(rd_r: vec3<f32>, rd_g: vec3<f32>, rd_b: vec3<f32>,
 
         if (hit.t < 0.0) {
             // All channels escaped — sample environment per direction
-            accumulated += throughput * vec3<f32>(
-                sample_env_view((mvMatrix * vec4<f32>(r, 0.0)).xyz).r,
-                sample_env_view((mvMatrix * vec4<f32>(g, 0.0)).xyz).g,
-                sample_env_view((mvMatrix * vec4<f32>(b, 0.0)).xyz).b,
-            );
+            // accumulated += throughput * vec3<f32>(
+            //     sample_env_view((mvMatrix * vec4<f32>(r, 0.0)).xyz).r,
+            //     sample_env_view((mvMatrix * vec4<f32>(g, 0.0)).xyz).g,
+            //     sample_env_view((mvMatrix * vec4<f32>(b, 0.0)).xyz).b,
+            // );
+            let envSample = sample_env_view((mvMatrix * vec4<f32>(g, 0.0)).xyz);
+            accumulated += throughput * envSample;
             break;
         }
 
@@ -426,10 +465,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let N_view = normalize((uniforms.viewMatrix * vec4<f32>(N_world, 0.0)).xyz);
 
         // Four area-spread key lights — directions, diffuse weights, specular exponent
-        let L0 = normalize(vec3<f32>( 0.6,  0.4,  0.7)); // front-right top  (warm key)
-        let L1 = normalize(vec3<f32>(-0.5,  0.3,  0.8)); // front-left top   (fill)
-        let L2 = normalize(vec3<f32>( 0.1, -0.6,  0.6)); // back-right mid   (accent)
-        let L3 = normalize(vec3<f32>(-0.2,  0.8,  0.3)); // left rim         (edge)
+        let L0 = vec3<f32>( 0.6,  0.4,  0.7); // front-right top  (warm key)
+        let L1 = vec3<f32>(-0.5,  0.3,  0.8); // front-left top   (fill)
+        let L2 = vec3<f32>( 0.1, -0.6,  0.6); // back-right mid   (accent)
+        let L3 = vec3<f32>(-0.2,  0.8,  0.3); // left rim         (edge)
 
         // Diffuse — wider falloff (pow 1 = Lambert)
         let d0 = max(0.0, dot(N_view, L0));
@@ -444,17 +483,17 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         let H1 = normalize(L1 - V_view);
         let H2 = normalize(L2 - V_view);
         let H3 = normalize(L3 - V_view);
-        let s0 = pow(max(0.0, dot(N_view, H0)), 22.0) * 0.55;
-        let s1 = pow(max(0.0, dot(N_view, H1)), 18.0) * 0.35;
-        let s2 = pow(max(0.0, dot(N_view, H2)), 14.0) * 0.20;
-        let s3 = pow(max(0.0, dot(N_view, H3)), 10.0) * 0.15;
+        let s0 = pow(dot(N_view, H0), 22.0) * 0.55;
+        let s1 = pow(dot(N_view, H1), 18.0) * 0.35;
+        let s2 = pow(dot(N_view, H2), 14.0) * 0.20;
+        let s3 = pow(dot(N_view, H3), 10.0) * 0.15;
         let spec = s0 + s1 + s2 + s3;
 
         // Silhouette rim
         let rim = pow(1.0 - NdotV, 4.0) * 0.25;
 
         let col = stoneColor * diffuse + vec3<f32>(spec + rim);
-        return vec4<f32>(aces_tonemap(col * 0.3), 1.0);
+        return vec4<f32>(aces_tonemap_fast(col * 0.3), 1.0);
     }
 
     // For a rotation-only model matrix, inverse = transpose of the 3×3 submatrix.
@@ -482,7 +521,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
             let rawLuminance = dot(frostColor, vec3<f32>(0.2126, 0.7152, 0.0722));
             return vec4<f32>(rawLuminance, rawLuminance * tableMask, tableMask, 1.0);
         }
-        return vec4<f32>(aces_tonemap(frostColor), 0.98);
+        return vec4<f32>(aces_tonemap_fast(frostColor), 0.98);
     }
 
     let ri      = cauchy_ri3(uniforms.ri_d, uniforms.cod); // vec3(ri_r, ri_g, ri_b)
@@ -536,8 +575,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     // Scintillation
     let lum = dot(finalColor, vec3<f32>(0.21, 0.72, 0.07));
-    finalColor += pow(lum, 12.0) * 10.0;
+    // finalColor += pow(lum, 12.0) * 10.0;
+    // Pre-compute using cheaper approximations
+    let lum2 = lum * lum;
+    let lum4 = lum2 * lum2;
+    let lum8 = lum4 * lum4;
+    finalColor += lum8 * lum4 * 10.0; // Equivalent to pow(lum, 12)
 
     let alpha = 1.0;
-    return vec4<f32>(aces_tonemap(finalColor * 1.5), alpha);
+    return vec4<f32>(aces_tonemap_fast(finalColor * 1.5), alpha);
 }

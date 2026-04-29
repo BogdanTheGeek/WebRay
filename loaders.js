@@ -1444,7 +1444,40 @@ function buildBVH(vertexData, triangleCount) {
       for (let j = 0; j < floatsPerTriangle; j++) sortedTris[dst + j] = tris[src + j];
    }
 
-   return { nodeBuffer, triBuffer: sortedTris, nodeCount };
+   const packedFloatsPerTriangle = 16;
+   const packedTris = new Float32Array(triangleCount * packedFloatsPerTriangle);
+   for (let i = 0; i < triangleCount; i++) {
+      const t = i * floatsPerTriangle;
+      const pt = i * packedFloatsPerTriangle;
+      // v0
+      packedTris[pt + 0] = sortedTris[t + 0];
+      packedTris[pt + 1] = sortedTris[t + 1];
+      packedTris[pt + 2] = sortedTris[t + 2];
+      // w ignored
+
+      // e1 = v1 - v0
+      packedTris[pt + 4] = sortedTris[t + 3] - sortedTris[t + 0];
+      packedTris[pt + 5] = sortedTris[t + 4] - sortedTris[t + 1];
+      packedTris[pt + 6] = sortedTris[t + 5] - sortedTris[t + 2];
+      // w ignored
+
+      // e2 = v2 - v0
+      packedTris[pt + 8] = sortedTris[t + 6] - sortedTris[t + 0];
+      packedTris[pt + 9] = sortedTris[t + 7] - sortedTris[t + 1];
+      packedTris[pt + 10] = sortedTris[t + 8] - sortedTris[t + 2];
+      // w ignored
+
+      // face normal
+      packedTris[pt + 12] = sortedTris[t + 9];
+      packedTris[pt + 13] = sortedTris[t + 10];
+      packedTris[pt + 14] = sortedTris[t + 11];
+
+      // frosted
+      packedTris[pt + 15] = sortedTris[t + 12];
+
+   }
+
+   return { nodeBuffer, triBuffer: packedTris, nodeCount };
 }
 
 function computeFacetAngleDeg(normal) {
