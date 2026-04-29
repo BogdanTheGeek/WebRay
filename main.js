@@ -797,7 +797,7 @@ async function setupApp() {
 
    const context = canvas.getContext('webgpu');
    const canvasFormat = navigator.gpu.getPreferredCanvasFormat();
-   const mobileRenderDprCap = 1.25;
+   const mobileRenderDprCap = 3; // this used to be important, but the code is fast now.
    const getRenderScaleUpperBound = () => {
       const deviceDpr = Math.max(1, window.devicePixelRatio || 1);
       return isMobileDevice
@@ -806,7 +806,7 @@ async function setupApp() {
    };
    ui.renderScaleMax = getRenderScaleUpperBound();
    if (ui.renderScale <= 0) {
-      ui.renderScale = ui.renderScaleMax;
+      ui.renderScale = isMobileDevice ? Math.min(ui.renderScaleMax, 1.5) : ui.renderScaleMax;
    } else {
       ui.renderScale = clampRenderScale(ui.renderScale, ui.renderScaleMax);
    }
