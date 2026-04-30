@@ -654,6 +654,9 @@ function buildUI(ui, cbs) {
          dataURLs[name] = tmp.toDataURL();
       }
 
+      const graphDataURL = graphCanvas.toDataURL();
+      const graphImg = `<img id="graph" src="${graphDataURL}" class="graph">`;
+
       // build html using <img> tags with the captured pixel data
       const imgs = Object.entries(dataURLs)
          .map(([name, url]) => `<img id="${name}" src="${url}" style="width:32%;aspect-ratio:1;">`)
@@ -666,7 +669,7 @@ function buildUI(ui, cbs) {
 <head>
   <style>
 body { font-family: Arial; margin: 20px; }
-.header { font-size: 18px; font-weight: bold; margin-bottom: 12px; }
+.header { font-size: 18px; font-weight: bold; margin-bottom: 12px; margin-top: 12px; }
 .facetSection {
    padding: 0px 10px 10px;
    width: 100%;
@@ -727,7 +730,16 @@ body { font-family: Arial; margin: 20px; }
    flex-direction:row;
    flex-wrap:wrap;
 }
-
+.graph {
+   max-width: 800px;
+   height: auto;
+   margin-top: 20px;
+   filter: invert(1);
+   border-radius: 8px;
+}
+@media print {
+    .pb { page-break-before: always; }
+}
   </style>
 </head>
 <body>
@@ -735,6 +747,9 @@ body { font-family: Arial; margin: 20px; }
 ${imgs}
 ${summary}
 </div>
+<div class="pb"></div>
+<div class="header">Light Return Graph for RI: ${ui.ri}</div>
+${graphImg}
 </body>
 </html>`);
       printWindow.document.close();
