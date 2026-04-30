@@ -666,46 +666,10 @@ function buildUI(ui, cbs) {
 <head>
   <style>
 body { font-family: Arial; margin: 20px; }
-.header { font-size: 24px; font-weight: bold; }
-#facetSplitTabs {
-   display: flex;
-   gap: 4px;
-   margin: 0 0 8px;
-   flex: 0 0 auto;
-}
-#facetSplitTabs .tabBtn {
-   flex: 1;
-   padding: 4px 6px;
-   text-align: center;
-   font-size: 11px;
-   border-radius: 6px;
-   cursor: pointer;
-   border: 1px solid;
-   background: rgba(255,255,255,.05);
-   transition: all .15s;
-   user-select: none;
-}
-#facetSplitTabs .tabBtn.active {
-   background: #7eb8f7;
-   border-color: #7eb8f7;
-   font-weight: 600;
-}
-.facetSplitPanel {
-   display: none;
-   flex: 1 1 auto;
-   min-height: 0;
-   flex-direction: column;
-}
-.facetSplitPanel.active { display: flex; }
-#facetEditPanel { overflow: auto; }
-#facetInstructionsPanel { min-height: 0; }
-#facetInfoList {
-   flex: 1 1 auto; min-height: 0; overflow: auto;
-   display: flex; flex-direction: column; gap: 10px; padding-right: 2px;
-}
+.header { font-size: 18px; font-weight: bold; margin-bottom: 12px; }
 .facetSection {
-   background: rgba(255,255,255,0.03);
-   border-radius: 8px; padding: 8px 10px 10px;
+   padding: 0px 10px 10px;
+   width: 100%;
 }
 .facetSectionTitle {
    font-size: 12px; font-weight: 600;
@@ -728,16 +692,14 @@ body { font-family: Arial; margin: 20px; }
 .facetGroupInst {  }
 .facetEmpty { font-size: 12px; padding: 10px 2px; }
 .facetSummaryCompact {
-   display: flex;
    flex-wrap: wrap;
    gap: 6px 10px;
    margin: 0 0 8px;
    padding: 6px 8px;
    border-radius: 8px;
-   border: 1px solid rgba(255,255,255,0.08);
-   background: rgba(255,255,255,0.03);
    font-size: 11px;
    line-height: 1.3;
+   white-space: pre-wrap;
 }
 .facetSummaryCompact strong {
    font-weight: 600;
@@ -755,16 +717,24 @@ body { font-family: Arial; margin: 20px; }
    gap: 8px;
    margin: 0 0 6px;
 }
-.wrapper { }
+.facetSummeryComments {
+   white-space-collapse: collapse;
+}
+.wrapper {
+   display: flex;
+   align-items: flex-start;
+   justify-content: flex-start;
+   flex-direction:row;
+   flex-wrap:wrap;
+}
 
   </style>
 </head>
 <body>
-  <div class="header">${currentModelFilename}</div>
-  <div class="wrapper">
-  ${imgs}
-  ${summary}
-  </div>
+<div class="wrapper">
+${imgs}
+${summary}
+</div>
 </body>
 </html>`);
       printWindow.document.close();

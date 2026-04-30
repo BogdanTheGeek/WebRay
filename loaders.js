@@ -274,27 +274,25 @@ function buildFacetInfo(stone) {
    }
 
    const summaryHtml = `
-            <div class="facetSummaryCompact">
-               <div class="facetSectionTitle" style="width:100%">STONE INFO</div>
-               <span><strong>L/W</strong> ${escapeHtml(summary.lw.toFixed(4))}</span>
-               <span><strong>P/W</strong> ${escapeHtml(summary.pw.toFixed(4))}</span>
-               <span><strong>C/W</strong> ${escapeHtml(summary.cw.toFixed(4))}</span>
-               <span><strong>Gear</strong> ${escapeHtml(String(summary.gearUsed))}</span>
-               <span><strong>Facets</strong> ${escapeHtml(`${summary.nonGirdleCount}+${summary.girdleCount}=${summary.totalCount}`)}</span>
-            </div>`;
+<div class="facetSummaryCompact">
+<div class="facetSectionTitle" style="width:100%">STONE INFO</div>
+<span><strong>L/W</strong> ${escapeHtml(summary.lw.toFixed(4))}</span>
+<span><strong>P/W</strong> ${escapeHtml(summary.pw.toFixed(4))}</span>
+<span><strong>C/W</strong> ${escapeHtml(summary.cw.toFixed(4))}</span>
+<span><strong>Gear</strong> ${escapeHtml(String(summary.gearUsed))}</span>
+<span><strong>Facets</strong> ${escapeHtml(`${summary.nonGirdleCount}+${summary.girdleCount}=${summary.totalCount}`)}</span>
+</div>`;
 
    const header = stone.metadata?.title ? `
-      <div class="facetSummaryCompact">
-         <div class="facetSectionTitle" style="width:100%">DESCRIPTION</div>
-         <div class="facetHeader">${escapeHtml(stone.metadata.title)}
-         </div>
-      </div>` : '';
+<div class="facetSummaryCompact">
+<div class="facetSectionTitle" style="width:100%">DESCRIPTION</div>
+<div class="facetHeader">${escapeHtml(stone.metadata.title)}</div>
+</div>` : '';
    const comments = stone.metadata?.comments ? `
-      <div class="facetSummaryCompact">
-         <div class="facetSectionTitle" style="width:100%">NOTES</div>
-         <div class="facetComments">${escapeHtml(stone.metadata.comments)}
-         </div>
-      </div>` : '';
+<div class="facetSummaryCompact facetSummeryComments">
+<div class="facetSectionTitle" style="width:100%">NOTES</div>
+<div class="facetComments">${escapeHtml(stone.metadata.comments)}</div>
+</div>` : '';
 
    return (header + summaryHtml + html.join('') + comments) || '<div class="facetEmpty">No facet notes were found for this model.</div>';
 }
@@ -631,7 +629,7 @@ function buildStoneFromHalfSpacePlanes(planes, refractiveIndex = null, sourceGea
 
    function getSection(angle) {
       if (Math.abs(angle) < TABLE_FACET_MAX_ANGLE_DEG) return 'T';
-      if (Math.abs(angle - 90) < TABLE_FACET_MAX_ANGLE_DEG) return 'G';
+      if (Math.abs(angle) > 89) return 'G';
       if (angle > 0) return 'C';
       return 'P';
    }
