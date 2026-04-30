@@ -591,6 +591,7 @@ function buildStoneFromHalfSpacePlanes(planes, refractiveIndex = null, sourceGea
    const triangles = [];
    const facets = [];
 
+
    for (let pi = 0; pi < n; pi++) {
       const verts = orderFacetVerts(pi, facetVerts[pi], planes, allVerts);
       if (verts.length < 3) continue;
@@ -618,6 +619,34 @@ function buildStoneFromHalfSpacePlanes(planes, refractiveIndex = null, sourceGea
          });
       }
    }
+
+   // Generate keys for facets without names
+   let nameMap = new Map();
+   let tiers = {
+      'P': 0,
+      'C': 0,
+      'G': 0,
+      'T': 0,
+   };
+
+   function getSection(angle) {
+      if (Math.abs(angle) < TABLE_FACET_MAX_ANGLE_DEG) return 'T';
+      if (Math.abs(angle - 90) < TABLE_FACET_MAX_ANGLE_DEG) return 'G';
+      if (angle > 0) return 'C';
+      return 'P';
+   }
+
+   for (const facet of facets) {
+      const key = makeKeyFromFacet(facet);
+      const section = getSection(computeSignedFacetAngleDeg(facet.normal));
+      if (!nameMap.has(key)) nameMap.set(key, `${section}${section === 'T' ? '' : ++tiers[section]}`);
+   }
+   for (const facet of facets) {
+      const key = makeKeyFromFacet(facet);
+      if (facet.name) continue;
+      facet.name = nameMap.get(key);
+   }
+
 
    const triCount = triangles.length;
    const floatsPerVertex = 7;
@@ -941,6 +970,11 @@ async function loadASC(data) {
 
          // `G` ends index/name scanning; everything after is the instruction text
          if (tok === 'G') {
+            if (awaitingName) {
+               currentName = tok;
+               awaitingName = false;
+               continue;
+            }
             instructions = parts.slice(i + 1).join(' ');
             break;
          }

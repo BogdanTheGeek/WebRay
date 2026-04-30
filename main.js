@@ -303,8 +303,9 @@ function getMetadataFromDesign() {
 
 function setMetadataToDesign(metadata) {
    if (metadata.title !== undefined) designHeaderEl.value = metadata.title;
+   else designHeaderEl.value = '';
    if (metadata.comments !== undefined) designFooterEl.value = metadata.comments;
-   console.log('Updated design metadata');
+   else designFooterEl.value = '';
 }
 
 
