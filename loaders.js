@@ -242,6 +242,7 @@ function buildFacetInfo(stone) {
          .replaceAll('<', '&lt;')
          .replaceAll('>', '&gt;')
          .replaceAll('"', '&quot;')
+         .replaceAll('\n', '<br>')
          .replaceAll("'", '&#39;');
    }
 
