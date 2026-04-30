@@ -196,6 +196,8 @@ const facetInstructionsPanelEl = document.getElementById('facetInstructionsPanel
 const facetStatusEl = document.getElementById('facetInfoStatus');
 const facetListEl = document.getElementById('facetInfoList');
 const facetResizeEl = document.getElementById('facetInfoResize');
+const designHeaderEl = document.getElementById('designHeader');
+const designFooterEl = document.getElementById('designFooter');
 const graphCtx = graphCanvas.getContext('2d');
 const graphDpr = window.devicePixelRatio || 1;
 let graphCanvasWidth = 388;
@@ -290,6 +292,21 @@ function applyBodyBackground(ui) {
 function setConvertStatus(message) {
    if (convertStatusEl) convertStatusEl.textContent = message;
 }
+
+function getMetadataFromDesign() {
+   const metadata = {
+      title: designHeaderEl.value,
+      comments: designFooterEl.value,
+   };
+   return metadata;
+}
+
+function setMetadataToDesign(metadata) {
+   if (metadata.title !== undefined) designHeaderEl.value = metadata.title;
+   if (metadata.comments !== undefined) designFooterEl.value = metadata.comments;
+   console.log('Updated design metadata');
+}
+
 
 // ---------------------------------------------------------------------------
 // UI panel — markup and CSS live in index.html; this function wires up
@@ -622,6 +639,7 @@ function buildUI(ui, cbs) {
          gear: gear,
          refractiveIndex: ui.ri,
          facets: designFacets.map((facet, idx) => normalizeDesignFacet(facet, idx)),
+         metadata: getMetadataFromDesign(),
       };
       const stone = buildStoneFromFacetDesign(designDefinition);
       const faces = generateFacesFromFacetList(designDefinition.facets, gear);
@@ -723,6 +741,18 @@ body { font-family: Arial; margin: 20px; }
 .facetSummaryCompact strong {
    font-weight: 600;
    margin-right: 3px;
+}
+.facetHeader {
+   display: flex;
+   align-items: center;
+   gap: 8px;
+   margin: 0 0 6px;
+}
+.facetComments {
+   display: flex;
+   align-items: center;
+   gap: 8px;
+   margin: 0 0 6px;
 }
 .wrapper { }
 
@@ -982,15 +1012,6 @@ async function setupApp() {
    // Camera looks down +Z toward the table
    mat4.lookAt(viewMat, cameraPos, [0, 0, 0], [0, 1, 0]);
 
-   if (facetEditPanelEl && designFacetListEl && designClearBtn) {
-      const mergedControlsEl = document.createElement('div');
-      mergedControlsEl.className = 'designBtnRow';
-      mergedControlsEl.style.marginBottom = '8px';
-      mergedControlsEl.appendChild(designClearBtn);
-      facetEditPanelEl.appendChild(mergedControlsEl);
-      facetEditPanelEl.appendChild(designFacetListEl);
-   }
-
    function setFacetSplitTab(tabName) {
       const isEdit = tabName === 'edit';
       facetEditPanelEl?.classList.toggle('active', isEdit);
@@ -1194,10 +1215,27 @@ async function setupApp() {
          }
       }
 
-      return `<GemCutStudio version="1000">\n    <index symmetry="${fmt(symmetry)}" mirror="${fmt(mirror)}" gear="${gear}"/>\n    <render refractive_index="${fmt(refractiveIndex)}"/>\n${tierXml.join('\n')}\n</GemCutStudio>\n`;
+      function escapeXML(str) {
+         return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/\n/g, '&#10;')
+            .replace(/'/g, '&apos;');
+      }
+
+      const result = `
+<GemCutStudio version="1000">\n
+   <index symmetry="${fmt(symmetry)}" mirror="${fmt(mirror)}" gear="${gear}"/>\n
+   <render refractive_index="${fmt(refractiveIndex)}"/>\
+   n${tierXml.join('\n')}\n
+   <info title="${escapeXML(definition.metadata?.title || '')}" footer1="${escapeXML(definition.metadata?.comments || '')}"/>\n
+</GemCutStudio>\n`;
+      return result;
    }
 
-   function scheduleDesignApply() {
+   function scheduleDesignApply(geometryChanged = true) {
       if (!designFacets.length) {
          updateDesignStatusSummary();
          return;
@@ -1205,7 +1243,7 @@ async function setupApp() {
       if (designApplyTimer) clearTimeout(designApplyTimer);
       designApplyTimer = setTimeout(() => {
          designApplyTimer = null;
-         applyDesignStone();
+         applyDesignStone(geometryChanged);
       }, 20);
    }
 
@@ -1367,6 +1405,7 @@ async function setupApp() {
          gear: parseInt(designGearEl.value, 10),
          refractiveIndex: ui.ri,
          facets: designFacets.map((facet, idx) => normalizeDesignFacet(facet, idx)),
+         metadata: getMetadataFromDesign(),
       };
 
 
@@ -1460,6 +1499,7 @@ async function setupApp() {
       }
       designFacets[facetIdx] = normalizeDesignFacet(nextFacet, facetIdx);
       updateDesignStatusSummary();
+      const geometryChanged = field !== 'name' && field !== 'instructions';
       scheduleDesignApply();
    });
 
@@ -1470,6 +1510,14 @@ async function setupApp() {
       if (!itemEl) return;
       designFacets = designFacets.filter((facet) => facet.id !== itemEl.dataset.id);
       renderDesignFacetList();
+      scheduleDesignApply();
+   });
+
+   designHeaderEl.addEventListener('input', () => {
+      scheduleDesignApply();
+   });
+
+   designFooterEl.addEventListener('input', () => {
       scheduleDesignApply();
    });
 
@@ -2216,7 +2264,7 @@ async function setupApp() {
          }
       }
       modelBoundsRadius = Math.max(0.1, computeMeshBoundsRadius(stone.vertexData));
-      console.log(`Model bounds radius: ${modelBoundsRadius.toFixed(3)}`);
+      console.debug(`Model bounds radius: ${modelBoundsRadius.toFixed(3)}`);
 
       function buildFacetsBuffer(facets) {
          /*struct Facet {
@@ -2239,7 +2287,7 @@ async function setupApp() {
       }
 
       const sentinelFacet = { normal: [0, 0, 0], d: 0, frosted: false };
-      console.log(stone);
+      console.debug(stone);
 
       const facetsBuffer = buildFacetsBuffer(stone.facets.length > 0 ? stone.facets : [sentinelFacet]);
 
@@ -2319,6 +2367,7 @@ async function setupApp() {
             Array.isArray(stone.facets) ? stone.facets : [],
             stone.sourceGear,
          );
+         setMetadataToDesign(stone.metadata);
       }
 
       scheduleGraphUpdate('model load');
@@ -2326,17 +2375,22 @@ async function setupApp() {
       requestRender();
    }
 
-   function applyDesignStone() {
+   function applyDesignStone(geometryChanged = true) {
       if (!designFacets.length) {
          setDesignStatus('Add at least one facet before apply.');
          return;
       }
+      if (!geometryChanged) {
+         return;
+      }
+
       try {
          const gear = parseInt(designGearEl.value, 10);
          const designDefinition = {
             gear: gear,
             refractiveIndex: ui.ri,
             facets: designFacets.map((facet, idx) => normalizeDesignFacet(facet, idx)),
+            metadata: getMetadataFromDesign(),
          };
          const stone = buildStoneFromFacetDesign(designDefinition);
          applyStoneData(currentModelFilename, stone, { syncDesignFromStone: false, isDesign: true });
@@ -2388,6 +2442,7 @@ async function setupApp() {
          gear: gear,
          refractiveIndex: ui.ri,
          facets: designFacets.map((f, idx) => normalizeDesignFacet(f, idx)),
+         metadata: getMetadataFromDesign(),
       };
       const baseStone = buildStoneFromFacetDesign(designDefinition);
       console.debug('Base stone built from design', baseStone);
@@ -2418,6 +2473,7 @@ async function setupApp() {
                gear: gear,
                refractiveIndex: ui.ri,
                facets: designFacets.map((f, idx) => normalizeDesignFacet(f, idx)),
+               metadata: getMetadataFromDesign(),
             };
             let stone = buildStoneFromFacetDesign(designDefinition);
             if (Math.abs(crownVal - 1.0) > 1e-6) stone = stretchStoneByVertices(stone, crownVal, true);

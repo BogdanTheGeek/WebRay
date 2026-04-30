@@ -14,13 +14,14 @@ const EPS = 1e-9;
 const VERTEX_EPS = 1e-6;
 
 class StoneData {
-   constructor(vertexData, triangleCount, facets = [], refractiveIndex = null, dispersion = null, sourceGear) {
+   constructor(vertexData, triangleCount, facets = [], refractiveIndex = null, dispersion = null, sourceGear, metadata = {}) {
       this.vertexData = vertexData;
       this.triangleCount = triangleCount;
       this.facets = facets;
       this.refractiveIndex = refractiveIndex;
       this.dispersion = dispersion;
       this.sourceGear = sourceGear;
+      this.metadata = metadata;
       // console.debug('StoneData created:', this);
    }
 }
@@ -104,6 +105,7 @@ async function loadGCS(data) {
    const text = decoder.decode(data);
    const parser = new XMLParser();
    const doc = parser.parseFromString(text, 'application/xml');
+   let metadata = {};
 
    if (doc.getElementsByTagName('parsererror').length > 0) {
       throw new Error('GCS: XML parse error');
@@ -119,6 +121,31 @@ async function loadGCS(data) {
       const disp = parseFloat(renderEl.getAttribute('dispersion'));
       if (isFinite(disp)) dispersion = disp;
    }
+
+   const infoEl = doc.getElementsByTagName('info')[0];
+   if (infoEl) {
+      const title = infoEl.getAttribute('title') || '';
+      const author = infoEl.getAttribute('author') || '';
+      const date = infoEl.getAttribute('date') || '';
+      const header2 = infoEl.getAttribute('header2') || '';
+      const riMin = parseFloat(infoEl.getAttribute('ri_min'));
+      const riMax = parseFloat(infoEl.getAttribute('ri_max'));
+      const sizeMin = parseFloat(infoEl.getAttribute('size_min'));
+      const sizeMax = parseFloat(infoEl.getAttribute('size_max'));
+      const shape = infoEl.getAttribute('shape') || '';
+      const footer1 = infoEl.getAttribute('footer1') || '';
+      const footer2 = infoEl.getAttribute('footer2') || '';
+      const header = [title, author, date, header2].filter(s => s).join('\n');
+      const comments = [footer1, footer2].filter(s => s).join('\n');
+
+      if (header) metadata.title = header;
+      if (comments) metadata.comments = comments;
+      if (shape) metadata.shape = shape;
+      if (footer1 || footer2) metadata.comments = [footer1, footer2].filter(s => s).join('\n');
+      if (isFinite(riMin) && isFinite(riMax)) metadata.riRange = [riMin, riMax];
+      if (isFinite(sizeMin) && isFinite(sizeMax)) metadata.sizeRange = [sizeMin, sizeMax];
+   }
+
 
    const sourceGear = parseInt(doc.getElementsByTagName('index')[0]?.getAttribute('gear'), 10);
 
@@ -200,7 +227,7 @@ async function loadGCS(data) {
       }
    }
 
-   return new StoneData(vertexData, triCount, facets, refractiveIndex, dispersion, sourceGear);
+   return new StoneData(vertexData, triCount, facets, refractiveIndex, dispersion, sourceGear, metadata);
 }
 
 function buildFacetInfo(stone) {
@@ -255,7 +282,20 @@ function buildFacetInfo(stone) {
                <span><strong>Facets</strong> ${escapeHtml(`${summary.nonGirdleCount}+${summary.girdleCount}=${summary.totalCount}`)}</span>
             </div>`;
 
-   return (summaryHtml + html.join('')) || '<div class="facetEmpty">No facet notes were found for this model.</div>';
+   const header = stone.metadata?.title ? `
+      <div class="facetSummaryCompact">
+         <div class="facetSectionTitle" style="width:100%">DESCRIPTION</div>
+         <div class="facetHeader">${escapeHtml(stone.metadata.title)}
+         </div>
+      </div>` : '';
+   const comments = stone.metadata?.comments ? `
+      <div class="facetSummaryCompact">
+         <div class="facetSectionTitle" style="width:100%">NOTES</div>
+         <div class="facetComments">${escapeHtml(stone.metadata.comments)}
+         </div>
+      </div>` : '';
+
+   return (header + summaryHtml + html.join('') + comments) || '<div class="facetEmpty">No facet notes were found for this model.</div>';
 }
 
 function convertGCSTextToGEMBuffer(gcsText) {
@@ -319,6 +359,22 @@ function convertGCSTextToGEMBuffer(gcsText) {
    const symmetry = parseInt(indexEl?.getAttribute('symmetry') || '0', 10) || 0;
    const mirror = parseInt(indexEl?.getAttribute('mirror') || '0', 10) || 0;
    const gear = parseInt(indexEl?.getAttribute('gear') || '0', 10) || 0;
+
+   const metadata = {};
+   const infoEl = doc.getElementsByTagName('info')[0];
+   if (infoEl) {
+      const title = infoEl.getAttribute('title') || '';
+      const author = infoEl.getAttribute('author') || '';
+      const date = infoEl.getAttribute('date') || '';
+      const header2 = infoEl.getAttribute('header2') || '';
+      const footer1 = infoEl.getAttribute('footer1') || '';
+      const footer2 = infoEl.getAttribute('footer2') || '';
+      const header = [title, author, date, header2].filter(s => s).join('\n');
+      const comments = [footer1, footer2].filter(s => s).join('\n');
+
+      if (header) metadata.title = header;
+      if (comments) metadata.comments = comments;
+   }
 
    let refractiveIndex = 1.76;
    const renderEl = doc.getElementsByTagName('render')[0];
@@ -409,6 +465,25 @@ function convertGCSTextToGEMBuffer(gcsText) {
    writer.writeInt32(mirror);
    writer.writeInt32(gear);
    writer.writeFloat64(refractiveIndex);
+   writer.writeInt32(0); // Gear offset
+
+   function writeMetadata(string) {
+      for (let j = 0; j < 4; j++) {
+         const line = string[j] || '';
+         const bytes = encoder.encode(line);
+         const safeBytes = bytes.length > 255 ? bytes.slice(0, 255) : bytes;
+         writer.writeUint8(safeBytes.length);
+         if (safeBytes.length > 0) {
+            writer.writeBytes(safeBytes);
+         }
+      }
+   }
+
+   const header = metadata.title ? metadata.title.split('\n') : [];
+   const comments = metadata.comments ? metadata.comments.split('\n') : [];
+
+   writeMetadata(header);
+   writeMetadata(comments);
 
    return writer.finish();
 }
@@ -483,7 +558,7 @@ function orderFacetVerts(planeIdx, vindices, planes, allVerts) {
    return angles.map(a => a.vi);
 }
 
-function buildStoneFromHalfSpacePlanes(planes, refractiveIndex = null, sourceGear) {
+function buildStoneFromHalfSpacePlanes(planes, refractiveIndex = null, sourceGear, metadata = {}) {
 
    const allVerts = [];
    function addVertex(pt) {
@@ -562,7 +637,7 @@ function buildStoneFromHalfSpacePlanes(planes, refractiveIndex = null, sourceGea
       }
    }
 
-   return new StoneData(vertexData, triCount, facets, refractiveIndex, null, sourceGear);
+   return new StoneData(vertexData, triCount, facets, refractiveIndex, null, sourceGear, metadata);
 }
 
 function stretchStoneByVertices(stone, scaleFactor, crown = true) {
@@ -792,6 +867,7 @@ async function loadASC(data) {
 
    const planes = [];
    let sawHeader = false;
+   let metadata = {};
 
    for (const rawLine of lines) {
       const line = String(rawLine || '').trim();
@@ -827,10 +903,23 @@ async function loadASC(data) {
          continue;
       }
 
-      // ── H / F / y  — title / footnote / symmetry — skip ────────────────────
-      if (ch === 'H' || ch === 'F' || ch === 'y') continue;
+      // ── H / F / y  — title / footnote ──────────────────────────────────────
+      if (ch === 'H') {
+         if (!metadata.title) metadata.title = '';
+         metadata.title += (metadata.title ? "\n" : "") + parts.slice(1).join(' ');
+         continue;
+      }
 
-      // ── a  facet line ────────────────────────────────────────────────────────
+      if (ch === 'F') {
+         if (!metadata.comments) metadata.comments = '';
+         metadata.comments += (metadata.comments ? "\n" : "") + parts.slice(1).join(' ');
+         continue;
+      }
+
+      // ──  y — symmetry — skip ───────────────────────────────────────────────
+      if (ch === 'y') continue;
+
+      // ── a  facet line ──────────────────────────────────────────────────────
       if (ch !== 'a') continue;
 
       const angle = parseFloat(parts[1]);
@@ -932,7 +1021,7 @@ async function loadASC(data) {
    if (!sawHeader) throw new Error('ASC: missing GemCad header');
    if (!planes.length) throw new Error('ASC: no facets found');
 
-   return buildStoneFromHalfSpacePlanes(planes, refractiveIndex, igear);
+   return buildStoneFromHalfSpacePlanes(planes, refractiveIndex, igear, metadata);
 }
 
 function computeNormalFromPolar(angleDeg, index, gear, gearOffset = 0) {
@@ -1047,7 +1136,7 @@ function buildStoneFromFacetDesign(definition = {}) {
       throw new Error('Design: no facets defined');
    }
 
-   return buildStoneFromHalfSpacePlanes(planes, refractiveIndex, gear);
+   return buildStoneFromHalfSpacePlanes(planes, refractiveIndex, gear, definition.metadata || {});
 }
 
 // ---------------------------------------------------------------------------
@@ -1173,12 +1262,39 @@ async function loadGEM(buffer) {
    let refractiveIndex = 1.77; // default: corundum, reasonable fallback
    let sourceGear = null;
    let sym = 0, mirrorSym = 0;
+   let gearOff = 0;
    if (offset + I32 * 3 + F64 <= buffer.byteLength) {
       sym = view.getInt32(offset, true); offset += I32; // nsym
       mirrorSym = view.getInt32(offset, true); offset += I32; // mirror_sym
       const tailGear = view.getInt32(offset, true); offset += I32; // igear
       sourceGear = Math.abs(tailGear); // For some reason, gear is sometimes negative.
-      refractiveIndex = view.getFloat64(offset, true);
+      refractiveIndex = view.getFloat64(offset, true); offset += F64;
+   }
+
+   if (offset + 1 <= buffer.byteLength) {
+      const i = view.getInt32(offset, true); offset += I32;
+      if (i === 32767) {
+         gearOff = view.getFloat64(offset, true); offset += F64;
+      } else {
+         gearOff = i;
+      }
+   }
+
+   let metadata = {};
+   for (let j = 0; j < 8 && offset < buffer.byteLength; j++) {
+      const byte = view.getUint8(offset); offset += 1;
+      if (byte === 0) continue; // skip null bytes
+      if (byte === 0xFF) break;
+      const strView = new DataView(buffer, offset, byte);
+      const str = new TextDecoder().decode(new Uint8Array(strView.buffer, strView.byteOffset, strView.byteLength));
+      offset += byte;
+      if (j < 4) {
+         if (!metadata.title) metadata.title = '';
+         metadata.title += (metadata.title ? "\n" : "") + str.trim();
+      } else {
+         if (!metadata.comments) metadata.comments = '';
+         metadata.comments += (metadata.comments ? "\n" : "") + str.trim();
+      }
    }
 
    // ── 3. Reconstruct vertices by 3-plane intersection ──────────────────────
@@ -1273,7 +1389,7 @@ async function loadGEM(buffer) {
       }
    }
 
-   return new StoneData(vertexData, triCount, facets, refractiveIndex, null, sourceGear);
+   return new StoneData(vertexData, triCount, facets, refractiveIndex, null, sourceGear, metadata);
 }
 
 function normalizeMesh(data) {

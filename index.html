@@ -254,6 +254,18 @@
             padding: 4px 6px;
             font-size: 12px;
         }
+        .designRow textarea {
+            width: 100%;
+            box-sizing: border-box;
+            background: #1a1a22;
+            color: #e8e8e8;
+            border: 1px solid rgba(255,255,255,.15);
+            border-radius: 6px;
+            padding: 4px 6px;
+            font-size: 12px;
+            resize: vertical;
+            min-height: 60px;
+        }
         .designGrid {
             display: grid;
             grid-template-columns: repeat(1, minmax(0, 1fr));
@@ -296,32 +308,29 @@
         }
         .designBtn:hover { border-color: rgba(255,255,255,.28); color: #fff; }
         #designFacetList {
-            min-height: 0;
-            overflow: auto;
+            <!-- min-height: 0; -->
+            <!-- overflow: hidden; -->
         }
         .designFacetTable {
             width: 100%;
-            border-collapse: collapse;
             table-layout: fixed;
             font-size: 11px;
             border: 1px solid rgba(255,255,255,0.08);
             border-radius: 8px;
-            overflow: hidden;
+            <!-- overflow: auto; -->
             background: rgba(255,255,255,0.03);
         }
         .designFacetTable thead th {
             text-align: left;
             font-weight: 600;
             color: #dce6f5;
-            background: rgba(255,255,255,0.06);
             padding: 6px 6px;
             border-bottom: 1px solid rgba(255,255,255,0.10);
-            position: sticky;
+            <!-- position: sticky; -->
             top: 0;
             z-index: 1;
         }
         .designFacetTable tbody td {
-            padding: 4px 4px;
             border-bottom: 1px solid rgba(255,255,255,0.06);
             vertical-align: middle;
         }
@@ -463,6 +472,18 @@
             font-weight: 600;
             margin-right: 3px;
         }
+        .facetHeader {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: 0 0 6px;
+        }
+        .facetComments {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: 0 0 6px;
+        }
 
         .warning {
             color:#ffb380;
@@ -601,7 +622,20 @@
                         <div class="tabBtn" data-facet-tab="edit">Edit</div>
                         <div class="tabBtn" id="printInstructions">Print</div>
                     </div>
-                    <div id="facetEditPanel" class="facetSplitPanel"></div>
+                    <div id="facetEditPanel" class="facetSplitPanel">
+                       <div class="designBtnRow" style="margin-bottom:8px;">
+                          <div class="designBtn" id="designClearBtn">Clear All</div>
+                       </div>
+                       <div id="designFacetList" style="margin-bottom:8px;"></div>
+                      <div class="designRow">
+                         <label>Header</label>
+                         <textarea id="designHeader"></textarea>
+                      </div>
+                      <div class="designRow">
+                         <label>Footer</label>
+                         <textarea id="designFooter"></textarea>
+                      </div>
+                    </div>
                     <div id="facetInstructionsPanel" class="facetSplitPanel">
                         <div id="facetInfoStatus">Waiting for model&hellip;</div>
                         <div id="facetInfoList"></div>
@@ -811,12 +845,6 @@
                                <div class="designBtn" id="designApplyScaleBtn">Apply Scale</div>
                                <div class="designBtn" id="designResetScaleBtn">Reset</div>
                             </div>
-                        </div>
-                        <div id="designFacetSource" style="display:none;">
-                            <div class="designBtnRow" style="margin-bottom:8px;">
-                                <div class="designBtn" id="designClearBtn">Clear All</div>
-                            </div>
-                            <div id="designFacetList"></div>
                         </div>
                     </div>
             <hr class="divider">
