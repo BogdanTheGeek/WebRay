@@ -1313,7 +1313,7 @@ async function setupApp() {
             <td class="cellMirror"><label class="check"><input data-field="mirror" type="checkbox" ${facet.mirror ? 'checked' : ''}></label></td>
             <td class="cellNum"><input data-field="angleDeg" type="number" min="-90" max="90" step="0.001" value="${facet.angleDeg.toFixed(4)}"></td>
             <td class="cellNum"><input data-field="startIndex" type="number" min="0" max="360" step="1" value="${facet.startIndex}"></td>
-            <td class="cellNum"><input data-field="distance" type="number" min="0" max="5" step="0.00001" value="${facet.distance.toFixed(5)}"></td>
+            <td class="cellNum"><input data-field="distance" type="number" min="-5" max="5" step="0.00001" value="${facet.distance.toFixed(5)}"></td>
             <td class="cellInst"><input data-field="instructions" type="text" value="${escapeHtml(facet.instructions || '')}"></td>
             <td class="cellRemove"><button class="designFacetRemove" type="button" data-remove="1">X</button></td>
          </tr>
@@ -2724,9 +2724,17 @@ async function setupApp() {
       const gear = Math.max(1, parseInt(designGearEl.value, 10) || 96);
       const rawIndex = parseFloat(designStartIndexEl.value) || 0;
       const angleDeg = Math.max(-90, Math.min(90, parseFloat(designAngleEl.value) || 0));
+      const distance = parseFloat(designDistanceEl.value);
+
+      const isNegativeZero = (value) => value === 0 && 1 / value === -Infinity;
+      const resolveFlatNormalZ = (angle, depth) => {
+         if (Number.isFinite(depth) && depth < 0) return -1;
+         if (angle < 0 || isNegativeZero(angle)) return -1;
+         return 1;
+      };
 
       if (Math.abs(angleDeg) <= 1e-8) {
-         return [0, 0, angleDeg >= 0 ? 1 : -1];
+         return [0, 0, resolveFlatNormalZ(angleDeg, distance)];
       }
 
       const incl = angleDeg * Math.PI / 180;

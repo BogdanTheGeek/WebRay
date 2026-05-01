@@ -12,6 +12,21 @@ if (typeof window === 'undefined') {
 const TABLE_FACET_MAX_ANGLE_DEG = 1.5;
 const EPS = 1e-9;
 const VERTEX_EPS = 1e-6;
+const FLAT_FACET_ANGLE_EPS_DEG = 1e-8;
+
+function isNegativeZero(value) {
+   return value === 0 && 1 / value === -Infinity;
+}
+
+function isFlatFacetAngleDeg(angleDeg) {
+   return Math.abs(angleDeg) <= FLAT_FACET_ANGLE_EPS_DEG;
+}
+
+function resolveFlatFacetNormalZ(angleDeg, distance) {
+   if (Number.isFinite(distance) && distance < 0) return -1;
+   if (angleDeg < 0 || isNegativeZero(angleDeg)) return -1;
+   return 1;
+}
 
 class StoneData {
    constructor(vertexData, triangleCount, facets = [], refractiveIndex = null, dispersion = null, sourceGear, metadata = {}) {
@@ -1046,9 +1061,9 @@ async function loadASC(data) {
          let normal;
          let d;
 
-         if (angle === 0) {
+         if (isFlatFacetAngleDeg(angle)) {
             // Flat table / culet
-            normal = rho >= 0 ? [0, 0, 1] : [0, 0, -1];
+            normal = [0, 0, resolveFlatFacetNormalZ(angle, rho)];
             d = Math.abs(rho);
          } else {
             normal = polarPlane(Math.abs(angle), index, igear);
@@ -1080,8 +1095,8 @@ async function loadASC(data) {
 }
 
 function computeNormalFromPolar(angleDeg, index, gear, gearOffset = 0) {
-   if (Math.abs(angleDeg) <= 1e-8) {
-      return [0, 0, angleDeg >= 0 ? 1 : -1];
+   if (isFlatFacetAngleDeg(angleDeg)) {
+      return [0, 0, resolveFlatFacetNormalZ(angleDeg)];
    }
    const incl = angleDeg * Math.PI / 180;
    const azi = (index - gearOffset) * 2 * Math.PI / gear;
@@ -1120,7 +1135,8 @@ function buildStoneFromFacetDesign(definition = {}) {
       const startIndex = Number.isFinite(startRaw) ? wrapGearIndex(startRaw, gear) : 1;
 
       const distanceRaw = parseFloat(facet?.distance);
-      const d = Number.isFinite(distanceRaw) ? Math.max(1e-5, Math.abs(distanceRaw)) : 1.0;
+      const distance = Number.isFinite(distanceRaw) ? distanceRaw : 1.0;
+      const d = Math.max(1e-5, Math.abs(distance));
 
       const mirror = Boolean(facet?.mirror);
       const step = gear / symmetry;
@@ -1149,8 +1165,8 @@ function buildStoneFromFacetDesign(definition = {}) {
          }
       }
 
-      if (Math.abs(angleDeg) <= 1e-8) {
-         const normal = [0, 0, angleDeg >= 0 ? 1 : -1];
+      if (isFlatFacetAngleDeg(angleDeg)) {
+         const normal = [0, 0, resolveFlatFacetNormalZ(angleDeg, distance)];
          planes.push({
             a: normal[0],
             b: normal[1],
@@ -1721,7 +1737,9 @@ function hasUniqueTableFacet(facets = []) {
 function computeFacetGearIndex(normal, gear) {
    const x = normal[0] ?? 0;
    const y = normal[1] ?? 0;
-   if (Math.abs(x) < 1e-6 && Math.abs(y) < 1e-6) return 'Table';
+   if (Math.abs(x) < 1e-6 && Math.abs(y) < 1e-6) {
+      return (normal[2] ?? 1) < 0 ? 'Culet' : 'Table';
+   }
 
    const g = gear;
    const turns = Math.atan2(x, -y) / (Math.PI * 2);
@@ -1731,7 +1749,13 @@ function computeFacetGearIndex(normal, gear) {
    return String(gearIndex).padStart(Math.max(2, String(g).length), '0');
 }
 
-function getFacetSection(angle) {
+function isDownFacingFlatFacet(normal) {
+   const nz = Number(normal?.[2]);
+   return Number.isFinite(nz) && nz < 0 && isFlatFacetAngleDeg(computeFacetAngleDeg(normal));
+}
+
+function getFacetSection(angle, normal = null) {
+   if (normal && isDownFacingFlatFacet(normal)) return 'PAVILION';
    if (angle < -1 || angle > 89) return 'PAVILION';
    return 'CROWN';
 }
@@ -1754,7 +1778,7 @@ function groupFacetInfo(facets = [], gear) {
       if (!entry) {
          entry = {
             ...facet,
-            section: getFacetSection(angle),
+            section: getFacetSection(angle, facet.normal),
             name,
             angle,
             angleLabel: `${angleLabel}°`,
@@ -1764,7 +1788,7 @@ function groupFacetInfo(facets = [], gear) {
          grouped.set(key, entry);
          sections.get(entry.section)?.push(entry);
       } else if ((entry.name === '?' || !entry.name) && name !== '?') {
-         const nextSection = getFacetSection(angle);
+         const nextSection = getFacetSection(angle, facet.normal);
          if (entry.section !== nextSection) {
             const currentEntries = sections.get(entry.section);
             const currentIndex = currentEntries?.indexOf(entry) ?? -1;
@@ -1926,6 +1950,17 @@ function groupExternalFacetsForDesign(facets = [], gear) {
 
          const indexes = indexedFromNotes.length ? indexedFromNotes : indexedFromSource;
          const inferred = inferSymmetryMirrorFromIndexes(indexes, gear);
+         const sampleNormal = sampleFacet?.normal || entry.normal;
+         const downFacingFlat = isDownFacingFlatFacet(sampleNormal);
+         const signedAngle = sampleFacet
+            ? computeSignedFacetAngleDeg(sampleFacet.normal)
+            : entry.angle;
+         const baseDistance = Number.isFinite(entry?.d)
+            ? Number(entry.d)
+            : Number(sampleFacet?.d);
+         const distance = downFacingFlat
+            ? -Math.abs(Number.isFinite(baseDistance) ? baseDistance : 1)
+            : Math.abs(Number.isFinite(baseDistance) ? baseDistance : 1);
 
          groupedFacets.push({
             id: `${Date.now()}-${groupedFacets.length}-${Math.random().toString(36).slice(2, 8)}`,
@@ -1933,11 +1968,9 @@ function groupExternalFacetsForDesign(facets = [], gear) {
             instructions: String(entry.instructions || sampleFacet?.instructions || ''),
             symmetry: inferred.symmetry,
             mirror: inferred.mirror,
-            angleDeg: sampleFacet
-               ? computeSignedFacetAngleDeg(sampleFacet.normal)
-               : entry.angle,
+            angleDeg: downFacingFlat ? -0 : signedAngle,
             startIndex: inferred.startIndex,
-            distance: entry.d,
+            distance,
             indexes: indexes.length ? [...new Set(indexes)] : undefined,
          });
       }
@@ -1958,15 +1991,21 @@ function normalizeDesignFacet(inputFacet = {}, fallbackIndex = 0) {
             .filter((value) => Number.isFinite(value) && value > 0),
       )].sort((a, b) => a - b)
       : null;
+   const angleDeg = Math.max(-90, Math.min(90, Number.isFinite(parsedAngleDeg) ? parsedAngleDeg : 0));
+   const rawDistance = Number.isFinite(parsedDistance) ? parsedDistance : 0;
+   const normalizedDistance = isFlatFacetAngleDeg(angleDeg)
+      ? rawDistance
+      : Math.max(0, Math.abs(rawDistance));
+
    const next = {
       id: inputFacet.id || `${Date.now()}-${fallbackIndex}-${Math.random().toString(36).slice(2, 8)}`,
       name: String(inputFacet.name || `F${fallbackIndex + 1}`).trim() || `F${fallbackIndex + 1}`,
       instructions: String(inputFacet.instructions || '').trim(),
       symmetry: parsedSymmetry,
       mirror: Boolean(inputFacet.mirror),
-      angleDeg: Math.max(-90, Math.min(90, Number.isFinite(parsedAngleDeg) ? parsedAngleDeg : 0)),
+      angleDeg,
       startIndex: Math.max(0, Math.min(360, Math.round(Number.isFinite(parsedStartIndex) ? parsedStartIndex : 0))),
-      distance: Math.max(0, Number.isFinite(parsedDistance) ? parsedDistance : 0),
+      distance: normalizedDistance,
       indexes: parsedIndexes && parsedIndexes.length ? parsedIndexes : undefined,
    };
    return next;
@@ -2011,7 +2050,13 @@ function generateFacesFromFacetList(facetList = [], gear = 96) {
          if (!Number.isFinite(len) || len < EPS) continue;
          normal = [normal[0] / len, normal[1] / len, normal[2] / len];
          if (!Number.isFinite(d)) d = 1.0;
-         if (d < 0) { normal = [-normal[0], -normal[1], -normal[2]]; d = -d; }
+         if (d < 0 && isFlatFacetAngleDeg(angleDeg)) {
+            normal = [0, 0, -1];
+            d = -d;
+         } else if (d < 0) {
+            normal = [-normal[0], -normal[1], -normal[2]];
+            d = -d;
+         }
 
          planes.push({ a: normal[0], b: normal[1], c: normal[2], d, name: facet.name, instructions: facet.instructions, frosted: Boolean(facet.frosted), index: idx });
       }
