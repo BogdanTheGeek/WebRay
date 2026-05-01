@@ -189,7 +189,7 @@ const graphToggleEl = document.getElementById('lightReturnToggle');
 const graphBodyEl = document.getElementById('lightReturnBody');
 const graphResizeEl = document.getElementById('lightReturnResize');
 const graphStatusEl = document.getElementById('lightReturnStatus');
-const graphCanvas = document.getElementById('lightReturnCanvas');
+const graphSvgEl = document.getElementById('lightReturnSvg');
 const facetToggleEl = document.getElementById('facetInfoToggle');
 const facetSplitTabsEl = document.getElementById('facetSplitTabs');
 const facetEditPanelEl = document.getElementById('facetEditPanel');
@@ -199,8 +199,6 @@ const facetListEl = document.getElementById('facetInfoList');
 const facetResizeEl = document.getElementById('facetInfoResize');
 const designHeaderEl = document.getElementById('designHeader');
 const designFooterEl = document.getElementById('designFooter');
-const graphCtx = graphCanvas.getContext('2d');
-const graphDpr = window.devicePixelRatio || 1;
 let graphCanvasWidth = 388;
 let graphCanvasHeight = 220;
 let latestGraphSeries = null;
@@ -208,6 +206,124 @@ let latestFacetInfo = [];
 let designFacets = [];
 let designApplyTimer = null;
 let modelHasTableFacet = false;
+
+const GRAPH_THEME_DARK = {
+   bg: 'rgba(255,255,255,0.04)',
+   grid: 'rgba(255,255,255,0.08)',
+   axis: '#cfcfcf',
+   text: '#aaa',
+   legendText: '#ddd',
+   lineColors: {
+      ISO: '#e8e8e8',
+      COS: '#ff5f5f',
+      SC2: '#59e35f',
+      'ISO table': '#bfbfbf',
+      'COS table': '#ff9393',
+      'SC2 table': '#91e995',
+   },
+};
+
+const GRAPH_THEME_LIGHT = {
+   bg: '#ffffff',
+   grid: '#d7d7d7',
+   axis: '#555555',
+   text: '#333333',
+   legendText: '#111111',
+   lineColors: {
+      ISO: '#1f1f1f',
+      COS: '#a31a1a',
+      SC2: '#1d7e13',
+      'ISO table': '#4f4f4f',
+      'COS table': '#c86a6a',
+      'SC2 table': '#5aa160',
+   },
+};
+
+function getThemeSeriesColor(theme, series) {
+   const label = String(series?.label || '').trim();
+   const mapped = theme?.lineColors?.[label];
+   if (mapped) return mapped;
+   const baseLabel = label.replace(/\s+table$/i, '');
+   const baseMapped = theme?.lineColors?.[baseLabel];
+   if (baseMapped) return baseMapped;
+   return series?.color || '#cccccc';
+}
+
+function escapeGraphText(text) {
+   return String(text)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#39;');
+}
+
+function buildGraphSvgInner(seriesList, width, height, theme) {
+   const W = Math.max(220, Math.round(width || 388));
+   const H = Math.max(140, Math.round(height || 220));
+   const padL = 36;
+   const padR = 12;
+   const padT = 12;
+   const padB = 26;
+   const plotW = W - padL - padR;
+   const plotH = H - padT - padB;
+   const toX = (tilt) => padL + ((tilt - GRAPH_TILT_MIN) / (GRAPH_TILT_MAX - GRAPH_TILT_MIN)) * plotW;
+   const toY = (value) => padT + plotH - (Math.max(0, Math.min(100, value)) / 100) * plotH;
+
+   const parts = [];
+   parts.push(`<rect x="0" y="0" width="${W}" height="${H}" fill="${theme.bg}"/>`);
+
+   const gridCountY = 10;
+   const gridCountX = 12;
+   for (let y = 0; y <= gridCountY; y++) {
+      const py = padT + (plotH * y / gridCountY);
+      parts.push(`<line x1="${padL}" y1="${py.toFixed(3)}" x2="${(W - padR).toFixed(3)}" y2="${py.toFixed(3)}" stroke="${theme.grid}" stroke-width="1"/>`);
+   }
+   for (let x = 0; x <= gridCountX; x++) {
+      const px = padL + (plotW * x / gridCountX);
+      parts.push(`<line x1="${px.toFixed(3)}" y1="${padT}" x2="${px.toFixed(3)}" y2="${(H - padB).toFixed(3)}" stroke="${theme.grid}" stroke-width="1"/>`);
+   }
+
+   parts.push(`<polyline points="${padL},${padT} ${padL},${H - padB} ${W - padR},${H - padB}" fill="none" stroke="${theme.axis}" stroke-width="1.2"/>`);
+
+   for (let v = 0; v <= 100; v += 20) {
+      const py = toY(v);
+      parts.push(`<text x="${padL - 6}" y="${py}" text-anchor="end" dominant-baseline="middle" font-family="system-ui, sans-serif" font-size="11" fill="${theme.text}">${v}</text>`);
+   }
+
+   for (let x = GRAPH_TILT_MIN; x <= GRAPH_TILT_MAX; x += 10) {
+      const px = toX(x);
+      parts.push(`<text x="${px}" y="${H - padB + 17}" text-anchor="middle" dominant-baseline="middle" font-family="system-ui, sans-serif" font-size="11" fill="${theme.text}">${x}</text>`);
+   }
+
+   for (const series of seriesList) {
+      const seriesColor = getThemeSeriesColor(theme, series);
+      const path = (series.points || []).map((point, idx) => {
+         const x = toX(point.tilt).toFixed(3);
+         const y = toY(point.value).toFixed(3);
+         return `${idx === 0 ? 'M' : 'L'} ${x} ${y}`;
+      }).join(' ');
+      const dashAttr = series.dashed ? ' stroke-dasharray="6 4"' : '';
+      parts.push(`<path d="${path}" fill="none" stroke="${seriesColor}" stroke-width="${series.dashed ? 1.5 : 2}" stroke-linecap="round"${dashAttr}/>`);
+   }
+
+   seriesList.forEach((series, idx) => {
+      const y = padT + 8 + idx * 16;
+      const seriesColor = getThemeSeriesColor(theme, series);
+      const dashAttr = series.dashed ? ' stroke-dasharray="6 4"' : '';
+      parts.push(`<line x1="${W - padR - 90}" y1="${y}" x2="${W - padR - 62}" y2="${y}" stroke="${seriesColor}" stroke-width="${series.dashed ? 1.5 : 2}"${dashAttr}/>`);
+      parts.push(`<text x="${W - padR - 56}" y="${y}" text-anchor="start" dominant-baseline="middle" font-family="system-ui, sans-serif" font-size="11" fill="${theme.legendText}">${escapeGraphText(series.label || '')}</text>`);
+   });
+
+   return parts.join('');
+}
+
+function buildGraphSvgMarkup(seriesList, width, height, printTheme = false) {
+   const W = Math.max(220, Math.round(width || 388));
+   const H = Math.max(140, Math.round(height || 220));
+   const theme = printTheme ? GRAPH_THEME_LIGHT : GRAPH_THEME_DARK;
+   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}">${buildGraphSvgInner(seriesList, W, H, theme)}</svg>`;
+}
 
 function hexToRgb(hex) {
    const r = parseInt(hex.slice(1, 3), 16) / 255;
@@ -655,8 +771,13 @@ function buildUI(ui, cbs) {
          dataURLs[name] = tmp.toDataURL();
       }
 
-      const graphDataURL = graphCanvas.toDataURL();
-      const graphImg = `<img id="graph" src="${graphDataURL}" class="graph">`;
+      const graphSvg = buildGraphSvgMarkup(
+         latestGraphSeries || [],
+         640,
+         426,
+         true,
+      );
+      const graphImg = `<div id="graph" class="graph">${graphSvg}</div>`;
 
       // build html using <img> tags with the captured pixel data
       const imgs = Object.entries(dataURLs)
@@ -732,11 +853,15 @@ body { font-family: Arial; margin: 20px; }
    flex-wrap:wrap;
 }
 .graph {
-   max-width: 800px;
+   width: min(100%, 640px);
    height: auto;
+   aspect-ratio: 3 / 2;
    margin-top: 20px;
-   filter: invert(1);
+   margin-left: auto;
+   margin-right: auto;
+   background: #fff;
    border-radius: 8px;
+   border: 1px solid #ddd;
 }
 @media print {
     .pb { page-break-before: always; }
@@ -1017,13 +1142,11 @@ async function setupApp() {
    setFacetSplitTab('instructions');
 
    function resizeGraphCanvas() {
-      const nextWidth = Math.max(220, Math.round(graphCanvas.clientWidth || graphBodyEl.clientWidth));
-      const nextHeight = Math.max(140, Math.round(graphCanvas.clientHeight || 220));
+      const nextWidth = Math.max(220, Math.round(graphSvgEl?.clientWidth || graphBodyEl.clientWidth));
+      const nextHeight = Math.max(140, Math.round(graphSvgEl?.clientHeight || 220));
       graphCanvasWidth = nextWidth;
       graphCanvasHeight = nextHeight;
-      graphCanvas.width = Math.round(graphCanvasWidth * graphDpr);
-      graphCanvas.height = Math.round(graphCanvasHeight * graphDpr);
-      graphCtx.setTransform(graphDpr, 0, 0, graphDpr, 0, 0);
+      if (graphSvgEl) graphSvgEl.setAttribute('viewBox', `0 0 ${graphCanvasWidth} ${graphCanvasHeight}`);
       if (latestGraphSeries && !graphPanel.classList.contains('collapsed')) drawGraph(latestGraphSeries);
    }
 
@@ -1747,7 +1870,7 @@ async function setupApp() {
       if (!graphPanel.classList.contains('collapsed')) resizeGraphCanvas();
    });
    graphResizeObserver.observe(graphPanel);
-   graphResizeObserver.observe(graphCanvas);
+   graphResizeObserver.observe(graphSvgEl);
 
    const uniformScratch = new Float32Array(288 / 4);
 
@@ -1790,85 +1913,9 @@ async function setupApp() {
 
    function drawGraph(seriesList) {
       latestGraphSeries = seriesList;
-      const W = graphCanvasWidth;
-      const H = graphCanvasHeight;
-      const padL = 36, padR = 12, padT = 12, padB = 26;
-      const plotW = W - padL - padR;
-      const plotH = H - padT - padB;
-
-      graphCtx.clearRect(0, 0, W, H);
-      graphCtx.fillStyle = 'rgba(255,255,255,0.04)';
-      graphCtx.fillRect(0, 0, W, H);
-
-      graphCtx.strokeStyle = 'rgba(255,255,255,0.08)';
-      graphCtx.lineWidth = 1;
-      for (let y = 0; y <= 5; y++) {
-         const py = padT + (plotH * y / 5);
-         graphCtx.beginPath();
-         graphCtx.moveTo(padL, py);
-         graphCtx.lineTo(W - padR, py);
-         graphCtx.stroke();
-      }
-      for (let x = 0; x <= 6; x++) {
-         const px = padL + (plotW * x / 6);
-         graphCtx.beginPath();
-         graphCtx.moveTo(px, padT);
-         graphCtx.lineTo(px, H - padB);
-         graphCtx.stroke();
-      }
-
-      graphCtx.strokeStyle = '#cfcfcf';
-      graphCtx.beginPath();
-      graphCtx.moveTo(padL, padT);
-      graphCtx.lineTo(padL, H - padB);
-      graphCtx.lineTo(W - padR, H - padB);
-      graphCtx.stroke();
-
-      graphCtx.font = '11px system-ui';
-      graphCtx.fillStyle = '#aaa';
-      graphCtx.textAlign = 'right';
-      graphCtx.textBaseline = 'middle';
-      for (let v = 0; v <= 100; v += 20) {
-         const py = padT + plotH - (v / 100) * plotH;
-         graphCtx.fillText(String(v), padL - 6, py);
-      }
-
-      graphCtx.textAlign = 'center';
-      graphCtx.textBaseline = 'top';
-      for (let x = GRAPH_TILT_MIN; x <= GRAPH_TILT_MAX; x += 10) {
-         const px = padL + ((x - GRAPH_TILT_MIN) / (GRAPH_TILT_MAX - GRAPH_TILT_MIN)) * plotW;
-         graphCtx.fillText(String(x), px, H - padB + 6);
-      }
-
-      for (const series of seriesList) {
-         graphCtx.strokeStyle = series.color;
-         graphCtx.lineWidth = series.dashed ? 1.5 : 2;
-         graphCtx.setLineDash(series.dashed ? [6, 4] : []);
-         graphCtx.beginPath();
-         series.points.forEach((p, i) => {
-            const px = padL + ((p.tilt - GRAPH_TILT_MIN) / (GRAPH_TILT_MAX - GRAPH_TILT_MIN)) * plotW;
-            const py = padT + plotH - Math.max(0, Math.min(100, p.value)) / 100 * plotH;
-            if (i === 0) graphCtx.moveTo(px, py);
-            else graphCtx.lineTo(px, py);
-         });
-         graphCtx.stroke();
-         graphCtx.setLineDash([]);
-      }
-
-      graphCtx.textAlign = 'left';
-      graphCtx.textBaseline = 'middle';
-      seriesList.forEach((series, i) => {
-         const y = padT + 8 + i * 16;
-         graphCtx.strokeStyle = series.color;
-         graphCtx.setLineDash(series.dashed ? [6, 4] : []);
-         graphCtx.beginPath();
-         graphCtx.moveTo(W - padR - 82, y);
-         graphCtx.lineTo(W - padR - 54, y);
-         graphCtx.stroke();
-         graphCtx.setLineDash([]);
-         graphCtx.fillStyle = '#ddd';
-         graphCtx.fillText(series.label, W - padR - 48, y);
-      });
+      if (!graphSvgEl) return;
+      graphSvgEl.setAttribute('viewBox', `0 0 ${graphCanvasWidth} ${graphCanvasHeight}`);
+      graphSvgEl.innerHTML = buildGraphSvgInner(seriesList, graphCanvasWidth, graphCanvasHeight, GRAPH_THEME_DARK);
    }
 
    async function sampleGraphSweep(runId) {
