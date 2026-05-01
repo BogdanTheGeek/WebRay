@@ -4581,5 +4581,50 @@ async function setupApp() {
 // ---------------------------------------------------------------------------
 // Startup
 // ---------------------------------------------------------------------------
+function getStartupModelFromLocation(defaultName, defaultUrl) {
+   const params = new URLSearchParams(window.location.search || '');
+   let candidate = params.get('url') || params.get('file') || params.get('model');
+   if (!candidate) {
+      return { name: defaultName, url: defaultUrl, fromQuery: false };
+   }
+
+   candidate = candidate.trim();
+   if (!candidate) {
+      return { name: defaultName, url: defaultUrl, fromQuery: false };
+   }
+
+   let resolvedUrl = defaultUrl;
+   try {
+      resolvedUrl = new URL(candidate, window.location.href).href;
+   } catch (err) {
+      console.warn('Startup model URL is invalid, using default model.', err);
+      return { name: defaultName, url: defaultUrl, fromQuery: false };
+   }
+
+   let derivedName = defaultName;
+   try {
+      const parsed = new URL(resolvedUrl);
+      const leaf = parsed.pathname.split('/').filter(Boolean).pop();
+      if (leaf) derivedName = decodeURIComponent(leaf);
+   } catch {
+      // Keep default filename when URL parsing fails.
+   }
+
+   return { name: derivedName, url: resolvedUrl, fromQuery: true };
+}
+
 const app = await setupApp();
-if (app) app.loadModel('Eye_of_Zul.asc', './models/Eye_of_Zul.asc');
+if (app) {
+   const defaultName = 'Eye_of_Zul.asc';
+   const defaultUrl = './models/Eye_of_Zul.asc';
+   const startupModel = getStartupModelFromLocation(defaultName, defaultUrl);
+
+   try {
+      await app.loadModel(startupModel.name, startupModel.url);
+   } catch (err) {
+      console.error(`Failed to load startup model from ${startupModel.url}`, err);
+      if (startupModel.fromQuery) {
+         await app.loadModel(defaultName, defaultUrl);
+      }
+   }
+}
