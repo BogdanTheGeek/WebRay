@@ -148,7 +148,8 @@
         /* position:relative establishes the containing block for the
            resize handle's position:absolute children. */
         #lightReturnPanel,
-        #facetInfoPanel {
+        #facetInfoPanel,
+        #gemLibraryPanel {
             position: relative;
             width: 420px;
             height: 320px;
@@ -167,64 +168,90 @@
             backdrop-filter: blur(8px);
         }
         #facetInfoPanel { height: 260px; }
+        #gemLibraryPanel { height: 320px; }
         #lightReturnPanel.collapsed,
-        #facetInfoPanel.collapsed {
+        #facetInfoPanel.collapsed,
+        #gemLibraryPanel.collapsed {
             width: 200px; height: auto; min-width: 200px; min-height: 0;
             padding: 8px 10px 8px 10px;
         }
         #lightReturnHeader,
-        #facetInfoHeader {
+        #facetInfoHeader,
+        #gemLibraryHeader {
             display: flex; flex: 0 0 auto; align-items: center;
             justify-content: space-between; gap: 8px; margin-bottom: 8px;
         }
         #lightReturnPanel h3,
-        #facetInfoPanel h3 {
+        #facetInfoPanel h3,
+        #gemLibraryPanel h3 {
             flex: 1 1 auto; margin: 0; font-size: 13px; font-weight: 600;
             letter-spacing: .05em; color: #fff; text-transform: uppercase;
         }
         #lightReturnToggle,
-        #facetInfoToggle {
+        #facetInfoToggle,
+        #gemLibraryToggle {
             flex: 0 0 auto; min-width: 28px; height: 24px; padding: 0 8px;
             border-radius: 6px; border: 1px solid rgba(255,255,255,.15);
             background: rgba(255,255,255,.05); color: #aaa; cursor: pointer;
             font: inherit; line-height: 1;
         }
         #lightReturnToggle:hover,
-        #facetInfoToggle:hover { color: #fff; border-color: rgba(255,255,255,.28); }
+        #facetInfoToggle:hover,
+        #gemLibraryToggle:hover { color: #fff; border-color: rgba(255,255,255,.28); }
         #lightReturnBody,
-        #facetInfoBody {
+        #facetInfoBody,
+        #gemLibraryBody {
             display: flex; flex: 1 1 auto; min-height: 0;
             flex-direction: column; min-width: 0;
         }
         #lightReturnPanel.collapsed #lightReturnBody,
-        #facetInfoPanel.collapsed #facetInfoBody { display: none; }
+        #facetInfoPanel.collapsed #facetInfoBody,
+        #gemLibraryPanel.collapsed #gemLibraryBody { display: none; }
         #lightReturnPanel.collapsed #lightReturnHeader,
-        #facetInfoPanel.collapsed #facetInfoHeader { margin-bottom: 0; gap: 6px; }
+        #facetInfoPanel.collapsed #facetInfoHeader,
+        #gemLibraryPanel.collapsed #gemLibraryHeader { margin-bottom: 0; gap: 6px; }
         #lightReturnPanel.collapsed h3,
-        #facetInfoPanel.collapsed h3 {
+        #facetInfoPanel.collapsed h3,
+        #gemLibraryPanel.collapsed h3 {
             font-size: 11px; letter-spacing: .04em;
             white-space: nowrap; overflow: visible; text-overflow: clip;
         }
         #lightReturnPanel.collapsed #lightReturnResize,
         #lightReturnPanel.collapsed #lightReturnResizeRight,
         #facetInfoPanel.collapsed #facetInfoResize,
-        #facetInfoPanel.collapsed #facetInfoResizeRight { display: none; }
+        #facetInfoPanel.collapsed #facetInfoResizeRight,
+        #gemLibraryPanel.collapsed #gemLibraryResize,
+        #gemLibraryPanel.collapsed #gemLibraryResizeRight { display: none; }
         #lightReturnStatus,
-        #facetInfoStatus { margin: 0 0 8px; color: #aaa; font-size: 11px; flex: 0 0 auto; }
+        #facetInfoStatus,
+        #gemLibraryStatus { margin: 0 0 8px; color: #aaa; font-size: 11px; flex: 0 0 auto; }
         #lightReturnSvg {
             display: block; width: 100%; height: 100%;
             flex: 1 1 auto; min-height: 140px;
             border-radius: 8px; background: rgba(255,255,255,0.04);
         }
+        #gemLibraryFrame {
+            display: block;
+            width: 100%;
+            height: 100%;
+            flex: 1 1 auto;
+            min-height: 140px;
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 8px;
+            background: rgba(255,255,255,0.04);
+        }
         #lightReturnResize,
         #facetInfoResize,
+        #gemLibraryResize,
         #lightReturnResizeRight,
-        #facetInfoResizeRight {
+        #facetInfoResizeRight,
+        #gemLibraryResizeRight {
             position: absolute; left: 0; bottom: 0;
             width: 18px; height: 18px; cursor: nesw-resize; z-index: 3;
         }
         #lightReturnResize::before,
-        #facetInfoResize::before {
+        #facetInfoResize::before,
+        #gemLibraryResize::before {
             content: ''; position: absolute; left: 4px; bottom: 4px;
             width: 10px; height: 10px;
             border-left: 2px solid rgba(255,255,255,.35);
@@ -232,13 +259,15 @@
             border-bottom-left-radius: 8px;
         }
         #lightReturnResizeRight,
-        #facetInfoResizeRight {
+        #facetInfoResizeRight,
+        #gemLibraryResizeRight {
             left: auto;
             right: 0;
             cursor: nwse-resize;
         }
         #lightReturnResizeRight::before,
-        #facetInfoResizeRight::before {
+        #facetInfoResizeRight::before,
+        #gemLibraryResizeRight::before {
             content: ''; position: absolute; right: 4px; bottom: 4px;
             width: 10px; height: 10px;
             border-right: 2px solid rgba(255,255,255,.35);
@@ -560,7 +589,8 @@
 
             /* Side panels: full width, start collapsed */
             #lightReturnPanel,
-            #facetInfoPanel {
+            #facetInfoPanel,
+            #gemLibraryPanel {
                 width: 100%;
                 min-width: 0;
             }
@@ -584,8 +614,8 @@
             #gemui.mobile-open { transform: translateY(0); }
 
             /* Hide resize handles — panels fill width on mobile */
-            #lightReturnResize, #facetInfoResize,
-            #lightReturnResizeRight, #facetInfoResizeRight { display: none; }
+            #lightReturnResize, #facetInfoResize, #gemLibraryResize,
+            #lightReturnResizeRight, #facetInfoResizeRight, #gemLibraryResizeRight { display: none; }
 
             /* Larger touch targets */
             #gemui input[type=range] { height: 28px; }
@@ -657,6 +687,26 @@
                 </div>
                 <div id="facetInfoResize" aria-hidden="true"></div>
                 <div id="facetInfoResizeRight" aria-hidden="true"></div>
+            </div>
+
+            <div id="gemLibraryPanel">
+                <div id="gemLibraryHeader">
+                    <h3>GemLibrary</h3>
+                    <button id="gemLibraryToggle" type="button" aria-label="Minimize gem library">&#x2212;</button>
+                </div>
+                <div id="gemLibraryBody">
+                    <div id="gemLibraryStatus">Loading GemLibrary&hellip;</div>
+                    <iframe
+                        id="gemLibraryFrame"
+                        src="https://bogdanthegeek.github.io/GemLibrary/"
+                        title="GemLibrary"
+                        loading="lazy"
+                        referrerpolicy="strict-origin-when-cross-origin"
+                        allow="clipboard-read; clipboard-write"
+                    ></iframe>
+                </div>
+                <div id="gemLibraryResize" aria-hidden="true"></div>
+                <div id="gemLibraryResizeRight" aria-hidden="true"></div>
             </div>
 
         </div><!-- #ui-panels -->

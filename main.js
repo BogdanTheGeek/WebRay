@@ -169,6 +169,7 @@ const STONE_MARGIN_SCALE = 0.70;
 const designPanel = document.getElementById('designPanel');
 const graphPanel = document.getElementById('lightReturnPanel');
 const facetPanel = document.getElementById('facetInfoPanel');
+const gemLibraryPanel = document.getElementById('gemLibraryPanel');
 const designToggleEl = document.getElementById('designToggle');
 const designBodyEl = document.getElementById('designBody');
 const designResizeEl = document.getElementById('designResize');
@@ -192,6 +193,12 @@ const graphResizeEl = document.getElementById('lightReturnResize');
 const graphResizeRightEl = document.getElementById('lightReturnResizeRight');
 const graphStatusEl = document.getElementById('lightReturnStatus');
 const graphSvgEl = document.getElementById('lightReturnSvg');
+const gemLibraryToggleEl = document.getElementById('gemLibraryToggle');
+const gemLibraryHeaderEl = document.getElementById('gemLibraryHeader');
+const gemLibraryStatusEl = document.getElementById('gemLibraryStatus');
+const gemLibraryFrameEl = document.getElementById('gemLibraryFrame');
+const gemLibraryResizeEl = document.getElementById('gemLibraryResize');
+const gemLibraryResizeRightEl = document.getElementById('gemLibraryResizeRight');
 const facetToggleEl = document.getElementById('facetInfoToggle');
 const facetHeaderEl = document.getElementById('facetInfoHeader');
 const facetSplitTabsEl = document.getElementById('facetSplitTabs');
@@ -210,6 +217,9 @@ let latestFacetInfo = [];
 let designFacets = [];
 let designApplyTimer = null;
 let modelHasTableFacet = false;
+const GEM_LIBRARY_ORIGIN = 'https://bogdanthegeek.github.io';
+const GEM_LIBRARY_OPEN_MODEL_EVENT = 'gemlibrary:open-model';
+let gemLibraryBridgeInstalled = false;
 
 const GRAPH_THEME_DARK = {
    bg: 'rgba(255,255,255,0.04)',
@@ -414,6 +424,84 @@ function setConvertStatus(message) {
    if (convertStatusEl) convertStatusEl.textContent = message;
 }
 
+function setGemLibraryStatus(message) {
+   if (gemLibraryStatusEl) gemLibraryStatusEl.textContent = message;
+}
+
+function parseGemLibraryModelTarget(targetUrl) {
+   const parsedTarget = new URL(targetUrl, window.location.href);
+   const modelParams = new URLSearchParams(parsedTarget.search || '');
+   const modelCandidate = (
+      modelParams.get('url')
+      || modelParams.get('file')
+      || modelParams.get('model')
+      || ''
+   ).trim();
+
+   let modelUrl = '';
+   if (modelCandidate) {
+      modelUrl = new URL(modelCandidate, parsedTarget.href).href;
+   } else if (/\.(stl|gem|gcs|asc)$/i.test(parsedTarget.pathname || '')) {
+      modelUrl = parsedTarget.href;
+   }
+
+   if (!modelUrl) {
+      throw new Error('GemLibrary URL does not include a model path.');
+   }
+
+   const parsedModel = new URL(modelUrl);
+   const leaf = parsedModel.pathname.split('/').filter(Boolean).pop() || 'model.stl';
+   const name = decodeURIComponent(leaf);
+   return { name, url: parsedModel.href };
+}
+
+function installGemLibraryMessageBridge(onOpenModel) {
+   if (gemLibraryBridgeInstalled) return;
+   gemLibraryBridgeInstalled = true;
+   window.addEventListener('message', (event) => {
+      if (event.origin !== GEM_LIBRARY_ORIGIN) return;
+      if (!event.data || event.data.type !== GEM_LIBRARY_OPEN_MODEL_EVENT) return;
+      const targetUrl = String(event.data.webRayUrl || '').trim();
+      if (!targetUrl) {
+         setGemLibraryStatus('GemLibrary sent empty model URL.');
+         return;
+      }
+      try {
+         const parsed = new URL(targetUrl, window.location.href);
+         if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            setGemLibraryStatus('Blocked non-http model URL from GemLibrary.');
+            return;
+         }
+
+         const targetModel = parseGemLibraryModelTarget(parsed.toString());
+         if (typeof onOpenModel !== 'function') {
+            setGemLibraryStatus('Model loader not ready yet.');
+            return;
+         }
+
+         setGemLibraryStatus(`Loading ${targetModel.name}...`);
+         Promise.resolve(onOpenModel(targetModel))
+            .then(() => {
+               try {
+                  const nextUrl = new URL(window.location.href);
+                  nextUrl.searchParams.set('url', targetModel.url);
+                  window.history.replaceState(null, '', nextUrl.toString());
+               } catch {
+                  // Ignore URL-state sync failures.
+               }
+               setGemLibraryStatus(`Loaded ${targetModel.name}.`);
+            })
+            .catch((err) => {
+               console.error(err);
+               setGemLibraryStatus(`Failed to load ${targetModel.name}.`);
+            });
+      } catch (err) {
+         console.error(err);
+         setGemLibraryStatus('GemLibrary sent invalid model URL.');
+      }
+   });
+}
+
 function getMetadataFromDesign() {
    const metadata = {
       title: designHeaderEl.value,
@@ -552,6 +640,7 @@ function buildUI(ui, cbs) {
       };
       collapsePanel('lightReturnPanel', 'lightReturnToggle', 'Expand graph');
       collapsePanel('facetInfoPanel', 'facetInfoToggle', 'Expand facet notes');
+      collapsePanel('gemLibraryPanel', 'gemLibraryToggle', 'Expand gem library');
    }
 
    // Button triggers hidden input
@@ -1188,6 +1277,10 @@ async function setupApp() {
    let designExpandedSize = { width: 420, height: 380 };
    let graphExpandedSize = { width: 420, height: 320 };
    let facetExpandedSize = { width: 420, height: 260 };
+   let gemLibraryExpandedSize = {
+      width: 480,
+      height: Math.max(120, window.innerHeight - 36),
+   };
 
    function setFacetStatus(text) {
       facetStatusEl.textContent = text;
@@ -1609,18 +1702,21 @@ async function setupApp() {
    // Toggles a panel's collapsed state. DOM class is the sole source of truth.
    function togglePanel(panelEl, toggleEl, expandedSizeRef, name, onExpand) {
       const willCollapse = !panelEl.classList.contains('collapsed');
+      const isLeftAnchored = panelEl.dataset.anchorSide === 'left';
       if (window.innerWidth > 960) {
          if (willCollapse) {
             const rect = panelEl.getBoundingClientRect();
             expandedSizeRef.width = Math.max(260, Math.round(rect.width));
             expandedSizeRef.height = Math.max(120, Math.round(rect.height));
             const rightPx = Math.max(0, Math.round(window.innerWidth - rect.right));
+            const leftPx = Math.max(0, Math.round(rect.left));
             const topPx = Math.max(0, Math.round(rect.top));
             panelEl.dataset.anchorRightPx = String(rightPx);
+            panelEl.dataset.anchorLeftPx = String(leftPx);
             panelEl.dataset.anchorTopPx = String(topPx);
             panelEl.style.position = 'fixed';
-            panelEl.style.left = 'auto';
-            panelEl.style.right = `${rightPx}px`;
+            panelEl.style.left = isLeftAnchored ? `${leftPx}px` : 'auto';
+            panelEl.style.right = isLeftAnchored ? 'auto' : `${rightPx}px`;
             panelEl.style.top = `${topPx}px`;
             panelEl.style.bottom = 'auto';
             panelEl.style.width = '200px';
@@ -1630,15 +1726,18 @@ async function setupApp() {
             const desiredHeight = Math.max(120, Math.round(expandedSizeRef.height || 120));
             const rect = panelEl.getBoundingClientRect();
             const rawRight = Math.round(window.innerWidth - rect.right);
+            const rawLeft = Math.round(rect.left);
             const rawTop = Math.round(rect.top);
             const maxRight = Math.max(0, window.innerWidth - desiredWidth);
+            const maxLeft = Math.max(0, window.innerWidth - desiredWidth);
             const maxTop = Math.max(0, window.innerHeight - desiredHeight);
             const rightPx = Math.max(0, Math.min(maxRight, rawRight));
+            const leftPx = Math.max(0, Math.min(maxLeft, rawLeft));
             const topPx = Math.max(0, Math.min(maxTop, rawTop));
 
             panelEl.style.position = 'fixed';
-            panelEl.style.left = 'auto';
-            panelEl.style.right = `${rightPx}px`;
+            panelEl.style.left = isLeftAnchored ? `${leftPx}px` : 'auto';
+            panelEl.style.right = isLeftAnchored ? 'auto' : `${rightPx}px`;
             panelEl.style.top = `${topPx}px`;
             panelEl.style.bottom = 'auto';
             panelEl.style.width = `${desiredWidth}px`;
@@ -2024,8 +2123,23 @@ async function setupApp() {
       graphStatusEl.textContent = text;
    }
 
+   installGemLibraryMessageBridge(({ name, url }) => loadModel(name, url));
+   if (gemLibraryFrameEl) {
+      gemLibraryFrameEl.addEventListener('load', () => {
+         setGemLibraryStatus('GemLibrary ready. Select model to load here without refresh.');
+      });
+      gemLibraryFrameEl.addEventListener('error', () => {
+         setGemLibraryStatus('GemLibrary failed to load.');
+      });
+   }
+
    graphToggleEl.addEventListener('click', () => {
       togglePanel(graphPanel, graphToggleEl, graphExpandedSize, 'graph', resizeGraphCanvas);
+   });
+
+   gemLibraryToggleEl?.addEventListener('click', () => {
+      gemLibraryExpandedSize.width = Math.max(480, Math.round(gemLibraryExpandedSize.width || 480));
+      togglePanel(gemLibraryPanel, gemLibraryToggleEl, gemLibraryExpandedSize, 'gem library');
    });
 
    let graphResizeDrag = null;
@@ -2089,10 +2203,86 @@ async function setupApp() {
    window.addEventListener('pointerup', () => endGraphResize());
    window.addEventListener('blur', () => endGraphResize());
 
+   let gemLibraryResizeDrag = null;
+   let gemLibraryResizePointerId = null;
+   function beginGemLibraryResize(e, side) {
+      if (gemLibraryPanel?.classList.contains('collapsed') || window.innerWidth <= 960) return;
+      e.preventDefault();
+      e.stopPropagation();
+      ensureDesktopFloatingPanel(gemLibraryPanel);
+      const rect = gemLibraryPanel.getBoundingClientRect();
+      gemLibraryResizeDrag = {
+         top: rect.top,
+         right: rect.right,
+         left: rect.left,
+         side,
+         handleEl: e.currentTarget,
+      };
+      gemLibraryResizePointerId = e.pointerId;
+      e.currentTarget.setPointerCapture(e.pointerId);
+   }
+
+   function moveGemLibraryResize(e) {
+      if (!gemLibraryResizeDrag || e.pointerId !== gemLibraryResizePointerId) return;
+      const nextWidthRaw = gemLibraryResizeDrag.side === 'right'
+         ? Math.round(e.clientX - gemLibraryResizeDrag.left)
+         : Math.round(gemLibraryResizeDrag.right - e.clientX);
+      const nextWidth = Math.max(480, nextWidthRaw);
+      const nextHeight = Math.max(120, Math.round(e.clientY - gemLibraryResizeDrag.top));
+      if (gemLibraryResizeDrag.side === 'left') {
+         const nextLeft = Math.round(gemLibraryResizeDrag.right - nextWidth);
+         gemLibraryPanel.style.left = `${Math.max(0, nextLeft)}px`;
+      }
+      gemLibraryPanel.style.right = 'auto';
+      gemLibraryPanel.style.width = `${nextWidth}px`;
+      gemLibraryPanel.style.height = `${nextHeight}px`;
+      gemLibraryExpandedSize = { width: nextWidth, height: nextHeight };
+   }
+
+   gemLibraryResizeEl?.addEventListener('pointerdown', (e) => beginGemLibraryResize(e, 'left'));
+   gemLibraryResizeRightEl?.addEventListener('pointerdown', (e) => beginGemLibraryResize(e, 'right'));
+   gemLibraryResizeEl?.addEventListener('pointermove', moveGemLibraryResize);
+   gemLibraryResizeRightEl?.addEventListener('pointermove', moveGemLibraryResize);
+
+   function endGemLibraryResize(pointerId = gemLibraryResizePointerId) {
+      if (!gemLibraryResizeDrag) return;
+      const activeHandleEl = gemLibraryResizeDrag.handleEl;
+      gemLibraryResizeDrag = null;
+      if (pointerId != null && activeHandleEl?.hasPointerCapture(pointerId)) {
+         activeHandleEl.releasePointerCapture(pointerId);
+      }
+      gemLibraryResizePointerId = null;
+   }
+
+   gemLibraryResizeEl?.addEventListener('pointerup', (e) => endGemLibraryResize(e.pointerId));
+   gemLibraryResizeEl?.addEventListener('pointercancel', (e) => endGemLibraryResize(e.pointerId));
+   gemLibraryResizeEl?.addEventListener('lostpointercapture', () => endGemLibraryResize());
+   gemLibraryResizeRightEl?.addEventListener('pointerup', (e) => endGemLibraryResize(e.pointerId));
+   gemLibraryResizeRightEl?.addEventListener('pointercancel', (e) => endGemLibraryResize(e.pointerId));
+   gemLibraryResizeRightEl?.addEventListener('lostpointercapture', () => endGemLibraryResize());
+   window.addEventListener('pointerup', () => endGemLibraryResize());
+   window.addEventListener('blur', () => endGemLibraryResize());
+
    // Use one positioning model from startup so resize behavior is identical
    // before and after any drag interaction.
    ensureDesktopFloatingPanel(graphPanel);
    ensureDesktopFloatingPanel(facetPanel);
+   ensureDesktopFloatingPanel(gemLibraryPanel);
+   if (window.innerWidth > 960 && gemLibraryPanel) {
+      const desiredWidth = Math.max(480, Math.round(gemLibraryExpandedSize.width || 480));
+      const desiredHeight = Math.max(120, Math.round(window.innerHeight - 36));
+      gemLibraryExpandedSize = { width: desiredWidth, height: desiredHeight };
+      gemLibraryPanel.dataset.anchorSide = 'left';
+      gemLibraryPanel.style.position = 'fixed';
+      gemLibraryPanel.style.left = '18px';
+      gemLibraryPanel.style.right = 'auto';
+      gemLibraryPanel.style.top = '18px';
+      gemLibraryPanel.style.bottom = 'auto';
+      gemLibraryPanel.style.width = `${desiredWidth}px`;
+      gemLibraryPanel.style.height = `${desiredHeight}px`;
+      gemLibraryPanel.style.zIndex = '120';
+   }
+   installDesktopPanelDrag(gemLibraryPanel, gemLibraryHeaderEl);
    if (window.innerWidth > 960) {
       const graphRect = graphPanel.getBoundingClientRect();
       const facetRect = facetPanel.getBoundingClientRect();
