@@ -2553,6 +2553,48 @@ async function setupApp() {
       return idx;
    }
 
+   function computeStoneCenterXYForSelection() {
+      const verts = designPickCache.vertices;
+      if (!Array.isArray(verts) || verts.length < 2) return null;
+
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
+      for (const vertex of verts) {
+         const p = vertex?.p;
+         if (!Array.isArray(p) || p.length < 2) continue;
+         const x = Number(p[0]);
+         const y = Number(p[1]);
+         if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+         if (x < minX) minX = x;
+         if (x > maxX) maxX = x;
+         if (y < minY) minY = y;
+         if (y > maxY) maxY = y;
+      }
+      if (!Number.isFinite(minX) || !Number.isFinite(maxX) || !Number.isFinite(minY) || !Number.isFinite(maxY)) {
+         return null;
+      }
+      return [(minX + maxX) * 0.5, (minY + maxY) * 0.5];
+   }
+
+   function inferIndexFromTwoVertices(v0, v1, centerXY, gear, fallbackIndex) {
+      const p0 = [v0[0], v0[1]];
+      const p1 = [v1[0], v1[1]];
+      const edgeVec = [p1[0] - p0[0], p1[1] - p0[1]];
+      const edgeLenSq = edgeVec[0] * edgeVec[0] + edgeVec[1] * edgeVec[1];
+      if (edgeLenSq <= 1e-16) return fallbackIndex;
+
+      const toCenter = [centerXY[0] - p0[0], centerXY[1] - p0[1]];
+      const t = (toCenter[0] * edgeVec[0] + toCenter[1] * edgeVec[1]) / edgeLenSq;
+      const foot = [p0[0] + t * edgeVec[0], p0[1] + t * edgeVec[1]];
+      const n = [foot[0] - centerXY[0], foot[1] - centerXY[1]];
+      const nLen = Math.hypot(n[0], n[1]);
+      if (nLen <= 1e-8) return fallbackIndex;
+
+      return computeDesignIndexFromNormal([n[0], n[1], 0], gear, fallbackIndex);
+   }
+
    function computeStoneWidthForSelection() {
       const verts = designPickCache.vertices;
       if (!Array.isArray(verts) || verts.length < 2) return null;
@@ -2657,9 +2699,6 @@ async function setupApp() {
          const v1 = designPickCache.vertices[designSelection.vertexIds[1]]?.p;
          if (!v0 || !v1) return result;
 
-         const edgeDir = normalize3(sub3(v1, v0));
-         if (len3(edgeDir) <= 1e-8) return result;
-
          const midpoint = scale3(add3(v0, v1), 0.5);
          const gear = Math.max(1, parseInt(designGearEl.value, 10) || 96);
          const currentIndex = parseFloat(designStartIndexEl.value) || 0;
@@ -2674,49 +2713,23 @@ async function setupApp() {
          }
 
          const solvedAngleDeg = Math.abs(currentAngle) * desiredSign;
-         const angleAbsRad = Math.abs(solvedAngleDeg) * Math.PI / 180;
-         const desiredNz = Math.cos(angleAbsRad) * desiredSign;
-         const horizMag = Math.sin(angleAbsRad);
-
-         const dx = edgeDir[0];
-         const dy = edgeDir[1];
-         const dz = edgeDir[2];
-         const dxyLen = Math.hypot(dx, dy);
-
-         let planeNormal = null;
-         if (dxyLen > 1e-8 && horizMag > 1e-8) {
-            const rhs = -desiredNz * dz;
-            const p = rhs / dxyLen;
-            if (Math.abs(p) <= horizMag + 1e-8) {
-               const qAbs = Math.sqrt(Math.max(0, (horizMag * horizMag) - (p * p)));
-               const ux = dx / dxyLen;
-               const uy = dy / dxyLen;
-               const vx = -uy;
-               const vy = ux;
-
-               const cand1 = normalize3([p * ux + qAbs * vx, p * uy + qAbs * vy, desiredNz]);
-               const cand2 = normalize3([p * ux - qAbs * vx, p * uy - qAbs * vy, desiredNz]);
-
-               const currentNormal = computeFacetNormalFromDesignInputs();
-               const score1 = dot3(cand1, currentNormal);
-               const score2 = dot3(cand2, currentNormal);
-               planeNormal = score1 >= score2 ? cand1 : cand2;
-            }
-         }
-
-         if (!planeNormal || len3(planeNormal) <= 1e-8) {
-            planeNormal = computeFacetNormalFromDesignInputs();
-         }
-
-         if (Math.sign(planeNormal[2]) !== Math.sign(desiredNz) && Math.abs(desiredNz) > 1e-8) {
-            planeNormal = scale3(planeNormal, -1);
-         }
-
-         const inferredIndex = computeDesignIndexFromNormal(planeNormal, gear, currentIndex);
+         const centerXY = computeStoneCenterXYForSelection();
+         const inferredIndex = centerXY
+            ? inferIndexFromTwoVertices(v0, v1, centerXY, gear, currentIndex)
+            : currentIndex;
          designAngleEl.value = Math.max(-90, Math.min(90, solvedAngleDeg)).toFixed(3);
          designStartIndexEl.value = String(inferredIndex);
 
-         const planeDist = Math.abs(dot3(planeNormal, midpoint));
+         const angleAbsRad = Math.abs(solvedAngleDeg) * Math.PI / 180;
+         const azi = ((inferredIndex % gear) / gear) * Math.PI * 2;
+         let c = Math.cos(angleAbsRad);
+         let s = Math.sin(angleAbsRad);
+         if (solvedAngleDeg < 0) {
+            c *= -1;
+            s *= -1;
+         }
+         const solvedNormal = normalize3([s * Math.sin(azi), -s * Math.cos(azi), c]);
+         const planeDist = Math.abs(0.5 * (dot3(solvedNormal, v0) + dot3(solvedNormal, v1)));
          designDistanceEl.value = Math.max(0, planeDist).toFixed(5);
 
          const edgeLength = len3(sub3(v1, v0));
