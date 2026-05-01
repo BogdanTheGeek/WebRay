@@ -1370,10 +1370,6 @@ async function setupApp() {
    }
 
    function scheduleDesignApply(geometryChanged = true) {
-      if (!designFacets.length) {
-         updateDesignStatusSummary();
-         return;
-      }
       if (designApplyTimer) clearTimeout(designApplyTimer);
       designApplyTimer = setTimeout(() => {
          designApplyTimer = null;
@@ -1838,7 +1834,10 @@ async function setupApp() {
 
    designClearBtn.addEventListener('click', () => {
       designFacets = [];
+      designHeaderEl.value = '';
+      designFooterEl.value = '';
       renderDesignFacetList();
+      scheduleDesignApply();
    });
 
    renderDesignFacetList();
@@ -3518,10 +3517,6 @@ async function setupApp() {
    }
 
    function applyDesignStone(geometryChanged = true) {
-      if (!designFacets.length) {
-         setDesignStatus('Add at least one facet before apply.');
-         return;
-      }
       if (!geometryChanged) {
          if (applyDesignMetadataToCurrentStone()) {
             setDesignStatus('Updated design metadata');
@@ -3539,7 +3534,9 @@ async function setupApp() {
          };
          const stone = buildStoneFromFacetDesign(designDefinition);
          applyStoneData(currentModelFilename, stone, { syncDesignFromStone: false, isDesign: true });
-         setDesignStatus(`Applied ${designFacets.length} design facets`);
+         setDesignStatus(designFacets.length
+            ? `Applied ${designFacets.length} design facets`
+            : 'Applied default cube (no facets yet)');
       } catch (err) {
          console.error(err);
          setDesignStatus(`Design failed: ${err?.message || 'invalid facets'}`);

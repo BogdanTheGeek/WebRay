@@ -557,6 +557,18 @@ function orderFacetVerts(planeIdx, vindices, planes, allVerts) {
    return angles.map(a => a.vi);
 }
 
+function createBootstrapCubePlanes(size = 1.0) {
+   const d = Math.abs(size) || 1.0;
+   return [
+      { a: 1, b: 0, c: 0, d, name: 'PX', instructions: 'BOOTSTRAP', frosted: false },
+      { a: -1, b: 0, c: 0, d, name: 'NX', instructions: 'BOOTSTRAP', frosted: false },
+      { a: 0, b: 1, c: 0, d, name: 'PY', instructions: 'BOOTSTRAP', frosted: false },
+      { a: 0, b: -1, c: 0, d, name: 'NY', instructions: 'BOOTSTRAP', frosted: false },
+      { a: 0, b: 0, c: 1, d, name: 'PZ', instructions: 'BOOTSTRAP', frosted: false },
+      { a: 0, b: 0, c: -1, d, name: 'NZ', instructions: 'BOOTSTRAP', frosted: false },
+   ];
+}
+
 function buildStoneFromHalfSpacePlanes(planes, refractiveIndex = null, sourceGear, metadata = {}) {
 
    const allVerts = [];
@@ -1080,7 +1092,7 @@ function buildStoneFromFacetDesign(definition = {}) {
    const refractiveIndex = Number.isFinite(ri) && ri > 1.0 ? ri : 1.54;
    const gear = definition.gear;
 
-   const planes = [];
+   const planes = createBootstrapCubePlanes(1.0);
 
    facets.forEach((facet, idx) => {
       const facetName = String(facet?.name || `F${idx + 1}`).trim();
