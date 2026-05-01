@@ -129,6 +129,7 @@ let animating = false, animStartTime = 0;
 // Current model GPU resources — replaced by loadModel()
 let renderBundle = null; // { bindGroup, graphBindGroups, vertexBuffer, triCount }
 let modelBoundsRadius = 1.0;
+let currentStone = null;
 
 // Reference to UI controls — set by setupApp(), used by loadModel()
 let uiControls = null;
@@ -1233,6 +1234,107 @@ async function setupApp() {
       }, 20);
    }
 
+   function wrapDesignGearIndex(value, gear) {
+      const g = Math.max(1, Number.isFinite(Number(gear)) ? Math.round(Number(gear)) : 1);
+      let idx = Number(value);
+      if (!Number.isFinite(idx)) idx = 0;
+      idx = idx % g;
+      if (idx < 0) idx += g;
+      return idx;
+   }
+
+   function mirrorDesignGearIndex(index, gear) {
+      const idx = wrapDesignGearIndex(index, gear);
+      if (idx === gear) return gear;
+      return wrapDesignGearIndex(gear - idx, gear);
+   }
+
+   function buildDesignPlaneMetadataList(facetList, gear) {
+      const g = Math.max(1, Number.isFinite(Number(gear)) ? Math.round(Number(gear)) : 1);
+      const planes = [];
+      const normalizedInput = (facetList || []).map((facet, idx) => normalizeDesignFacet(facet, idx));
+
+      normalizedInput.forEach((facet, idx) => {
+         const normalized = normalizeDesignFacet(facet, idx);
+         const symmetryValue = parseInt(normalized.symmetry, 10);
+         const symmetry = Math.max(1, Number.isFinite(symmetryValue) ? symmetryValue : 1);
+         const mirror = Boolean(normalized.mirror);
+         const step = g / symmetry;
+         const indexSet = new Set();
+         const explicitIndexes = Array.isArray(normalized.indexes)
+            ? [...new Set(
+               normalized.indexes
+                  .map((value) => parseInt(value, 10))
+                  .filter((value) => Number.isFinite(value) && value >= 0)
+                  .map((value) => (value === 0 ? g : value))
+                  .map((value) => wrapDesignGearIndex(value, g)),
+            )]
+            : [];
+
+         if (explicitIndexes.length > 0) {
+            explicitIndexes.forEach((value) => indexSet.add(value));
+         } else {
+            const startIndex = wrapDesignGearIndex(normalized.startIndex, g);
+            for (let i = 0; i < symmetry; i++) {
+               const offset = i * step;
+               const primary = wrapDesignGearIndex(startIndex + offset, g);
+               indexSet.add(primary);
+               if (mirror) indexSet.add(mirrorDesignGearIndex(primary, g));
+            }
+         }
+
+         const angle = Number.isFinite(Number(normalized.angleDeg)) ? Number(normalized.angleDeg) : 0;
+         const normalizedName = String(normalized.name || `F${idx + 1}`).trim() || `F${idx + 1}`;
+         const normalizedInstructions = String(normalized.instructions || '').trim();
+         const normalizedFrosted = Boolean(normalized.frosted);
+
+         if (Math.abs(angle) <= 1e-8) {
+            planes.push({
+               name: normalizedName,
+               instructions: normalizedInstructions,
+               frosted: normalizedFrosted,
+            });
+            return;
+         }
+
+         for (const _index of indexSet) {
+            planes.push({
+               name: normalizedName,
+               instructions: normalizedInstructions,
+               frosted: normalizedFrosted,
+            });
+         }
+      });
+
+      return planes;
+   }
+
+   function applyDesignMetadataToCurrentStone() {
+      if (!currentStone || !Array.isArray(currentStone.facets)) return false;
+      const metadata = getMetadataFromDesign();
+      currentStone.metadata = metadata;
+      const gear = parseInt(designGearEl.value, 10);
+      const planeMetadata = buildDesignPlaneMetadataList(designFacets, gear);
+
+      if (planeMetadata.length > 0) {
+         const matchedCount = Math.min(planeMetadata.length, currentStone.facets.length);
+         currentStone.facets = currentStone.facets.map((facet, idx) => {
+            if (idx >= matchedCount) return facet;
+            return {
+               ...facet,
+               name: planeMetadata[idx].name,
+               instructions: planeMetadata[idx].instructions,
+               frosted: planeMetadata[idx].frosted,
+            };
+         });
+      }
+
+      renderFacetInfo(currentStone);
+      setFacetStatus(`${currentStone.facets.length} generated facets from design`);
+      requestRender();
+      return true;
+   }
+
    function setDesignFromStoneFacets(facets = [], sourceGear) {
       const gear = parseInt(sourceGear, 10);
       const hasSourceGear = Number.isFinite(gear) && gear > 0;
@@ -1486,7 +1588,7 @@ async function setupApp() {
       designFacets[facetIdx] = normalizeDesignFacet(nextFacet, facetIdx);
       updateDesignStatusSummary();
       const geometryChanged = field !== 'name' && field !== 'instructions';
-      scheduleDesignApply();
+      scheduleDesignApply(geometryChanged);
    });
 
    designFacetListEl.addEventListener('click', (e) => {
@@ -1500,11 +1602,11 @@ async function setupApp() {
    });
 
    designHeaderEl.addEventListener('input', () => {
-      scheduleDesignApply();
+      scheduleDesignApply(false);
    });
 
    designFooterEl.addEventListener('input', () => {
-      scheduleDesignApply();
+      scheduleDesignApply(false);
    });
 
    designToggleEl.addEventListener('click', () => {
@@ -2249,6 +2351,7 @@ async function setupApp() {
             });
          }
       }
+      currentStone = stone;
       modelBoundsRadius = Math.max(0.1, computeMeshBoundsRadius(stone.vertexData));
       console.debug(`Model bounds radius: ${modelBoundsRadius.toFixed(3)}`);
 
@@ -2367,6 +2470,9 @@ async function setupApp() {
          return;
       }
       if (!geometryChanged) {
+         if (applyDesignMetadataToCurrentStone()) {
+            setDesignStatus('Updated design metadata');
+         }
          return;
       }
 
