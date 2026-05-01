@@ -6,7 +6,7 @@ import {
    loadASC,
    loadGEM,
    convertGCSTextToGEMBuffer,
-   normalizeMesh,
+   normalizeStoneToUnitSphere,
    computeMeshBoundsRadius,
    buildBVH,
    buildStoneFromFacetDesign,
@@ -427,6 +427,10 @@ function setMetadataToDesign(metadata) {
    else designHeaderEl.value = '';
    if (metadata.comments !== undefined) designFooterEl.value = metadata.comments;
    else designFooterEl.value = '';
+}
+
+function isBootstrapFacet(facet) {
+   return String(facet?.instructions || '').trim().toUpperCase() === 'BOOTSTRAP';
 }
 
 
@@ -1770,9 +1774,27 @@ async function setupApp() {
          metadata: getMetadataFromDesign(),
       };
 
+      let exportDefinition = designDefinition;
+      try {
+         const normalizedStone = buildStoneFromFacetDesign(designDefinition);
+         normalizeStoneToUnitSphere(normalizedStone);
+         const exportFacets = groupExternalFacetsForDesign(
+            (normalizedStone.facets || []).filter((facet) => !isBootstrapFacet(facet)),
+            designDefinition.gear,
+         ).map((facet, idx) => normalizeDesignFacet(facet, idx));
+         if (exportFacets.length > 0) {
+            exportDefinition = {
+               ...designDefinition,
+               facets: exportFacets,
+            };
+         }
+      } catch (err) {
+         console.warn('Save normalization failed; using current design facets.', err);
+      }
+
 
       if (('showSaveFilePicker' in window) === false) {
-         const gemBuffer = convertGCSTextToGEMBuffer(buildDesignGcsText(designDefinition));
+         const gemBuffer = convertGCSTextToGEMBuffer(buildDesignGcsText(exportDefinition));
          const baseName = currentModelFilename.replace(/\.[^.]+$/, '') || 'design';
          const outName = `${baseName}.gem`;
          const blob = new Blob([gemBuffer], { type: 'application/octet-stream' });
@@ -1808,10 +1830,10 @@ async function setupApp() {
 
          let content = "";
          if (extension === 'gcs') {
-            content = buildDesignGcsText(designDefinition);
+            content = buildDesignGcsText(exportDefinition);
          }
          else if (extension === 'gem') {
-            content = convertGCSTextToGEMBuffer(buildDesignGcsText(designDefinition));
+            content = convertGCSTextToGEMBuffer(buildDesignGcsText(exportDefinition));
          } else {
             setDesignStatus('Unsupported file type selected.');
             return;
@@ -3519,20 +3541,8 @@ async function setupApp() {
       const isDesign = options.isDesign ?? false;
       currentModelFilename = filename;
 
-      // WARN: code can create weird exports due to scale, so I disabled it.
-      if (options.scaling) {
-         const meshNormalization = normalizeMesh(stone.vertexData);
-         const meshScale = Number.isFinite(meshNormalization?.scale) ? meshNormalization.scale : null;
-         if (Array.isArray(stone.facets) && Number.isFinite(meshScale)) {
-            stone.facets = stone.facets.map((facet) => {
-               if (!facet || !Number.isFinite(facet.d)) return facet;
-               return {
-                  ...facet,
-                  d: facet.d * meshScale,
-               };
-            });
-         }
-      }
+      normalizeStoneToUnitSphere(stone);
+
       currentStone = stone;
       designHaloCache = null;
       invalidateDesignPickState(true);
@@ -3797,7 +3807,6 @@ async function setupApp() {
       const data = await response.arrayBuffer();
       let stone;
       let convexFacetMode = 1;
-      let scaling = false;
       switch (ext) {
          case '.gem': stone = await loadGEM(data); break;
          case '.gcs': stone = await loadGCS(data); break;
@@ -3805,14 +3814,13 @@ async function setupApp() {
          default:
             stone = await loadSTL(data);
             convexFacetMode = 0;
-            scaling = true;
             break;
       }
 
       ui.convexFacetMode = convexFacetMode;
       designGearEl.value = stone.sourceGear;
 
-      await applyStoneData(filename, stone, { syncDesignFromStone: true, isDesign: false, scaling });
+      await applyStoneData(filename, stone, { syncDesignFromStone: true, isDesign: false});
    }
 
    function shouldKeepRendering() {

@@ -1472,6 +1472,48 @@ function normalizeMesh(data) {
    return { scale, center };
 }
 
+function normalizeStoneToUnitSphere(stone) {
+   if (!stone || !(stone.vertexData instanceof Float32Array) || stone.vertexData.length < 7) {
+      return { center: [0, 0, 0], scale: 1, maxRadius: 0 };
+   }
+
+   const data = stone.vertexData;
+   const center = [0, 0, 0];
+   let maxRadius = 0;
+   for (let i = 0; i < data.length; i += 7) {
+      const dx = data[i + 0];
+      const dy = data[i + 1];
+      const dz = data[i + 2];
+      const r = Math.hypot(dx, dy, dz);
+      if (r > maxRadius) maxRadius = r;
+   }
+
+   if (!Number.isFinite(maxRadius) || maxRadius <= 1e-9) {
+      return { center, scale: 1, maxRadius: maxRadius || 0 };
+   }
+
+   const scale = 1.0 / maxRadius;
+   for (let i = 0; i < data.length; i += 7) {
+      data[i + 0] = data[i + 0] * scale;
+      data[i + 1] = data[i + 1] * scale;
+      data[i + 2] = data[i + 2] * scale;
+   }
+
+   if (Array.isArray(stone.facets) && stone.facets.length > 0) {
+      stone.facets = stone.facets.map((facet) => {
+         if (!facet || !Array.isArray(facet.normal) || facet.normal.length < 3 || !Number.isFinite(facet.d)) {
+            return facet;
+         }
+         return {
+            ...facet,
+            d: facet.d * scale,
+         };
+      });
+   }
+
+   return { center, scale, maxRadius };
+}
+
 function computeMeshBoundsRadius(data) {
    let maxRadiusSq = 0;
    for (let i = 0; i < data.length; i += 7) {
@@ -2171,6 +2213,7 @@ export {
    buildFacetInfo,
    convertGCSTextToGEMBuffer,
    normalizeMesh,
+   normalizeStoneToUnitSphere,
    computeMeshBoundsRadius,
    buildBVH,
    buildStoneFromFacetDesign,
