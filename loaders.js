@@ -234,7 +234,13 @@ function buildFacetInfo(stone) {
    if (!stone || !stone.facets || stone.facets.length === 0) {
       return '<div class="facetEmpty">No facet notes were found for this model.</div>';
    }
-   const facets = stone.facets;
+   const facets = stone.facets.filter((facet) => {
+      const tag = String(facet?.instructions || '').trim().toUpperCase();
+      return tag !== 'BOOTSTRAP';
+   });
+   if (!facets.length) {
+      return '<div class="facetEmpty">No facet notes were found for this model.</div>';
+   }
 
    function escapeHtml(text) {
       return String(text)
@@ -273,6 +279,10 @@ function buildFacetInfo(stone) {
          `);
    }
 
+   const displayedGirdleCount = facets.filter((facet) => isGirdleFacet(facet)).length;
+   const displayedTotalCount = facets.length;
+   const displayedNonGirdleCount = Math.max(0, displayedTotalCount - displayedGirdleCount);
+
    const summaryHtml = `
 <div class="facetSummaryCompact">
 <div class="facetSectionTitle" style="width:100%">STONE INFO</div>
@@ -280,7 +290,7 @@ function buildFacetInfo(stone) {
 <span><strong>P/W</strong> ${escapeHtml(summary.pw.toFixed(4))}</span>
 <span><strong>C/W</strong> ${escapeHtml(summary.cw.toFixed(4))}</span>
 <span><strong>Gear</strong> ${escapeHtml(String(summary.gearUsed))}</span>
-<span><strong>Facets</strong> ${escapeHtml(`${summary.nonGirdleCount}+${summary.girdleCount}=${summary.totalCount}`)}</span>
+<span><strong>Facets</strong> ${escapeHtml(`${displayedNonGirdleCount}+${displayedGirdleCount}=${displayedTotalCount}`)}</span>
 </div>`;
 
    const header = stone.metadata?.title ? `
