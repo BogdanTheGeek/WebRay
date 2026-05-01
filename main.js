@@ -742,7 +742,7 @@ function buildUI(ui, cbs) {
    });
 
    // Instruction page printing
-   function printPreview() {
+   async function printPreview() {
       const views = {
          top: [0, 0, 1],
          right: [-1, 0, 0],
@@ -783,6 +783,16 @@ function buildUI(ui, cbs) {
       const imgs = Object.entries(dataURLs)
          .map(([name, url]) => `<img id="${name}" src="${url}" style="width:32%;aspect-ratio:1;">`)
          .join('\n');
+
+      let stoneRenderImg = '';
+      try {
+         const raytraceDataUrl = await cbs.captureRaytracedStoneForPrint?.();
+         if (raytraceDataUrl) {
+            stoneRenderImg = `<img id="stoneRender" src="${raytraceDataUrl}" class="stoneRender">`;
+         }
+      } catch (err) {
+         console.error('printPreview: failed to capture raytraced stone image', err);
+      }
 
       const printWindow = window.open('', '', 'width=800,height=600');
       printWindow.document.write(`
@@ -852,6 +862,12 @@ body { font-family: Arial; margin: 20px; }
    flex-direction:row;
    flex-wrap:wrap;
 }
+.stoneRender {
+   width: min(100%, 420px);
+   height: auto;
+   margin: 0 12px 12px 0;
+   background: #fff;
+}
 .graph {
    width: min(100%, 640px);
    height: auto;
@@ -876,12 +892,14 @@ ${summary}
 <div class="pb"></div>
 <div class="header">Light Return Graph for RI: ${ui.ri}</div>
 ${graphImg}
+<div class="header">Render:</div>
+${stoneRenderImg}
 </body>
 </html>`);
       printWindow.document.close();
       printWindow.onload = () => printWindow.print();
    }
-   document.getElementById('printInstructions').addEventListener('click', printPreview);
+   document.getElementById('printInstructions').addEventListener('click', () => { printPreview(); });
 
 
    // External API for model-loading to push updates into the live panel
@@ -2724,6 +2742,29 @@ async function setupApp() {
          requestRender();
       },
       onFileSelected(name, fileUrl) { loadModel(name, fileUrl); },
+      async captureRaytracedStoneForPrint() {
+         if (!renderBundle) return '';
+
+         const prevBackground = [...ui.backgroundColor];
+         const bgColorInput = panel.querySelector('#bgColor');
+
+         ui.backgroundColor = [1, 1, 1];
+         if (bgColorInput) bgColorInput.value = '#ffffff';
+         applyBodyBackground(ui);
+         invalidateOrientationCache();
+         requestRender();
+
+         await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+         const raytraceDataUrl = canvas.toDataURL('image/png');
+
+         ui.backgroundColor = prevBackground;
+         if (bgColorInput) bgColorInput.value = rgbToHex(prevBackground);
+         applyBodyBackground(ui);
+         invalidateOrientationCache();
+         requestRender();
+
+         return raytraceDataUrl;
+      },
    });
 
    setupExporter(ui, () => ({
