@@ -1493,6 +1493,35 @@ async function setupApp() {
 
 
       const grouped = groupExternalFacetsForDesign(facets, gear);
+      const symmetryValues = grouped
+         .map((facet) => parseInt(facet?.symmetry, 10))
+         .filter((value) => Number.isFinite(value) && value >= 1);
+
+      if (designSymmetryEl) {
+         designSymmetryEl.max = String(gear);
+         const pool = symmetryValues.some((value) => value > 1)
+            ? symmetryValues.filter((value) => value > 1)
+            : symmetryValues;
+
+         if (pool.length > 0) {
+            const counts = new Map();
+            for (const value of pool) {
+               counts.set(value, (counts.get(value) || 0) + 1);
+            }
+            let bestSymmetry = 1;
+            let bestCount = -1;
+            for (const [value, count] of counts) {
+               if (count > bestCount || (count === bestCount && value > bestSymmetry)) {
+                  bestCount = count;
+                  bestSymmetry = value;
+               }
+            }
+            designSymmetryEl.value = String(Math.max(1, Math.min(gear, bestSymmetry)));
+         } else {
+            designSymmetryEl.value = '1';
+         }
+      }
+
       designFacets = grouped.map((facet, idx) => normalizeDesignFacet(facet, idx));
       renderDesignFacetList();
    }
