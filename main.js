@@ -2093,6 +2093,7 @@ async function setupApp() {
 
    let currentGemTab = 'controls';
    let designPickDirty = true;
+   let designHaloCache = null;
    let designHover = null;
    let designPointerClientX = 0;
    let designPointerClientY = 0;
@@ -2141,6 +2142,43 @@ async function setupApp() {
    function invalidateDesignPickState(clearSelected = true) {
       designPickDirty = true;
       clearDesignSelection(clearSelected);
+   }
+
+   function computeGearLabelStep(gear) {
+      for (let d = 5; d <= gear; d++) {
+         if (gear % d === 0) return d;
+      }
+      return 5;
+   }
+
+   function getDesignHaloSpec() {
+      const stone = currentStone;
+      if (!stone || !(stone.vertexData instanceof Float32Array) || stone.vertexData.length < 7) return null;
+      if (designHaloCache?.stone === stone) return designHaloCache;
+
+      let minZ = Infinity;
+      let maxZ = -Infinity;
+      let maxRxy = 0;
+      const data = stone.vertexData;
+      for (let i = 0; i < data.length; i += 7) {
+         const x = data[i + 0];
+         const y = data[i + 1];
+         const z = data[i + 2];
+         if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+         if (z < minZ) minZ = z;
+         if (z > maxZ) maxZ = z;
+         const rxy = Math.hypot(x, y);
+         if (rxy > maxRxy) maxRxy = rxy;
+      }
+
+      if (!Number.isFinite(minZ) || !Number.isFinite(maxZ) || !Number.isFinite(maxRxy)) return null;
+      const margin = Math.max(0.02, modelBoundsRadius * 0.06);
+      designHaloCache = {
+         stone,
+         z: (minZ + maxZ) * 0.5,
+         radius: Math.max(0.05, maxRxy + margin),
+      };
+      return designHaloCache;
    }
 
    function roundKey(v) {
@@ -2813,11 +2851,104 @@ async function setupApp() {
       };
    }
 
+   function drawDesignGearHalo() {
+      if (currentGemTab !== 'design') return;
+      const halo = getDesignHaloSpec();
+      if (!halo) return;
+
+      const gearInput = parseInt(designGearEl.value, 10);
+      const sourceGear = parseInt(currentStone?.sourceGear, 10);
+      const gear = Number.isFinite(gearInput) && gearInput > 0
+         ? gearInput
+         : (Number.isFinite(sourceGear) && sourceGear > 0 ? sourceGear : 96);
+
+      const ringSamples = Math.max(96, gear * 3);
+      selectionOverlayCtx.save();
+
+      // Soft glow under halo line.
+      selectionOverlayCtx.lineWidth = 5;
+      selectionOverlayCtx.strokeStyle = 'rgba(120, 220, 255, 0.12)';
+      selectionOverlayCtx.beginPath();
+      let started = false;
+      for (let i = 0; i <= ringSamples; i++) {
+         const angle = (i / ringSamples) * Math.PI * 2;
+         const world = [
+            halo.radius * Math.sin(angle),
+            -halo.radius * Math.cos(angle),
+            halo.z,
+         ];
+         const screen = modelPointToScreen(world);
+         if (!screen) {
+            started = false;
+            continue;
+         }
+         if (!started) {
+            selectionOverlayCtx.moveTo(screen.x, screen.y);
+            started = true;
+         } else {
+            selectionOverlayCtx.lineTo(screen.x, screen.y);
+         }
+      }
+      selectionOverlayCtx.stroke();
+
+      // Main halo line.
+      selectionOverlayCtx.lineWidth = 1.5;
+      selectionOverlayCtx.strokeStyle = 'rgba(120, 220, 255, 0.48)';
+      selectionOverlayCtx.beginPath();
+      started = false;
+      for (let i = 0; i <= ringSamples; i++) {
+         const angle = (i / ringSamples) * Math.PI * 2;
+         const world = [
+            halo.radius * Math.sin(angle),
+            -halo.radius * Math.cos(angle),
+            halo.z,
+         ];
+         const screen = modelPointToScreen(world);
+         if (!screen) {
+            started = false;
+            continue;
+         }
+         if (!started) {
+            selectionOverlayCtx.moveTo(screen.x, screen.y);
+            started = true;
+         } else {
+            selectionOverlayCtx.lineTo(screen.x, screen.y);
+         }
+      }
+      selectionOverlayCtx.stroke();
+
+      const labelStep = computeGearLabelStep(gear);
+      const labelRadius = halo.radius * 1.06;
+      selectionOverlayCtx.font = '11px system-ui, sans-serif';
+      selectionOverlayCtx.textAlign = 'center';
+      selectionOverlayCtx.textBaseline = 'middle';
+      selectionOverlayCtx.lineWidth = 3;
+      selectionOverlayCtx.strokeStyle = 'rgba(0, 0, 0, 0.72)';
+      selectionOverlayCtx.fillStyle = 'rgba(205, 242, 255, 0.97)';
+
+      for (let i = 0; i < gear; i += labelStep) {
+         const angle = (i / gear) * Math.PI * 2;
+         const world = [
+            labelRadius * Math.sin(angle),
+            -labelRadius * Math.cos(angle),
+            halo.z,
+         ];
+         const screen = modelPointToScreen(world);
+         if (!screen) continue;
+         const label = String(i === 0 ? gear : i);
+         selectionOverlayCtx.strokeText(label, screen.x, screen.y);
+         selectionOverlayCtx.fillText(label, screen.x, screen.y);
+      }
+
+      selectionOverlayCtx.restore();
+   }
+
    function drawDesignSelectionOverlay() {
       selectionOverlayCtx.clearRect(0, 0, window.innerWidth, window.innerHeight);
       if (currentGemTab !== 'design') return;
 
       buildDesignPickCacheIfNeeded();
+      drawDesignGearHalo();
 
       const drawVertex = (vertexId, radius, alpha) => {
          const vertex = designPickCache.vertices[vertexId];
@@ -3403,6 +3534,7 @@ async function setupApp() {
          }
       }
       currentStone = stone;
+      designHaloCache = null;
       invalidateDesignPickState(true);
       modelBoundsRadius = Math.max(0.1, computeMeshBoundsRadius(stone.vertexData));
       console.debug(`Model bounds radius: ${modelBoundsRadius.toFixed(3)}`);
