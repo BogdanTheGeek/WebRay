@@ -522,6 +522,8 @@ function buildUI(ui, cbs) {
          setLightMode(mode);
       }
 
+      cbs.onGemTopTabChanged?.(tabName);
+
    };
    gemTopTabsEl?.addEventListener('click', (e) => {
       const button = e.target.closest('.mode[data-gem-tab]');
@@ -2029,6 +2031,795 @@ async function setupApp() {
    graphResizeObserver.observe(graphSvgEl);
 
    const uniformScratch = new Float32Array(288 / 4);
+   const invViewProjMat = mat4.create();
+   const invModelMat = mat4.create();
+
+   let currentGemTab = 'controls';
+   let designPickDirty = true;
+   let designHover = null;
+   let designPointerClientX = 0;
+   let designPointerClientY = 0;
+   let designSelection = {
+      vertexIds: [],
+      edgeIds: [],
+   };
+   let designPickCache = {
+      vertices: [], // { id, p:[x,y,z], key, faceIds:number[] }
+      edges: [], // { id, aId, bId, faceIds:number[] }
+      faces: [], // { id, normal:[x,y,z], center:[x,y,z], vertexIds:number[] }
+   };
+
+   const selectionOverlayCanvas = document.createElement('canvas');
+   selectionOverlayCanvas.id = 'selectionOverlayCanvas';
+   Object.assign(selectionOverlayCanvas.style, {
+      position: 'fixed',
+      inset: '0',
+      width: '100vw',
+      height: '100vh',
+      pointerEvents: 'none',
+      zIndex: '80',
+      display: 'block',
+   });
+   document.body.appendChild(selectionOverlayCanvas);
+   const selectionOverlayCtx = selectionOverlayCanvas.getContext('2d');
+   let selectionOverlayDpr = Math.max(1, window.devicePixelRatio || 1);
+
+   function resizeSelectionOverlay() {
+      selectionOverlayDpr = Math.max(1, window.devicePixelRatio || 1);
+      const w = Math.max(1, Math.round(window.innerWidth * selectionOverlayDpr));
+      const h = Math.max(1, Math.round(window.innerHeight * selectionOverlayDpr));
+      if (selectionOverlayCanvas.width !== w) selectionOverlayCanvas.width = w;
+      if (selectionOverlayCanvas.height !== h) selectionOverlayCanvas.height = h;
+      selectionOverlayCtx.setTransform(selectionOverlayDpr, 0, 0, selectionOverlayDpr, 0, 0);
+   }
+
+   function clearDesignSelection(clearSelected = true) {
+      designHover = null;
+      if (clearSelected) {
+         designSelection.vertexIds = [];
+         designSelection.edgeIds = [];
+      }
+   }
+
+   function invalidateDesignPickState(clearSelected = true) {
+      designPickDirty = true;
+      clearDesignSelection(clearSelected);
+   }
+
+   function roundKey(v) {
+      return Math.round(v * 100000);
+   }
+
+   function buildDesignPickCacheIfNeeded() {
+      if (!designPickDirty) return;
+      designPickDirty = false;
+      designPickCache = { vertices: [], edges: [], faces: [] };
+
+      const stone = currentStone;
+      if (!stone) return;
+
+      const vertexMap = new Map();
+      const edgeMap = new Map();
+      const vertices = [];
+      const edges = [];
+      const facesCache = [];
+
+      const gearValue = parseInt(designGearEl.value, 10);
+      const pickGear = Number.isFinite(gearValue) && gearValue > 0
+         ? gearValue
+         : (Number.isFinite(Number(stone.sourceGear)) && Number(stone.sourceGear) > 0
+            ? Number(stone.sourceGear)
+            : 96);
+
+      const sourceFacetList = (Array.isArray(designFacets) && designFacets.length > 0)
+         ? designFacets
+         : groupExternalFacetsForDesign(Array.isArray(stone.facets) ? stone.facets : [], pickGear);
+      const faces = generateFacesFromFacetList(sourceFacetList, pickGear);
+      if (!Array.isArray(faces) || faces.length === 0) return;
+
+      const getVertexId = (x, y, z) => {
+         const key = `${roundKey(x)}|${roundKey(y)}|${roundKey(z)}`;
+         const found = vertexMap.get(key);
+         if (found != null) return found;
+         const id = vertices.length;
+         vertices.push({ id, p: [x, y, z], key, faceIds: [] });
+         vertexMap.set(key, id);
+         return id;
+      };
+
+      const getEdgeId = (aId, bId) => {
+         const lo = Math.min(aId, bId);
+         const hi = Math.max(aId, bId);
+         const edgeKey = `${lo}|${hi}`;
+         const found = edgeMap.get(edgeKey);
+         if (found != null) return found;
+         const id = edges.length;
+         edges.push({ id, aId: lo, bId: hi, faceIds: [] });
+         edgeMap.set(edgeKey, id);
+         return id;
+      };
+
+      for (const face of faces) {
+         const faceVerts = Array.isArray(face?.vertices) ? face.vertices : [];
+         if (faceVerts.length < 2) continue;
+         const ids = [];
+         for (const v of faceVerts) {
+            if (!Array.isArray(v) || v.length < 3) continue;
+            const x = Number(v[0]);
+            const y = Number(v[1]);
+            const z = Number(v[2]);
+            if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
+            ids.push(getVertexId(x, y, z));
+         }
+         if (ids.length < 2) continue;
+
+         const faceId = facesCache.length;
+         const center = [0, 0, 0];
+         for (const vertexId of ids) {
+            const p = vertices[vertexId].p;
+            center[0] += p[0];
+            center[1] += p[1];
+            center[2] += p[2];
+            vertices[vertexId].faceIds.push(faceId);
+         }
+         center[0] /= ids.length;
+         center[1] /= ids.length;
+         center[2] /= ids.length;
+
+         let normal = [0, 0, 0];
+         if (Array.isArray(face?.normal) && face.normal.length >= 3
+            && Number.isFinite(face.normal[0]) && Number.isFinite(face.normal[1]) && Number.isFinite(face.normal[2])) {
+            normal = normalize3([Number(face.normal[0]), Number(face.normal[1]), Number(face.normal[2])]);
+         }
+         if (len3(normal) <= 1e-8 && ids.length >= 3) {
+            const p0 = vertices[ids[0]].p;
+            const p1 = vertices[ids[1]].p;
+            const p2 = vertices[ids[2]].p;
+            normal = normalize3(cross3(sub3(p1, p0), sub3(p2, p0)));
+         }
+         facesCache.push({ id: faceId, normal, center, vertexIds: ids.slice() });
+
+         for (let i = 0; i < ids.length; i++) {
+            const aRaw = ids[i];
+            const bRaw = ids[(i + 1) % ids.length];
+            if (aRaw === bRaw) continue;
+            const edgeId = getEdgeId(aRaw, bRaw);
+            const edge = edges[edgeId];
+            if (!edge.faceIds.includes(faceId)) edge.faceIds.push(faceId);
+         }
+      }
+
+      designPickCache = { vertices, edges, faces: facesCache };
+   }
+
+   function dot3(a, b) {
+      return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+   }
+
+   function sub3(a, b) {
+      return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+   }
+
+   function add3(a, b) {
+      return [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+   }
+
+   function scale3(v, s) {
+      return [v[0] * s, v[1] * s, v[2] * s];
+   }
+
+   function len3(v) {
+      return Math.hypot(v[0], v[1], v[2]);
+   }
+
+   function normalize3(v) {
+      const len = len3(v);
+      if (!Number.isFinite(len) || len <= 1e-9) return [0, 0, 0];
+      return scale3(v, 1 / len);
+   }
+
+   function cross3(a, b) {
+      return [
+         a[1] * b[2] - a[2] * b[1],
+         a[2] * b[0] - a[0] * b[2],
+         a[0] * b[1] - a[1] * b[0],
+      ];
+   }
+
+   function distanceRayToPoint(rayOrigin, rayDir, point) {
+      const toPoint = sub3(point, rayOrigin);
+      const t = Math.max(0, dot3(toPoint, rayDir));
+      const closest = add3(rayOrigin, scale3(rayDir, t));
+      return {
+         dist: len3(sub3(point, closest)),
+         rayT: t,
+      };
+   }
+
+   function distanceRayToSegment(rayOrigin, rayDir, segA, segB) {
+      const u = rayDir;
+      const v = sub3(segB, segA);
+      const w = sub3(rayOrigin, segA);
+      const a = dot3(u, u);
+      const b = dot3(u, v);
+      const c = dot3(v, v);
+      const d = dot3(u, w);
+      const e = dot3(v, w);
+      const den = a * c - b * b;
+
+      let sc = 0;
+      let tc = 0;
+
+      if (Math.abs(den) < 1e-8 || c <= 1e-8) {
+         sc = 0;
+         tc = c > 1e-8 ? Math.max(0, Math.min(1, e / c)) : 0;
+      } else {
+         sc = (b * e - c * d) / den;
+         tc = (a * e - b * d) / den;
+         if (sc < 0) {
+            sc = 0;
+            tc = Math.max(0, Math.min(1, e / c));
+         } else {
+            tc = Math.max(0, Math.min(1, tc));
+         }
+      }
+
+      const pRay = add3(rayOrigin, scale3(u, sc));
+      const pSeg = add3(segA, scale3(v, tc));
+      return {
+         dist: len3(sub3(pRay, pSeg)),
+         rayT: sc,
+      };
+   }
+
+   function cursorToModelRay(clientX, clientY) {
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return null;
+      const x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      const y = 1 - ((clientY - rect.top) / rect.height) * 2;
+
+      const nearWorld = vec4.fromValues(x, y, -1, 1);
+      const farWorld = vec4.fromValues(x, y, 1, 1);
+      vec4.transformMat4(nearWorld, nearWorld, invViewProjMat);
+      vec4.transformMat4(farWorld, farWorld, invViewProjMat);
+      if (Math.abs(nearWorld[3]) <= 1e-8 || Math.abs(farWorld[3]) <= 1e-8) return null;
+      nearWorld[0] /= nearWorld[3]; nearWorld[1] /= nearWorld[3]; nearWorld[2] /= nearWorld[3];
+      farWorld[0] /= farWorld[3]; farWorld[1] /= farWorld[3]; farWorld[2] /= farWorld[3];
+
+      const nearModel = vec4.fromValues(nearWorld[0], nearWorld[1], nearWorld[2], 1);
+      const farModel = vec4.fromValues(farWorld[0], farWorld[1], farWorld[2], 1);
+      vec4.transformMat4(nearModel, nearModel, invModelMat);
+      vec4.transformMat4(farModel, farModel, invModelMat);
+      if (Math.abs(nearModel[3]) <= 1e-8 || Math.abs(farModel[3]) <= 1e-8) return null;
+      nearModel[0] /= nearModel[3]; nearModel[1] /= nearModel[3]; nearModel[2] /= nearModel[3];
+      farModel[0] /= farModel[3]; farModel[1] /= farModel[3]; farModel[2] /= farModel[3];
+
+      const origin = [nearModel[0], nearModel[1], nearModel[2]];
+      const dir = normalize3([
+         farModel[0] - nearModel[0],
+         farModel[1] - nearModel[1],
+         farModel[2] - nearModel[2],
+      ]);
+      if (len3(dir) <= 1e-8) return null;
+      return { origin, dir };
+   }
+
+   function pickDesignEntity(clientX, clientY) {
+      buildDesignPickCacheIfNeeded();
+      const ray = cursorToModelRay(clientX, clientY);
+      if (!ray) return null;
+
+      const cameraModel4 = vec4.fromValues(cameraPos[0], cameraPos[1], cameraPos[2], 1);
+      vec4.transformMat4(cameraModel4, cameraModel4, invModelMat);
+      if (Math.abs(cameraModel4[3]) <= 1e-8) return null;
+      const cameraModel = [
+         cameraModel4[0] / cameraModel4[3],
+         cameraModel4[1] / cameraModel4[3],
+         cameraModel4[2] / cameraModel4[3],
+      ];
+
+      const faceVisibility = designPickCache.faces.map((face) => {
+         if (!face || !Array.isArray(face.normal) || len3(face.normal) <= 1e-8) return false;
+         const toCamera = sub3(cameraModel, face.center);
+         return dot3(face.normal, toCamera) > 1e-8;
+      });
+
+      const isVertexVisible = (vertex) => {
+         if (!vertex || !Array.isArray(vertex.faceIds) || vertex.faceIds.length === 0) return false;
+         for (const faceId of vertex.faceIds) {
+            if (faceVisibility[faceId]) return true;
+         }
+         return false;
+      };
+
+      const isEdgeVisible = (edge) => {
+         if (!edge || !Array.isArray(edge.faceIds) || edge.faceIds.length === 0) return false;
+         for (const faceId of edge.faceIds) {
+            if (faceVisibility[faceId]) return true;
+         }
+         return false;
+      };
+
+      const vertexThreshold = Math.max(0.01, modelBoundsRadius * 0.025);
+      const edgeThreshold = Math.max(0.01, modelBoundsRadius * 0.02);
+      let bestVertex = null;
+
+      for (const vertex of designPickCache.vertices) {
+         if (!isVertexVisible(vertex)) continue;
+         const hit = distanceRayToPoint(ray.origin, ray.dir, vertex.p);
+         if (hit.rayT < 0) continue;
+         if (hit.dist > vertexThreshold) continue;
+         if (!bestVertex || hit.dist < bestVertex.dist) {
+            bestVertex = { type: 'vertex', id: vertex.id, dist: hit.dist };
+         }
+      }
+      if (bestVertex) return bestVertex;
+
+      let bestEdge = null;
+      for (const edge of designPickCache.edges) {
+         if (!isEdgeVisible(edge)) continue;
+         const a = designPickCache.vertices[edge.aId]?.p;
+         const b = designPickCache.vertices[edge.bId]?.p;
+         if (!a || !b) continue;
+         const hit = distanceRayToSegment(ray.origin, ray.dir, a, b);
+         if (hit.rayT < 0) continue;
+         if (hit.dist > edgeThreshold) continue;
+         if (!bestEdge || hit.dist < bestEdge.dist) {
+            bestEdge = { type: 'edge', id: edge.id, dist: hit.dist };
+         }
+      }
+      return bestEdge;
+   }
+
+   function setSelectionFromHover(additiveSelection) {
+      if (!designHover) {
+         if (!additiveSelection) clearDesignSelection(true);
+         return;
+      }
+
+      if (!additiveSelection) {
+         designSelection.vertexIds = [];
+         designSelection.edgeIds = [];
+      }
+
+      if (designHover.type === 'vertex') {
+         if (!designSelection.vertexIds.includes(designHover.id)) {
+            designSelection.vertexIds.push(designHover.id);
+         }
+      } else if (designHover.type === 'edge') {
+         if (!designSelection.edgeIds.includes(designHover.id)) {
+            designSelection.edgeIds.push(designHover.id);
+         }
+      }
+
+      if (!additiveSelection) {
+         if (designHover.type === 'vertex') designSelection.edgeIds = [];
+         if (designHover.type === 'edge') designSelection.vertexIds = [];
+      }
+   }
+
+   function computeSignedFacetAngleLikeLoader(normal) {
+      const nz = Math.max(-1, Math.min(1, Math.abs(normal[2])));
+      const absAngle = Math.acos(nz) * 180 / Math.PI;
+      return normal[2] >= 0 ? absAngle : -absAngle;
+   }
+
+   function computeFacetNormalFromDesignInputs() {
+      const gear = Math.max(1, parseInt(designGearEl.value, 10) || 96);
+      const rawIndex = parseFloat(designStartIndexEl.value) || 0;
+      const angleDeg = Math.max(-90, Math.min(90, parseFloat(designAngleEl.value) || 0));
+
+      if (Math.abs(angleDeg) <= 1e-8) {
+         return [0, 0, angleDeg >= 0 ? 1 : -1];
+      }
+
+      const incl = angleDeg * Math.PI / 180;
+      const azi = ((rawIndex % gear) / gear) * Math.PI * 2;
+      let c = Math.cos(incl);
+      let s = Math.sin(incl);
+      if (angleDeg < 0) {
+         c *= -1;
+         s *= -1;
+      }
+      return normalize3([s * Math.sin(azi), -s * Math.cos(azi), c]);
+   }
+
+   function computeDesignIndexFromNormal(normal, gear, fallbackIndex = 0) {
+      const x = Number(normal?.[0]) || 0;
+      const y = Number(normal?.[1]) || 0;
+      if (Math.abs(x) < 1e-8 && Math.abs(y) < 1e-8) {
+         return fallbackIndex;
+      }
+      const turns = Math.atan2(x, -y) / (Math.PI * 2);
+      let idx = Math.round(turns * gear);
+      idx = ((idx % gear) + gear) % gear;
+      return idx;
+   }
+
+   function computeStoneWidthForSelection() {
+      const verts = designPickCache.vertices;
+      if (!Array.isArray(verts) || verts.length < 2) return null;
+
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
+      for (const vertex of verts) {
+         const p = vertex?.p;
+         if (!Array.isArray(p) || p.length < 3) continue;
+         const x = Number(p[0]);
+         const y = Number(p[1]);
+         if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+         if (x < minX) minX = x;
+         if (x > maxX) maxX = x;
+         if (y < minY) minY = y;
+         if (y > maxY) maxY = y;
+      }
+      if (!Number.isFinite(minX) || !Number.isFinite(maxX) || !Number.isFinite(minY) || !Number.isFinite(maxY)) {
+         return null;
+      }
+      const xSpan = maxX - minX;
+      const ySpan = maxY - minY;
+      const width = Math.max(1e-9, Math.min(xSpan, ySpan));
+      return Number.isFinite(width) && width > 0 ? width : null;
+   }
+
+   function computeStoneMidZForSelection() {
+      const verts = designPickCache.vertices;
+      if (!Array.isArray(verts) || verts.length < 2) return null;
+
+      const zValues = [];
+      for (const vertex of verts) {
+         const p = vertex?.p;
+         if (!Array.isArray(p) || p.length < 3) continue;
+         const z = Number(p[2]);
+         if (!Number.isFinite(z)) continue;
+         zValues.push(z);
+      }
+      if (!zValues.length) return null;
+      zValues.sort((a, b) => a - b);
+      const mid = Math.floor(zValues.length / 2);
+      if (zValues.length % 2 === 0) {
+         return (zValues[mid - 1] + zValues[mid]) * 0.5;
+      }
+      return zValues[mid];
+   }
+
+   function edgeLengthAndPercent(edge, stoneWidth) {
+      if (!edge) return null;
+      const a = designPickCache.vertices[edge.aId]?.p;
+      const b = designPickCache.vertices[edge.bId]?.p;
+      if (!a || !b) return null;
+      const length = len3(sub3(b, a));
+      if (!Number.isFinite(length)) return null;
+      const percent = Number.isFinite(stoneWidth) && stoneWidth > 0
+         ? (length / stoneWidth) * 100
+         : null;
+      return { length, percent };
+   }
+
+   function buildSelectionMetric() {
+      const result = {
+         title: '',
+         details: '',
+      };
+
+      const stoneWidth = computeStoneWidthForSelection();
+
+      if (designSelection.edgeIds.length === 1) {
+         const edge = designPickCache.edges[designSelection.edgeIds[0]];
+         const edgeMetric = edgeLengthAndPercent(edge, stoneWidth);
+         if (!edgeMetric) return result;
+         result.title = 'Edge';
+         if (Number.isFinite(edgeMetric.percent)) {
+            result.details = `Length ${edgeMetric.length.toFixed(5)} (${edgeMetric.percent.toFixed(2)}% width)`;
+         } else {
+            result.details = `Length ${edgeMetric.length.toFixed(5)}`;
+         }
+         return result;
+      }
+
+      if (designSelection.vertexIds.length === 1 && designSelection.edgeIds.length === 0) {
+         const vertex = designPickCache.vertices[designSelection.vertexIds[0]];
+         if (!vertex) return result;
+         const dist = len3(vertex.p);
+
+         const facetNormal = computeFacetNormalFromDesignInputs();
+         const planeDist = Math.abs(dot3(facetNormal, vertex.p));
+         if (Number.isFinite(planeDist)) {
+            designDistanceEl.value = Math.max(0, planeDist).toFixed(5);
+         }
+
+         result.title = 'Vertex';
+         result.details = `Origin dist ${dist.toFixed(5)}, facet dist ${planeDist.toFixed(5)} (autofill)`;
+         return result;
+      }
+
+      if (designSelection.vertexIds.length === 2 && designSelection.edgeIds.length === 0) {
+         const v0 = designPickCache.vertices[designSelection.vertexIds[0]]?.p;
+         const v1 = designPickCache.vertices[designSelection.vertexIds[1]]?.p;
+         if (!v0 || !v1) return result;
+
+         const edgeDir = normalize3(sub3(v1, v0));
+         if (len3(edgeDir) <= 1e-8) return result;
+
+         const midpoint = scale3(add3(v0, v1), 0.5);
+         const gear = Math.max(1, parseInt(designGearEl.value, 10) || 96);
+         const currentIndex = parseFloat(designStartIndexEl.value) || 0;
+         const currentAngle = Math.max(-90, Math.min(90, parseFloat(designAngleEl.value) || 0));
+         const stoneMidZ = computeStoneMidZForSelection();
+         let desiredSign = currentAngle < 0 ? -1 : 1;
+         if (Number.isFinite(stoneMidZ)) {
+            const zDelta = midpoint[2] - stoneMidZ;
+            const zEps = Math.max(1e-6, modelBoundsRadius * 0.03);
+            if (zDelta > zEps) desiredSign = 1;
+            else if (zDelta < -zEps) desiredSign = -1;
+         }
+
+         const solvedAngleDeg = Math.abs(currentAngle) * desiredSign;
+         const angleAbsRad = Math.abs(solvedAngleDeg) * Math.PI / 180;
+         const desiredNz = Math.cos(angleAbsRad) * desiredSign;
+         const horizMag = Math.sin(angleAbsRad);
+
+         const dx = edgeDir[0];
+         const dy = edgeDir[1];
+         const dz = edgeDir[2];
+         const dxyLen = Math.hypot(dx, dy);
+
+         let planeNormal = null;
+         if (dxyLen > 1e-8 && horizMag > 1e-8) {
+            const rhs = -desiredNz * dz;
+            const p = rhs / dxyLen;
+            if (Math.abs(p) <= horizMag + 1e-8) {
+               const qAbs = Math.sqrt(Math.max(0, (horizMag * horizMag) - (p * p)));
+               const ux = dx / dxyLen;
+               const uy = dy / dxyLen;
+               const vx = -uy;
+               const vy = ux;
+
+               const cand1 = normalize3([p * ux + qAbs * vx, p * uy + qAbs * vy, desiredNz]);
+               const cand2 = normalize3([p * ux - qAbs * vx, p * uy - qAbs * vy, desiredNz]);
+
+               const currentNormal = computeFacetNormalFromDesignInputs();
+               const score1 = dot3(cand1, currentNormal);
+               const score2 = dot3(cand2, currentNormal);
+               planeNormal = score1 >= score2 ? cand1 : cand2;
+            }
+         }
+
+         if (!planeNormal || len3(planeNormal) <= 1e-8) {
+            planeNormal = computeFacetNormalFromDesignInputs();
+         }
+
+         if (Math.sign(planeNormal[2]) !== Math.sign(desiredNz) && Math.abs(desiredNz) > 1e-8) {
+            planeNormal = scale3(planeNormal, -1);
+         }
+
+         const inferredIndex = computeDesignIndexFromNormal(planeNormal, gear, currentIndex);
+         designAngleEl.value = Math.max(-90, Math.min(90, solvedAngleDeg)).toFixed(3);
+         designStartIndexEl.value = String(inferredIndex);
+
+         const planeDist = Math.abs(dot3(planeNormal, midpoint));
+         designDistanceEl.value = Math.max(0, planeDist).toFixed(5);
+
+         const edgeLength = len3(sub3(v1, v0));
+         const edgePct = Number.isFinite(stoneWidth) && stoneWidth > 0
+            ? (edgeLength / stoneWidth) * 100
+            : null;
+
+         result.title = '2 Vertices';
+         if (Number.isFinite(edgePct)) {
+            result.details = `Span ${edgeLength.toFixed(5)} (${edgePct.toFixed(2)}% width), index ${inferredIndex}, dist ${planeDist.toFixed(5)} (autofill)`;
+         } else {
+            result.details = `Span ${edgeLength.toFixed(5)}, index ${inferredIndex}, dist ${planeDist.toFixed(5)} (autofill)`;
+         }
+         return result;
+      }
+
+      if (designSelection.vertexIds.length === 3 && designSelection.edgeIds.length === 0) {
+         const v0 = designPickCache.vertices[designSelection.vertexIds[0]]?.p;
+         const v1 = designPickCache.vertices[designSelection.vertexIds[1]]?.p;
+         const v2 = designPickCache.vertices[designSelection.vertexIds[2]]?.p;
+         if (!v0 || !v1 || !v2) return result;
+
+         const e01 = sub3(v1, v0);
+         const e02 = sub3(v2, v0);
+         let planeNormal = normalize3(cross3(e01, e02));
+         if (len3(planeNormal) <= 1e-8) return result;
+
+         const midpoint = scale3(add3(add3(v0, v1), v2), 1 / 3);
+         const stoneMidZ = computeStoneMidZForSelection();
+         const currentAngle = parseFloat(designAngleEl.value);
+         const defaultSign = Number.isFinite(currentAngle) && currentAngle < 0 ? -1 : 1;
+         let desiredSign = defaultSign;
+         if (Number.isFinite(stoneMidZ)) {
+            const zDelta = midpoint[2] - stoneMidZ;
+            const zEps = Math.max(1e-6, modelBoundsRadius * 0.03);
+            if (zDelta > zEps) desiredSign = 1;
+            else if (zDelta < -zEps) desiredSign = -1;
+         }
+         if ((planeNormal[2] >= 0 ? 1 : -1) !== desiredSign) {
+            planeNormal = scale3(planeNormal, -1);
+         }
+
+         const gear = Math.max(1, parseInt(designGearEl.value, 10) || 96);
+         const currentIndex = parseFloat(designStartIndexEl.value) || 0;
+         const inferredIndex = computeDesignIndexFromNormal(planeNormal, gear, currentIndex);
+         const tierAngle = computeSignedFacetAngleLikeLoader(planeNormal);
+         const planeDist = Math.abs(dot3(planeNormal, midpoint));
+
+         designAngleEl.value = Math.max(-90, Math.min(90, tierAngle)).toFixed(3);
+         designStartIndexEl.value = String(inferredIndex);
+         designDistanceEl.value = Math.max(0, planeDist).toFixed(5);
+
+         result.title = '3 Vertices';
+         result.details = `Plane fit: index ${inferredIndex}, tier ${tierAngle.toFixed(3)}°, dist ${planeDist.toFixed(5)} (autofill)`;
+         return result;
+      }
+
+      if (designSelection.edgeIds.length === 2) {
+         const edgeA = designPickCache.edges[designSelection.edgeIds[0]];
+         const edgeB = designPickCache.edges[designSelection.edgeIds[1]];
+         if (!edgeA || !edgeB) return result;
+         const edgeAMetric = edgeLengthAndPercent(edgeA, stoneWidth);
+         const edgeBMetric = edgeLengthAndPercent(edgeB, stoneWidth);
+         const a0 = designPickCache.vertices[edgeA.aId]?.p;
+         const a1 = designPickCache.vertices[edgeA.bId]?.p;
+         const b0 = designPickCache.vertices[edgeB.aId]?.p;
+         const b1 = designPickCache.vertices[edgeB.bId]?.p;
+         if (!a0 || !a1 || !b0 || !b1) return result;
+
+         const dirA = normalize3(sub3(a1, a0));
+         const dirB = normalize3(sub3(b1, b0));
+         const gear = Math.max(1, parseInt(designGearEl.value, 10) || 96);
+         const idx = parseFloat(designStartIndexEl.value) || 0;
+         const azi = ((idx % gear) / gear) * Math.PI * 2;
+         const indexAxis = normalize3([Math.sin(azi), -Math.cos(azi), 0]);
+
+         const projectToIndexPlane = (v) => {
+            const dv = dot3(v, indexAxis);
+            return normalize3(sub3(v, scale3(indexAxis, dv)));
+         };
+
+         const projA = projectToIndexPlane(dirA);
+         const projB = projectToIndexPlane(dirB);
+         const projDot = Math.max(-1, Math.min(1, dot3(projA, projB)));
+         const projectedEdgeAngleDeg = Math.acos(projDot) * 180 / Math.PI;
+
+         let planeNormal = normalize3(cross3(projA, projB));
+         if (len3(planeNormal) <= 1e-8) {
+            planeNormal = normalize3(cross3(dirA, dirB));
+         }
+
+         const midA = scale3(add3(a0, a1), 0.5);
+         const midB = scale3(add3(b0, b1), 0.5);
+         const refPoint = scale3(add3(midA, midB), 0.5);
+         const planeDist = Math.abs(dot3(planeNormal, refPoint));
+         const tierAngle = computeSignedFacetAngleLikeLoader(planeNormal);
+
+         designAngleEl.value = Math.max(-90, Math.min(90, tierAngle)).toFixed(3);
+         designDistanceEl.value = Math.max(0, planeDist).toFixed(5);
+
+         result.title = '2 Edges';
+         const lengthsText = (edgeAMetric && edgeBMetric && Number.isFinite(edgeAMetric.percent) && Number.isFinite(edgeBMetric.percent))
+            ? `e1 ${edgeAMetric.percent.toFixed(2)}%, e2 ${edgeBMetric.percent.toFixed(2)}% width`
+            : (edgeAMetric && edgeBMetric
+               ? `e1 ${edgeAMetric.length.toFixed(5)}, e2 ${edgeBMetric.length.toFixed(5)}`
+               : '');
+         const lengthsPrefix = lengthsText ? `${lengthsText}; ` : '';
+         result.details = `${lengthsPrefix}Proj angle ${projectedEdgeAngleDeg.toFixed(2)}°, tier ${tierAngle.toFixed(3)}°, dist ${planeDist.toFixed(5)} (autofill)`;
+         return result;
+      }
+
+      if (designSelection.edgeIds.length > 2) {
+         const edgeMetrics = designSelection.edgeIds
+            .map((edgeId) => edgeLengthAndPercent(designPickCache.edges[edgeId], stoneWidth))
+            .filter((metric) => metric && Number.isFinite(metric.length));
+         if (!edgeMetrics.length) return result;
+
+         const lengths = edgeMetrics.map((m) => m.length);
+         const minLen = Math.min(...lengths);
+         const maxLen = Math.max(...lengths);
+         const avgLen = lengths.reduce((sum, value) => sum + value, 0) / lengths.length;
+
+         result.title = `${edgeMetrics.length} Edges`;
+         if (edgeMetrics.every((m) => Number.isFinite(m.percent))) {
+            const percents = edgeMetrics.map((m) => m.percent);
+            const minPct = Math.min(...percents);
+            const maxPct = Math.max(...percents);
+            const avgPct = percents.reduce((sum, value) => sum + value, 0) / percents.length;
+            result.details = `Avg ${avgPct.toFixed(2)}% width (min ${minPct.toFixed(2)}%, max ${maxPct.toFixed(2)}%)`;
+         } else {
+            result.details = `Avg ${avgLen.toFixed(5)} (min ${minLen.toFixed(5)}, max ${maxLen.toFixed(5)})`;
+         }
+         return result;
+      }
+
+      return result;
+   }
+
+   function modelPointToScreen(point) {
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return null;
+      const p = vec4.fromValues(point[0], point[1], point[2], 1);
+      vec4.transformMat4(p, p, modelMat);
+      vec4.transformMat4(p, p, viewMat);
+      vec4.transformMat4(p, p, projMat);
+      if (Math.abs(p[3]) <= 1e-8) return null;
+      const ndcX = p[0] / p[3];
+      const ndcY = p[1] / p[3];
+      const ndcZ = p[2] / p[3];
+      if (ndcZ < -1.2 || ndcZ > 1.2) return null;
+      return {
+         x: rect.left + ((ndcX + 1) * 0.5) * rect.width,
+         y: rect.top + ((1 - (ndcY + 1) * 0.5) * rect.height),
+      };
+   }
+
+   function drawDesignSelectionOverlay() {
+      selectionOverlayCtx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+      if (currentGemTab !== 'design') return;
+
+      buildDesignPickCacheIfNeeded();
+
+      const drawVertex = (vertexId, radius, alpha) => {
+         const vertex = designPickCache.vertices[vertexId];
+         if (!vertex) return;
+         const screen = modelPointToScreen(vertex.p);
+         if (!screen) return;
+         selectionOverlayCtx.beginPath();
+         selectionOverlayCtx.arc(screen.x, screen.y, radius, 0, Math.PI * 2);
+         selectionOverlayCtx.fillStyle = `rgba(40,255,120,${alpha})`;
+         selectionOverlayCtx.fill();
+         selectionOverlayCtx.strokeStyle = 'rgba(20,160,80,0.95)';
+         selectionOverlayCtx.lineWidth = 1.5;
+         selectionOverlayCtx.stroke();
+      };
+
+      const drawEdge = (edgeId, width, alpha) => {
+         const edge = designPickCache.edges[edgeId];
+         if (!edge) return;
+         const a = designPickCache.vertices[edge.aId]?.p;
+         const b = designPickCache.vertices[edge.bId]?.p;
+         if (!a || !b) return;
+         const sa = modelPointToScreen(a);
+         const sb = modelPointToScreen(b);
+         if (!sa || !sb) return;
+         selectionOverlayCtx.beginPath();
+         selectionOverlayCtx.moveTo(sa.x, sa.y);
+         selectionOverlayCtx.lineTo(sb.x, sb.y);
+         selectionOverlayCtx.strokeStyle = `rgba(40,255,120,${alpha})`;
+         selectionOverlayCtx.lineWidth = width;
+         selectionOverlayCtx.stroke();
+      };
+
+      for (const vertexId of designSelection.vertexIds) drawVertex(vertexId, 6, 0.85);
+      for (const edgeId of designSelection.edgeIds) drawEdge(edgeId, 3, 0.85);
+
+      if (designHover?.type === 'vertex') drawVertex(designHover.id, 4, 0.6);
+      if (designHover?.type === 'edge') drawEdge(designHover.id, 2, 0.6);
+
+      const metric = buildSelectionMetric();
+      if (!metric.title || !metric.details) return;
+      const text = `${metric.title}: ${metric.details}`;
+      const x = Math.max(16, Math.min(window.innerWidth - 16, designPointerClientX + 14));
+      const y = Math.max(16, Math.min(window.innerHeight - 16, designPointerClientY + 14));
+      selectionOverlayCtx.font = '12px system-ui, sans-serif';
+      const textWidth = selectionOverlayCtx.measureText(text).width;
+      const pad = 8;
+      const boxW = textWidth + pad * 2;
+      const boxH = 24;
+      const bx = Math.min(window.innerWidth - boxW - 8, x);
+      const by = Math.min(window.innerHeight - boxH - 8, y);
+      selectionOverlayCtx.fillStyle = 'rgba(0,0,0,0.74)';
+      selectionOverlayCtx.fillRect(bx, by, boxW, boxH);
+      selectionOverlayCtx.strokeStyle = 'rgba(40,255,120,0.75)';
+      selectionOverlayCtx.lineWidth = 1;
+      selectionOverlayCtx.strokeRect(bx + 0.5, by + 0.5, boxW - 1, boxH - 1);
+      selectionOverlayCtx.fillStyle = 'rgba(210,255,225,0.95)';
+      selectionOverlayCtx.textBaseline = 'middle';
+      selectionOverlayCtx.fillText(text, bx + pad, by + boxH / 2);
+   }
 
    function packUniformData(out, modelMatrix, projectionMatrix, time, lightMode, graphMode, flatShading) {
       out.set(modelMatrix, 0);
@@ -2555,6 +3346,7 @@ async function setupApp() {
          }
       }
       currentStone = stone;
+      invalidateDesignPickState(true);
       modelBoundsRadius = Math.max(0.1, computeMeshBoundsRadius(stone.vertexData));
       console.debug(`Model bounds radius: ${modelBoundsRadius.toFixed(3)}`);
 
@@ -2838,10 +3630,11 @@ async function setupApp() {
 
    function shouldKeepRendering() {
       if (exportInProgress) return false;
+      const designModeActive = currentGemTab === 'design';
       const rotSettling = Math.abs(targetRotX - currentRotX) > ROT_EPSILON
          || Math.abs(targetRotY - currentRotY) > ROT_EPSILON;
       const prewarmPending = tiltPreRenderRequested && !tiltPreRenderReady;
-      return animating || dragPointerId !== null || rotSettling || prewarmPending;
+      return designModeActive || animating || dragPointerId !== null || rotSettling || prewarmPending;
    }
 
    uiControls = buildUI(ui, {
@@ -2878,6 +3671,14 @@ async function setupApp() {
       onRenderOutputChanged() {
          invalidateOrientationCache();
          requestRender();
+      },
+      onGemTopTabChanged(tabName) {
+         currentGemTab = tabName;
+         if (tabName !== 'design') {
+            clearDesignSelection(true);
+         } else {
+            requestRender();
+         }
       },
       onFileSelected(name, fileUrl) { loadModel(name, fileUrl); },
       async captureRaytracedStoneForPrint() {
@@ -2956,25 +3757,54 @@ async function setupApp() {
    // finger slides off the canvas edge. touch-action:none (CSS) prevents
    // the browser from hijacking touches for scroll/zoom.
    let dragPointerId = null, lastX = 0, lastY = 0;
+   let designClickStart = null;
+
+   function updateDesignHoverFromPointer(clientX, clientY, forcePick = false) {
+      designPointerClientX = clientX;
+      designPointerClientY = clientY;
+      if (currentGemTab !== 'design' || (!forcePick && dragPointerId !== null)) {
+         designHover = null;
+         return;
+      }
+      designHover = pickDesignEntity(clientX, clientY);
+   }
 
    gpuCanvas.addEventListener('pointerdown', (e) => {
       if (dragPointerId !== null) return;          // ignore extra fingers
       dragPointerId = e.pointerId;
       lastX = e.clientX; lastY = e.clientY;
+      designClickStart = {
+         pointerId: e.pointerId,
+         x: e.clientX,
+         y: e.clientY,
+         moved: false,
+      };
       gpuCanvas.setPointerCapture(e.pointerId);
       requestRender();
    });
 
    function endDrag(e) {
       if (e.pointerId !== dragPointerId) return;
+      if (currentGemTab === 'design' && designClickStart && designClickStart.pointerId === e.pointerId && !designClickStart.moved) {
+         updateDesignHoverFromPointer(e.clientX, e.clientY, true);
+         setSelectionFromHover(Boolean(e.shiftKey || e.ctrlKey || e.metaKey));
+      }
       dragPointerId = null;
+      designClickStart = null;
       requestRender();
    }
    gpuCanvas.addEventListener('pointerup', endDrag);
    gpuCanvas.addEventListener('pointercancel', endDrag);
 
    gpuCanvas.addEventListener('pointermove', (e) => {
+      updateDesignHoverFromPointer(e.clientX, e.clientY);
+
       if (e.pointerId !== dragPointerId) return;
+      if (designClickStart && designClickStart.pointerId === e.pointerId) {
+         if (Math.abs(e.clientX - designClickStart.x) > 3 || Math.abs(e.clientY - designClickStart.y) > 3) {
+            designClickStart.moved = true;
+         }
+      }
       const events = e.getCoalescedEvents?.() ?? [e];
       for (const ev of events) {
          const dx = ((ev.clientX - lastX) / 500) * Math.PI;
@@ -2987,6 +3817,11 @@ async function setupApp() {
          const vTiltEl = panel.querySelector('#vTilt');
          vTiltEl.click();
       }
+      requestRender();
+   });
+
+   gpuCanvas.addEventListener('pointerleave', () => {
+      designHover = null;
       requestRender();
    });
 
@@ -3272,10 +4107,14 @@ async function setupApp() {
 
       const updateStartMs = performance.now();
       updateUniforms(time);
+      mat4.multiply(invViewProjMat, projMat, viewMat);
+      mat4.invert(invViewProjMat, invViewProjMat);
+      mat4.invert(invModelMat, modelMat);
       const updateEndMs = performance.now();
 
       const drawStartMs = performance.now();
       drawAxes();
+      drawDesignSelectionOverlay();
       const drawEndMs = performance.now();
 
       if (renderBundle) {
@@ -3499,6 +4338,8 @@ async function setupApp() {
       requestRender();
    }
    window.addEventListener('resize', resize);
+   window.addEventListener('resize', resizeSelectionOverlay);
+   resizeSelectionOverlay();
    resize();
    requestRender();
 
