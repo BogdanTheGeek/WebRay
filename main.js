@@ -1614,16 +1614,36 @@ async function setupApp() {
             const rect = panelEl.getBoundingClientRect();
             expandedSizeRef.width = Math.max(260, Math.round(rect.width));
             expandedSizeRef.height = Math.max(120, Math.round(rect.height));
+            const rightPx = Math.max(0, Math.round(window.innerWidth - rect.right));
+            const topPx = Math.max(0, Math.round(rect.top));
+            panelEl.dataset.anchorRightPx = String(rightPx);
+            panelEl.dataset.anchorTopPx = String(topPx);
             panelEl.style.position = 'fixed';
             panelEl.style.left = 'auto';
-            panelEl.style.right = `${Math.max(0, Math.round(window.innerWidth - rect.right))}px`;
-            panelEl.style.top = `${Math.max(0, Math.round(rect.top))}px`;
+            panelEl.style.right = `${rightPx}px`;
+            panelEl.style.top = `${topPx}px`;
             panelEl.style.bottom = 'auto';
             panelEl.style.width = '200px';
             panelEl.style.height = 'auto';
          } else {
-            panelEl.style.width = `${expandedSizeRef.width}px`;
-            panelEl.style.height = `${expandedSizeRef.height}px`;
+            const desiredWidth = Math.max(260, Math.round(expandedSizeRef.width || 260));
+            const desiredHeight = Math.max(120, Math.round(expandedSizeRef.height || 120));
+            const rect = panelEl.getBoundingClientRect();
+            const rawRight = Math.round(window.innerWidth - rect.right);
+            const rawTop = Math.round(rect.top);
+            const maxRight = Math.max(0, window.innerWidth - desiredWidth);
+            const maxTop = Math.max(0, window.innerHeight - desiredHeight);
+            const rightPx = Math.max(0, Math.min(maxRight, rawRight));
+            const topPx = Math.max(0, Math.min(maxTop, rawTop));
+
+            panelEl.style.position = 'fixed';
+            panelEl.style.left = 'auto';
+            panelEl.style.right = `${rightPx}px`;
+            panelEl.style.top = `${topPx}px`;
+            panelEl.style.bottom = 'auto';
+            panelEl.style.width = `${desiredWidth}px`;
+            panelEl.style.height = `${desiredHeight}px`;
+            panelEl.style.zIndex = '120';
          }
       } else {
          panelEl.style.width = '';
@@ -1633,6 +1653,19 @@ async function setupApp() {
       toggleEl.textContent = willCollapse ? '+' : '−';
       toggleEl.setAttribute('aria-label', willCollapse ? `Expand ${name}` : `Minimize ${name}`);
       if (!willCollapse) onExpand?.();
+   }
+
+   function ensureDesktopFloatingPanel(panelEl) {
+      if (!panelEl || window.innerWidth <= 960) return;
+      const rect = panelEl.getBoundingClientRect();
+      panelEl.style.position = 'fixed';
+      panelEl.style.left = `${Math.max(0, Math.round(rect.left))}px`;
+      panelEl.style.top = `${Math.max(0, Math.round(rect.top))}px`;
+      panelEl.style.right = 'auto';
+      panelEl.style.bottom = 'auto';
+      panelEl.style.width = `${Math.round(rect.width)}px`;
+      panelEl.style.height = `${Math.round(rect.height)}px`;
+      panelEl.style.zIndex = '120';
    }
 
    function installDesktopPanelDrag(panelEl, handleEl) {
@@ -1670,15 +1703,8 @@ async function setupApp() {
          e.preventDefault();
          e.stopPropagation();
 
+         ensureDesktopFloatingPanel(panelEl);
          const rect = panelEl.getBoundingClientRect();
-         panelEl.style.position = 'fixed';
-         panelEl.style.left = 'auto';
-         panelEl.style.top = `${Math.round(rect.top)}px`;
-         panelEl.style.right = `${Math.max(0, Math.round(window.innerWidth - rect.right))}px`;
-         panelEl.style.bottom = 'auto';
-         panelEl.style.width = `${Math.round(rect.width)}px`;
-         panelEl.style.height = `${Math.round(rect.height)}px`;
-         panelEl.style.zIndex = '120';
 
          dragState = {
             offsetX: e.clientX - rect.left,
@@ -1695,9 +1721,8 @@ async function setupApp() {
          const maxTop = Math.max(0, window.innerHeight - rect.height);
          const nextLeft = Math.max(0, Math.min(maxLeft, Math.round(e.clientX - dragState.offsetX)));
          const nextTop = Math.max(0, Math.min(maxTop, Math.round(e.clientY - dragState.offsetY)));
-         const nextRight = Math.max(0, Math.round(window.innerWidth - rect.width - nextLeft));
-         panelEl.style.left = 'auto';
-         panelEl.style.right = `${nextRight}px`;
+         panelEl.style.left = `${nextLeft}px`;
+         panelEl.style.right = 'auto';
          panelEl.style.top = `${nextTop}px`;
       });
 
@@ -1911,17 +1936,11 @@ async function setupApp() {
    let facetResizeDrag = null;
    let facetResizePointerId = null;
    function beginFacetResize(e, side) {
-      if (facetPanel.classList.contains('collapsed')) return;
+      if (facetPanel.classList.contains('collapsed') || window.innerWidth <= 960) return;
       e.preventDefault();
       e.stopPropagation();
+      ensureDesktopFloatingPanel(facetPanel);
       const rect = facetPanel.getBoundingClientRect();
-      if (side === 'right') {
-         facetPanel.style.left = `${Math.round(rect.left)}px`;
-         facetPanel.style.right = 'auto';
-      } else {
-         facetPanel.style.left = 'auto';
-         facetPanel.style.right = `${Math.max(0, Math.round(window.innerWidth - rect.right))}px`;
-      }
       facetResizeDrag = {
          top: rect.top,
          right: rect.right,
@@ -1935,15 +1954,16 @@ async function setupApp() {
 
    function moveFacetResize(e) {
       if (!facetResizeDrag || e.pointerId !== facetResizePointerId) return;
-      const nextWidth = facetResizeDrag.side === 'right'
-         ? Math.max(260, Math.round(e.clientX - facetResizeDrag.left))
-         : Math.max(260, Math.round(facetResizeDrag.right - e.clientX));
+      const nextWidthRaw = facetResizeDrag.side === 'right'
+         ? Math.round(e.clientX - facetResizeDrag.left)
+         : Math.round(facetResizeDrag.right - e.clientX);
+      const nextWidth = Math.max(260, nextWidthRaw);
       const nextHeight = Math.max(120, Math.round(e.clientY - facetResizeDrag.top));
-      if (facetResizeDrag.side === 'right') {
-         facetPanel.style.right = 'auto';
-      } else {
-         facetPanel.style.left = 'auto';
+      if (facetResizeDrag.side === 'left') {
+         const nextLeft = Math.round(facetResizeDrag.right - nextWidth);
+         facetPanel.style.left = `${Math.max(0, nextLeft)}px`;
       }
+      facetPanel.style.right = 'auto';
       facetPanel.style.width = `${nextWidth}px`;
       facetPanel.style.height = `${nextHeight}px`;
       facetExpandedSize = { width: nextWidth, height: nextHeight };
@@ -1990,17 +2010,11 @@ async function setupApp() {
    let graphResizeDrag = null;
    let graphResizePointerId = null;
    function beginGraphResize(e, side) {
-      if (graphPanel.classList.contains('collapsed')) return;
+      if (graphPanel.classList.contains('collapsed') || window.innerWidth <= 960) return;
       e.preventDefault();
       e.stopPropagation();
+      ensureDesktopFloatingPanel(graphPanel);
       const rect = graphPanel.getBoundingClientRect();
-      if (side === 'right') {
-         graphPanel.style.left = `${Math.round(rect.left)}px`;
-         graphPanel.style.right = 'auto';
-      } else {
-         graphPanel.style.left = 'auto';
-         graphPanel.style.right = `${Math.max(0, Math.round(window.innerWidth - rect.right))}px`;
-      }
       graphResizeDrag = {
          top: rect.top,
          right: rect.right,
@@ -2014,15 +2028,16 @@ async function setupApp() {
 
    function moveGraphResize(e) {
       if (!graphResizeDrag || e.pointerId !== graphResizePointerId) return;
-      const nextWidth = graphResizeDrag.side === 'right'
-         ? Math.max(260, Math.round(e.clientX - graphResizeDrag.left))
-         : Math.max(260, Math.round(graphResizeDrag.right - e.clientX));
+      const nextWidthRaw = graphResizeDrag.side === 'right'
+         ? Math.round(e.clientX - graphResizeDrag.left)
+         : Math.round(graphResizeDrag.right - e.clientX);
+      const nextWidth = Math.max(260, nextWidthRaw);
       const nextHeight = Math.max(120, Math.round(e.clientY - graphResizeDrag.top));
-      if (graphResizeDrag.side === 'right') {
-         graphPanel.style.right = 'auto';
-      } else {
-         graphPanel.style.left = 'auto';
+      if (graphResizeDrag.side === 'left') {
+         const nextLeft = Math.round(graphResizeDrag.right - nextWidth);
+         graphPanel.style.left = `${Math.max(0, nextLeft)}px`;
       }
+      graphPanel.style.right = 'auto';
       graphPanel.style.width = `${nextWidth}px`;
       graphPanel.style.height = `${nextHeight}px`;
       graphExpandedSize = { width: nextWidth, height: nextHeight };
@@ -2052,6 +2067,20 @@ async function setupApp() {
    graphResizeRightEl?.addEventListener('lostpointercapture', () => endGraphResize());
    window.addEventListener('pointerup', () => endGraphResize());
    window.addEventListener('blur', () => endGraphResize());
+
+   // Use one positioning model from startup so resize behavior is identical
+   // before and after any drag interaction.
+   ensureDesktopFloatingPanel(graphPanel);
+   ensureDesktopFloatingPanel(facetPanel);
+   if (window.innerWidth > 960) {
+      const graphRect = graphPanel.getBoundingClientRect();
+      const facetRect = facetPanel.getBoundingClientRect();
+      const desiredTop = Math.round(graphRect.bottom + 12);
+      if (facetRect.top < desiredTop) {
+         const maxTop = Math.max(0, window.innerHeight - Math.round(facetRect.height));
+         facetPanel.style.top = `${Math.max(0, Math.min(maxTop, desiredTop))}px`;
+      }
+   }
 
    const graphResizeObserver = new ResizeObserver(() => {
       if (!graphPanel.classList.contains('collapsed')) resizeGraphCanvas();
