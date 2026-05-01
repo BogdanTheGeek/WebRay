@@ -4004,7 +4004,13 @@ async function setupApp() {
       if (e.pointerId !== dragPointerId) return;
       if (currentGemTab === 'design' && designClickStart && designClickStart.pointerId === e.pointerId && !designClickStart.moved) {
          updateDesignHoverFromPointer(e.clientX, e.clientY, true);
-         setSelectionFromHover(Boolean(e.shiftKey || e.ctrlKey || e.metaKey));
+         if (designHover) {
+            // Design mode always accumulates selection; no modifier key needed.
+            setSelectionFromHover(true);
+         } else {
+            // Tap/click outside picked geometry clears all selection.
+            clearDesignSelection(true);
+         }
       }
       dragPointerId = null;
       designClickStart = null;
@@ -4040,6 +4046,13 @@ async function setupApp() {
    gpuCanvas.addEventListener('pointerleave', () => {
       designHover = null;
       requestRender();
+   });
+
+   window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+         clearDesignSelection(true);
+         requestRender();
+      }
    });
 
    // --- Axis indicator (created once) ---
