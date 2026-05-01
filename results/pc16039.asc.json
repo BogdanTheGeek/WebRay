@@ -1,7 +1,7 @@
 {
   "PAVILION": [
     {
-      "name": "?",
+      "name": "P1",
       "angle": "-41.00",
       "indexes": "96-32-64",
       "instructions": "",
@@ -9,7 +9,7 @@
       "d": "0.6622"
     },
     {
-      "name": "?",
+      "name": "G1",
       "angle": "-90.00",
       "indexes": "10-22-42-54-74-86",
       "instructions": "CAM 33.22�",
@@ -17,7 +17,7 @@
       "d": "1.1056"
     },
     {
-      "name": "?",
+      "name": "G2",
       "angle": "-90.00",
       "indexes": "96-32-64",
       "instructions": "CAM 41�",
