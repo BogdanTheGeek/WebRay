@@ -2134,8 +2134,6 @@ async function setupApp() {
    Object.assign(selectionOverlayCanvas.style, {
       position: 'fixed',
       inset: '0',
-      width: '100vw',
-      height: '100vh',
       pointerEvents: 'none',
       zIndex: '80',
       display: 'block',
@@ -2143,11 +2141,22 @@ async function setupApp() {
    document.body.appendChild(selectionOverlayCanvas);
    const selectionOverlayCtx = selectionOverlayCanvas.getContext('2d');
    let selectionOverlayDpr = Math.max(1, window.devicePixelRatio || 1);
+   let selectionOverlayCssWidth = Math.max(1, window.innerWidth || 1);
+   let selectionOverlayCssHeight = Math.max(1, window.innerHeight || 1);
 
    function resizeSelectionOverlay() {
       selectionOverlayDpr = Math.max(1, window.devicePixelRatio || 1);
-      const w = Math.max(1, Math.round(window.innerWidth * selectionOverlayDpr));
-      const h = Math.max(1, Math.round(window.innerHeight * selectionOverlayDpr));
+      const viewport = window.visualViewport;
+      const cssW = Math.max(1, Math.round(viewport?.width || window.innerWidth || 1));
+      const cssH = Math.max(1, Math.round(viewport?.height || window.innerHeight || 1));
+      selectionOverlayCssWidth = cssW;
+      selectionOverlayCssHeight = cssH;
+
+      selectionOverlayCanvas.style.width = `${cssW}px`;
+      selectionOverlayCanvas.style.height = `${cssH}px`;
+
+      const w = Math.max(1, Math.round(cssW * selectionOverlayDpr));
+      const h = Math.max(1, Math.round(cssH * selectionOverlayDpr));
       if (selectionOverlayCanvas.width !== w) selectionOverlayCanvas.width = w;
       if (selectionOverlayCanvas.height !== h) selectionOverlayCanvas.height = h;
       selectionOverlayCtx.setTransform(selectionOverlayDpr, 0, 0, selectionOverlayDpr, 0, 0);
@@ -2979,7 +2988,7 @@ async function setupApp() {
    }
 
    function drawDesignSelectionOverlay() {
-      selectionOverlayCtx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+      selectionOverlayCtx.clearRect(0, 0, selectionOverlayCssWidth, selectionOverlayCssHeight);
       if (currentGemTab !== 'design') return;
 
       buildDesignPickCacheIfNeeded();
@@ -4547,6 +4556,8 @@ async function setupApp() {
    }
    window.addEventListener('resize', resize);
    window.addEventListener('resize', resizeSelectionOverlay);
+   window.visualViewport?.addEventListener('resize', resizeSelectionOverlay);
+   window.visualViewport?.addEventListener('scroll', resizeSelectionOverlay);
    resizeSelectionOverlay();
    resize();
    requestRender();
