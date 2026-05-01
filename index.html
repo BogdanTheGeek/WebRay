@@ -206,7 +206,9 @@
             white-space: nowrap; overflow: visible; text-overflow: clip;
         }
         #lightReturnPanel.collapsed #lightReturnResize,
-        #facetInfoPanel.collapsed #facetInfoResize { display: none; }
+        #lightReturnPanel.collapsed #lightReturnResizeRight,
+        #facetInfoPanel.collapsed #facetInfoResize,
+        #facetInfoPanel.collapsed #facetInfoResizeRight { display: none; }
         #lightReturnStatus,
         #facetInfoStatus { margin: 0 0 8px; color: #aaa; font-size: 11px; flex: 0 0 auto; }
         #lightReturnSvg {
@@ -215,7 +217,9 @@
             border-radius: 8px; background: rgba(255,255,255,0.04);
         }
         #lightReturnResize,
-        #facetInfoResize {
+        #facetInfoResize,
+        #lightReturnResizeRight,
+        #facetInfoResizeRight {
             position: absolute; left: 0; bottom: 0;
             width: 18px; height: 18px; cursor: nesw-resize; z-index: 3;
         }
@@ -226,6 +230,20 @@
             border-left: 2px solid rgba(255,255,255,.35);
             border-bottom: 2px solid rgba(255,255,255,.35);
             border-bottom-left-radius: 8px;
+        }
+        #lightReturnResizeRight,
+        #facetInfoResizeRight {
+            left: auto;
+            right: 0;
+            cursor: nwse-resize;
+        }
+        #lightReturnResizeRight::before,
+        #facetInfoResizeRight::before {
+            content: ''; position: absolute; right: 4px; bottom: 4px;
+            width: 10px; height: 10px;
+            border-right: 2px solid rgba(255,255,255,.35);
+            border-bottom: 2px solid rgba(255,255,255,.35);
+            border-bottom-right-radius: 8px;
         }
         #designForm {
             flex: 1 1 auto;
@@ -308,8 +326,8 @@
         }
         .designBtn:hover { border-color: rgba(255,255,255,.28); color: #fff; }
         #designFacetList {
-            <!-- min-height: 0; -->
-            <!-- overflow: hidden; -->
+            min-height: 0;
+            overflow: hidden;
         }
         .designFacetTable {
             width: 100%;
@@ -317,7 +335,7 @@
             font-size: 11px;
             border: 1px solid rgba(255,255,255,0.08);
             border-radius: 8px;
-            <!-- overflow: auto; -->
+            /* overflow: auto; */
             background: rgba(255,255,255,0.03);
         }
         .designFacetTable thead th {
@@ -326,7 +344,7 @@
             color: #dce6f5;
             padding: 6px 6px;
             border-bottom: 1px solid rgba(255,255,255,0.10);
-            <!-- position: sticky; -->
+            /* position: sticky; */
             top: 0;
             z-index: 1;
         }
@@ -572,7 +590,8 @@
             #gemui.mobile-open { transform: translateY(0); }
 
             /* Hide resize handles — panels fill width on mobile */
-            #lightReturnResize, #facetInfoResize { display: none; }
+            #lightReturnResize, #facetInfoResize,
+            #lightReturnResizeRight, #facetInfoResizeRight { display: none; }
 
             /* Larger touch targets */
             #gemui input[type=range] { height: 28px; }
@@ -609,6 +628,7 @@
                     <svg id="lightReturnSvg" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none"></svg>
                 </div>
                 <div id="lightReturnResize" aria-hidden="true"></div>
+                <div id="lightReturnResizeRight" aria-hidden="true"></div>
             </div>
 
             <div id="facetInfoPanel">
@@ -642,6 +662,7 @@
                     </div>
                 </div>
                 <div id="facetInfoResize" aria-hidden="true"></div>
+                <div id="facetInfoResizeRight" aria-hidden="true"></div>
             </div>
 
         </div><!-- #ui-panels -->

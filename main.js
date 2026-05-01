@@ -186,17 +186,21 @@ const designAddFacetBtn = document.getElementById('designAddFacetBtn');
 const designSaveGemBtn = document.getElementById('designSaveGemBtn');
 const designClearBtn = document.getElementById('designClearBtn');
 const graphToggleEl = document.getElementById('lightReturnToggle');
+const graphHeaderEl = document.getElementById('lightReturnHeader');
 const graphBodyEl = document.getElementById('lightReturnBody');
 const graphResizeEl = document.getElementById('lightReturnResize');
+const graphResizeRightEl = document.getElementById('lightReturnResizeRight');
 const graphStatusEl = document.getElementById('lightReturnStatus');
 const graphSvgEl = document.getElementById('lightReturnSvg');
 const facetToggleEl = document.getElementById('facetInfoToggle');
+const facetHeaderEl = document.getElementById('facetInfoHeader');
 const facetSplitTabsEl = document.getElementById('facetSplitTabs');
 const facetEditPanelEl = document.getElementById('facetEditPanel');
 const facetInstructionsPanelEl = document.getElementById('facetInstructionsPanel');
 const facetStatusEl = document.getElementById('facetInfoStatus');
 const facetListEl = document.getElementById('facetInfoList');
 const facetResizeEl = document.getElementById('facetInfoResize');
+const facetResizeRightEl = document.getElementById('facetInfoResizeRight');
 const designHeaderEl = document.getElementById('designHeader');
 const designFooterEl = document.getElementById('designFooter');
 let graphCanvasWidth = 388;
@@ -1579,6 +1583,11 @@ async function setupApp() {
             const rect = panelEl.getBoundingClientRect();
             expandedSizeRef.width = Math.max(260, Math.round(rect.width));
             expandedSizeRef.height = Math.max(120, Math.round(rect.height));
+            panelEl.style.position = 'fixed';
+            panelEl.style.left = 'auto';
+            panelEl.style.right = `${Math.max(0, Math.round(window.innerWidth - rect.right))}px`;
+            panelEl.style.top = `${Math.max(0, Math.round(rect.top))}px`;
+            panelEl.style.bottom = 'auto';
             panelEl.style.width = '200px';
             panelEl.style.height = 'auto';
          } else {
@@ -1593,6 +1602,78 @@ async function setupApp() {
       toggleEl.textContent = willCollapse ? '+' : '−';
       toggleEl.setAttribute('aria-label', willCollapse ? `Expand ${name}` : `Minimize ${name}`);
       if (!willCollapse) onExpand?.();
+   }
+
+   function installDesktopPanelDrag(panelEl, handleEl) {
+      if (!panelEl || !handleEl) return;
+
+      let dragState = null;
+      let dragPointerId = null;
+      handleEl.style.cursor = 'move';
+
+      const resetToFlowLayoutOnMobile = () => {
+         if (window.innerWidth > 960) return;
+         panelEl.style.position = '';
+         panelEl.style.left = '';
+         panelEl.style.top = '';
+         panelEl.style.right = '';
+         panelEl.style.bottom = '';
+         panelEl.style.zIndex = '';
+      };
+
+      const endDrag = (pointerId = dragPointerId) => {
+         if (!dragState) return;
+         dragState = null;
+         if (pointerId != null && handleEl.hasPointerCapture(pointerId)) {
+            handleEl.releasePointerCapture(pointerId);
+         }
+         dragPointerId = null;
+      };
+
+      window.addEventListener('resize', resetToFlowLayoutOnMobile);
+
+      handleEl.addEventListener('pointerdown', (e) => {
+         if (isMobileDevice || window.innerWidth <= 960) return;
+         if (e.target.closest('button,input,textarea,select,a,[data-facet-tab],.mode')) return;
+
+         e.preventDefault();
+         e.stopPropagation();
+
+         const rect = panelEl.getBoundingClientRect();
+         panelEl.style.position = 'fixed';
+         panelEl.style.left = 'auto';
+         panelEl.style.top = `${Math.round(rect.top)}px`;
+         panelEl.style.right = `${Math.max(0, Math.round(window.innerWidth - rect.right))}px`;
+         panelEl.style.bottom = 'auto';
+         panelEl.style.width = `${Math.round(rect.width)}px`;
+         panelEl.style.height = `${Math.round(rect.height)}px`;
+         panelEl.style.zIndex = '120';
+
+         dragState = {
+            offsetX: e.clientX - rect.left,
+            offsetY: e.clientY - rect.top,
+         };
+         dragPointerId = e.pointerId;
+         handleEl.setPointerCapture(e.pointerId);
+      });
+
+      handleEl.addEventListener('pointermove', (e) => {
+         if (!dragState || e.pointerId !== dragPointerId) return;
+         const rect = panelEl.getBoundingClientRect();
+         const maxLeft = Math.max(0, window.innerWidth - rect.width);
+         const maxTop = Math.max(0, window.innerHeight - rect.height);
+         const nextLeft = Math.max(0, Math.min(maxLeft, Math.round(e.clientX - dragState.offsetX)));
+         const nextTop = Math.max(0, Math.min(maxTop, Math.round(e.clientY - dragState.offsetY)));
+         const nextRight = Math.max(0, Math.round(window.innerWidth - rect.width - nextLeft));
+         panelEl.style.left = 'auto';
+         panelEl.style.right = `${nextRight}px`;
+         panelEl.style.top = `${nextTop}px`;
+      });
+
+      handleEl.addEventListener('pointerup', (e) => endDrag(e.pointerId));
+      handleEl.addEventListener('pointercancel', (e) => endDrag(e.pointerId));
+      handleEl.addEventListener('lostpointercapture', () => endDrag());
+      window.addEventListener('blur', () => endDrag());
    }
 
    designAddFacetBtn.addEventListener('click', () => {
@@ -1798,32 +1879,56 @@ async function setupApp() {
 
    let facetResizeDrag = null;
    let facetResizePointerId = null;
-   facetResizeEl.addEventListener('pointerdown', (e) => {
+   function beginFacetResize(e, side) {
       if (facetPanel.classList.contains('collapsed')) return;
       e.preventDefault();
       e.stopPropagation();
+      const rect = facetPanel.getBoundingClientRect();
+      if (side === 'right') {
+         facetPanel.style.left = `${Math.round(rect.left)}px`;
+         facetPanel.style.right = 'auto';
+      } else {
+         facetPanel.style.left = 'auto';
+         facetPanel.style.right = `${Math.max(0, Math.round(window.innerWidth - rect.right))}px`;
+      }
       facetResizeDrag = {
-         top: facetPanel.getBoundingClientRect().top,
-         right: facetPanel.getBoundingClientRect().right,
+         top: rect.top,
+         right: rect.right,
+         left: rect.left,
+         side,
+         handleEl: e.currentTarget,
       };
       facetResizePointerId = e.pointerId;
-      facetResizeEl.setPointerCapture(e.pointerId);
-   });
+      e.currentTarget.setPointerCapture(e.pointerId);
+   }
 
-   facetResizeEl.addEventListener('pointermove', (e) => {
-      if (!facetResizeDrag) return;
-      const nextWidth = Math.max(260, Math.round(facetResizeDrag.right - e.clientX));
+   function moveFacetResize(e) {
+      if (!facetResizeDrag || e.pointerId !== facetResizePointerId) return;
+      const nextWidth = facetResizeDrag.side === 'right'
+         ? Math.max(260, Math.round(e.clientX - facetResizeDrag.left))
+         : Math.max(260, Math.round(facetResizeDrag.right - e.clientX));
       const nextHeight = Math.max(120, Math.round(e.clientY - facetResizeDrag.top));
+      if (facetResizeDrag.side === 'right') {
+         facetPanel.style.right = 'auto';
+      } else {
+         facetPanel.style.left = 'auto';
+      }
       facetPanel.style.width = `${nextWidth}px`;
       facetPanel.style.height = `${nextHeight}px`;
       facetExpandedSize = { width: nextWidth, height: nextHeight };
-   });
+   }
+
+   facetResizeEl.addEventListener('pointerdown', (e) => beginFacetResize(e, 'left'));
+   facetResizeRightEl?.addEventListener('pointerdown', (e) => beginFacetResize(e, 'right'));
+   facetResizeEl.addEventListener('pointermove', moveFacetResize);
+   facetResizeRightEl?.addEventListener('pointermove', moveFacetResize);
 
    function endFacetResize(pointerId = facetResizePointerId) {
       if (!facetResizeDrag) return;
+      const activeHandleEl = facetResizeDrag.handleEl;
       facetResizeDrag = null;
-      if (pointerId != null && facetResizeEl.hasPointerCapture(pointerId)) {
-         facetResizeEl.releasePointerCapture(pointerId);
+      if (pointerId != null && activeHandleEl?.hasPointerCapture(pointerId)) {
+         activeHandleEl.releasePointerCapture(pointerId);
       }
       facetResizePointerId = null;
    }
@@ -1831,8 +1936,14 @@ async function setupApp() {
    facetResizeEl.addEventListener('pointerup', (e) => endFacetResize(e.pointerId));
    facetResizeEl.addEventListener('pointercancel', (e) => endFacetResize(e.pointerId));
    facetResizeEl.addEventListener('lostpointercapture', () => endFacetResize());
+   facetResizeRightEl?.addEventListener('pointerup', (e) => endFacetResize(e.pointerId));
+   facetResizeRightEl?.addEventListener('pointercancel', (e) => endFacetResize(e.pointerId));
+   facetResizeRightEl?.addEventListener('lostpointercapture', () => endFacetResize());
    window.addEventListener('pointerup', () => endFacetResize());
    window.addEventListener('blur', () => endFacetResize());
+
+   installDesktopPanelDrag(graphPanel, graphHeaderEl);
+   installDesktopPanelDrag(facetPanel, facetHeaderEl);
 
    const graphModelMat = mat4.create();
    const graphProjMat = mat4.create();
@@ -1847,33 +1958,57 @@ async function setupApp() {
 
    let graphResizeDrag = null;
    let graphResizePointerId = null;
-   graphResizeEl.addEventListener('pointerdown', (e) => {
+   function beginGraphResize(e, side) {
       if (graphPanel.classList.contains('collapsed')) return;
       e.preventDefault();
       e.stopPropagation();
+      const rect = graphPanel.getBoundingClientRect();
+      if (side === 'right') {
+         graphPanel.style.left = `${Math.round(rect.left)}px`;
+         graphPanel.style.right = 'auto';
+      } else {
+         graphPanel.style.left = 'auto';
+         graphPanel.style.right = `${Math.max(0, Math.round(window.innerWidth - rect.right))}px`;
+      }
       graphResizeDrag = {
-         top: graphPanel.getBoundingClientRect().top,
-         right: graphPanel.getBoundingClientRect().right,
+         top: rect.top,
+         right: rect.right,
+         left: rect.left,
+         side,
+         handleEl: e.currentTarget,
       };
       graphResizePointerId = e.pointerId;
-      graphResizeEl.setPointerCapture(e.pointerId);
-   });
+      e.currentTarget.setPointerCapture(e.pointerId);
+   }
 
-   graphResizeEl.addEventListener('pointermove', (e) => {
-      if (!graphResizeDrag) return;
-      const nextWidth = Math.max(260, Math.round(graphResizeDrag.right - e.clientX));
+   function moveGraphResize(e) {
+      if (!graphResizeDrag || e.pointerId !== graphResizePointerId) return;
+      const nextWidth = graphResizeDrag.side === 'right'
+         ? Math.max(260, Math.round(e.clientX - graphResizeDrag.left))
+         : Math.max(260, Math.round(graphResizeDrag.right - e.clientX));
       const nextHeight = Math.max(120, Math.round(e.clientY - graphResizeDrag.top));
+      if (graphResizeDrag.side === 'right') {
+         graphPanel.style.right = 'auto';
+      } else {
+         graphPanel.style.left = 'auto';
+      }
       graphPanel.style.width = `${nextWidth}px`;
       graphPanel.style.height = `${nextHeight}px`;
       graphExpandedSize = { width: nextWidth, height: nextHeight };
       resizeGraphCanvas();
-   });
+   }
+
+   graphResizeEl.addEventListener('pointerdown', (e) => beginGraphResize(e, 'left'));
+   graphResizeRightEl?.addEventListener('pointerdown', (e) => beginGraphResize(e, 'right'));
+   graphResizeEl.addEventListener('pointermove', moveGraphResize);
+   graphResizeRightEl?.addEventListener('pointermove', moveGraphResize);
 
    function endGraphResize(pointerId = graphResizePointerId) {
       if (!graphResizeDrag) return;
+      const activeHandleEl = graphResizeDrag.handleEl;
       graphResizeDrag = null;
-      if (pointerId != null && graphResizeEl.hasPointerCapture(pointerId)) {
-         graphResizeEl.releasePointerCapture(pointerId);
+      if (pointerId != null && activeHandleEl?.hasPointerCapture(pointerId)) {
+         activeHandleEl.releasePointerCapture(pointerId);
       }
       graphResizePointerId = null;
    }
@@ -1881,6 +2016,9 @@ async function setupApp() {
    graphResizeEl.addEventListener('pointerup', (e) => endGraphResize(e.pointerId));
    graphResizeEl.addEventListener('pointercancel', (e) => endGraphResize(e.pointerId));
    graphResizeEl.addEventListener('lostpointercapture', () => endGraphResize());
+   graphResizeRightEl?.addEventListener('pointerup', (e) => endGraphResize(e.pointerId));
+   graphResizeRightEl?.addEventListener('pointercancel', (e) => endGraphResize(e.pointerId));
+   graphResizeRightEl?.addEventListener('lostpointercapture', () => endGraphResize());
    window.addEventListener('pointerup', () => endGraphResize());
    window.addEventListener('blur', () => endGraphResize());
 
