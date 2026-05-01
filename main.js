@@ -2423,7 +2423,7 @@ async function setupApp() {
       const val = parseFloat(slider.value);
       label.textContent = val.toFixed(3);
       const gear = parseInt(designGearEl.value, 10);
-      console.log(`Gear ${gear} stretch ${crown ? 'crown' : 'pavilion'} by ${val.toFixed(3)}`);
+      console.debug(`Gear ${gear} stretch ${crown ? 'crown' : 'pavilion'} by ${val.toFixed(3)}`);
       const designDefinition = {
          gear: gear,
          refractiveIndex: ui.ri,
