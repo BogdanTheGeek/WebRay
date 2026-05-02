@@ -16,6 +16,7 @@ import {
    normalizeDesignFacet,
    stretchStoneByVertices,
    generateFacesFromFacetList,
+   computeFacetNotesSummary
 } from './loaders.js';
 import { exportInProgress, setupExporter } from './video.js';
 import { renderOrtho } from './ortho.js';
@@ -846,7 +847,7 @@ function buildUI(ui, cbs) {
          top: [0, 0, 1],
          right: [-1, 0, 0],
          back: [0, 0, -1],
-         front: [0, 1, 0],
+         front: [0, -1, 0],
       };
 
       // render into temporary canvases in the current window
@@ -860,13 +861,14 @@ function buildUI(ui, cbs) {
       };
       const stone = buildStoneFromFacetDesign(designDefinition);
       const faces = generateFacesFromFacetList(designDefinition.facets, gear);
-      const summary = buildFacetInfo(stone);
+      const summary = computeFacetNotesSummary(stone);
+      const summaryHtml = buildFacetInfo(stone, summary);
       const size = 500;
       for (const [name, view] of Object.entries(views)) {
          const tmp = document.createElement('canvas');
          tmp.width = size;
          tmp.height = size;
-         renderOrtho(faces, view, tmp, 1 / modelBoundsRadius, gear);
+         renderOrtho(faces, view, tmp, 1 / modelBoundsRadius, gear, summary);
          dataURLs[name] = tmp.toDataURL();
       }
 
@@ -986,7 +988,7 @@ body { font-family: Arial; margin: 20px; }
 <body>
 <div class="wrapper">
 ${imgs}
-${summary}
+${summaryHtml}
 </div>
 <div class="pb"></div>
 <div class="header">Light Return Graph for RI: ${ui.ri}</div>

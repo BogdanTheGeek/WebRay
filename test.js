@@ -5,19 +5,8 @@ import {
    loadGCS,
    loadASC,
    loadGEM,
-   convertGCSTextToGEMBuffer,
-   normalizeMesh,
-   computeMeshBoundsRadius,
-   buildBVH,
-   buildStoneFromFacetDesign,
-   hasUniqueTableFacet,
    groupFacetInfo,
-   formatFacetIndexLines,
-   groupExternalFacetsForDesign,
-   normalizeDesignFacet,
    computeFacetNotesSummary,
-   stretchStoneByVertices,
-   generateFacesFromFacetList,
 } from './loaders.js';
 
 // list all files in models folder

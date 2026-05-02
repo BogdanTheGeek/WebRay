@@ -245,7 +245,7 @@ async function loadGCS(data) {
    return new StoneData(vertexData, triCount, facets, refractiveIndex, dispersion, sourceGear, metadata);
 }
 
-function buildFacetInfo(stone) {
+function buildFacetInfo(stone, summary = null) {
    if (!stone || !stone.facets || stone.facets.length === 0) {
       return '<div class="facetEmpty">No facet notes were found for this model.</div>';
    }
@@ -267,7 +267,9 @@ function buildFacetInfo(stone) {
          .replaceAll("'", '&#39;');
    }
 
-   const summary = computeFacetNotesSummary(stone);
+   if (!summary) {
+      summary = computeFacetNotesSummary(stone);
+   }
    const groupedSections = groupFacetInfo(facets, summary.gearUsed);
    const sectionOrder = ['PAVILION', 'CROWN', 'OTHER'];
    const html = [];
@@ -304,6 +306,8 @@ function buildFacetInfo(stone) {
 <span><strong>L/W</strong> ${escapeHtml(summary.lw.toFixed(4))}</span>
 <span><strong>P/W</strong> ${escapeHtml(summary.pw.toFixed(4))}</span>
 <span><strong>C/W</strong> ${escapeHtml(summary.cw.toFixed(4))}</span>
+<span><strong>U/W</strong> ${escapeHtml(summary.uw.toFixed(4))}</span>
+<span><strong>T/W</strong> ${escapeHtml(summary.tw.toFixed(4))}</span>
 <span><strong>Gear</strong> ${escapeHtml(String(summary.gearUsed))}</span>
 <span><strong>Facets</strong> ${escapeHtml(`${displayedNonGirdleCount}+${displayedGirdleCount}=${displayedTotalCount}`)}</span>
 </div>`;
@@ -2207,10 +2211,21 @@ function computeFacetNotesSummary(stone) {
    const length = Math.max(xSpan, ySpan);
    const width = Math.max(1e-9, Math.min(xSpan, ySpan));
    const lw = length / width;
+   const lHoriz = xSpan > ySpan;
 
    const girdleCount = facets.filter((facet) => isGirdleFacet(facet)).length;
    const totalCount = facets.length;
    const nonGirdleCount = Math.max(0, totalCount - girdleCount);
+
+   const tableVerts = [];
+   function pushUniqueTableVertex(x, y) {
+      const key = `${x.toFixed(6)}:${y.toFixed(6)}`;
+      if (!pushUniqueTableVertex.seen.has(key)) {
+         pushUniqueTableVertex.seen.add(key);
+         tableVerts.push([x, y]);
+      }
+   }
+   pushUniqueTableVertex.seen = new Set();
 
    const girdleZSlices = [];
    const floatsPerVertex = 7;
@@ -2218,14 +2233,31 @@ function computeFacetNotesSummary(stone) {
    let triOffset = 0;
    for (const facet of facets) {
       const triCount = Math.max(0, Math.round(facet?.triangleCount || 0));
+      const isTable = computeFacetAngleFromUpDeg(facet?.normal || [0, 0, 0]) <= TABLE_FACET_MAX_ANGLE_DEG;
       if (isGirdleFacet(facet)) {
          for (let t = 0; t < triCount; t++) {
             const triBase = (triOffset + t) * verticesPerTriangle * floatsPerVertex;
             for (let v = 0; v < verticesPerTriangle; v++) {
                const base = triBase + v * floatsPerVertex;
                if (base + 2 >= vertexData.length) continue;
+               if (isTable) {
+                  const x = vertexData[base + 0];
+                  const y = vertexData[base + 1];
+                  if (Number.isFinite(x) && Number.isFinite(y)) pushUniqueTableVertex(x, y);
+               }
                const z = vertexData[base + 2];
                if (Number.isFinite(z)) girdleZSlices.push(z);
+            }
+         }
+      } else if (isTable) {
+         for (let t = 0; t < triCount; t++) {
+            const triBase = (triOffset + t) * verticesPerTriangle * floatsPerVertex;
+            for (let v = 0; v < verticesPerTriangle; v++) {
+               const base = triBase + v * floatsPerVertex;
+               if (base + 1 >= vertexData.length) continue;
+               const x = vertexData[base + 0];
+               const y = vertexData[base + 1];
+               if (Number.isFinite(x) && Number.isFinite(y)) pushUniqueTableVertex(x, y);
             }
          }
       }
@@ -2251,16 +2283,41 @@ function computeFacetNotesSummary(stone) {
    const pw = pavilionDepth / width;
    const cw = crownHeight / width;
 
+   // Index 0 axis is the negative Y direction (same convention as facet gear index mapping).
+   let tableWidthAt0 = 0;
+   let tableWidthAt90 = 0;
+   if (tableVerts.length > 1) {
+      let min0 = Infinity;
+      let max0 = -Infinity;
+      let min90 = Infinity;
+      let max90 = -Infinity;
+      for (const [x, y] of tableVerts) {
+         const axis0 = -y;
+         const axis90 = x;
+         if (axis0 < min0) min0 = axis0;
+         if (axis0 > max0) max0 = axis0;
+         if (axis90 < min90) min90 = axis90;
+         if (axis90 > max90) max90 = axis90;
+      }
+      tableWidthAt0 = Math.max(0, max0 - min0);
+      tableWidthAt90 = Math.max(0, max90 - min90);
+   }
+   const uw = tableWidthAt0 / width;
+   const tw = tableWidthAt90 / width;
+
    const gearUsed = parseInt(stone.sourceGear, 10);
 
    return {
       lw,
       pw,
       cw,
+      uw,
+      tw,
       gearUsed,
       nonGirdleCount,
       girdleCount,
       totalCount,
+      lHoriz,
    };
 }
 

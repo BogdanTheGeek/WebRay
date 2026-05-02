@@ -117,6 +117,7 @@ function drawDimension(ctx, x1, y1, x2, y2, label, { offset = 0, color = '#000',
 function getStoneDimensions(faces, view) {
    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
    let girdleMin = Infinity, girdleMax = -Infinity;
+   let tableMinX = Infinity, tableMaxX = -Infinity, tableMinY = Infinity, tableMaxY = -Infinity;
    faces.forEach(f => {
       const pts = projectOrtho(f.vertices, view);
       pts.forEach(p => {
@@ -131,15 +132,30 @@ function getStoneDimensions(faces, view) {
             if (p[1] > girdleMax) girdleMax = p[1];
          });
       }
+
+      const isTable = f.signedAngleDeg > -1 && f.signedAngleDeg < 1;
+      if (isTable) {
+         pts.forEach((p) => {
+            if (p[0] < tableMinX) tableMinX = p[0];
+            if (p[0] > tableMaxX) tableMaxX = p[0];
+            if (p[1] < tableMinY) tableMinY = p[1];
+            if (p[1] > tableMaxY) tableMaxY = p[1];
+         });
+      }
    });
+
    return {
       minX, maxX, minY, maxY,
       girdleMin,
       girdleMax,
+      tableMinX,
+      tableMaxX,
+      tableMinY,
+      tableMaxY,
    };
 }
 
-function renderOrtho(faces, view, canvas, scale = 1.0, gear) {
+function renderOrtho(faces, view, canvas, scale = 1.0, gear, summary = {}) {
 
    const visible = faces.filter(f => dot3(f.normal, view) > 0.01);
 
@@ -163,7 +179,7 @@ function renderOrtho(faces, view, canvas, scale = 1.0, gear) {
    if (view[0] === 0 && view[1] === 0 && view[2] === 1) viewIndex = 'top';
    else if (view[0] === -1 && view[1] === 0 && view[2] === 0) viewIndex = 'right';
    else if (view[0] === 0 && view[1] === 0 && view[2] === -1) viewIndex = 'back';
-   else if (view[0] === 0 && view[1] === 1 && view[2] === 0) viewIndex = 'front';
+   else if (view[0] === 0 && view[1] === -1 && view[2] === 0) viewIndex = 'front';
 
    const ctx = canvas.getContext('2d');
    const W = canvas.width, H = canvas.height;
@@ -220,7 +236,7 @@ function renderOrtho(faces, view, canvas, scale = 1.0, gear) {
    ctx.textAlign = 'left';
    ctx.textBaseline = 'alphabetic';
 
-   const dimensions = getStoneDimensions(visible, view);
+   const dimensions = getStoneDimensions(faces, view);
    const vertRight = [
       cx + dimensions.maxX * scaled,
       cy - dimensions.minY * scaled,
@@ -257,17 +273,41 @@ function renderOrtho(faces, view, canvas, scale = 1.0, gear) {
       cx + dimensions.minX * scaled,
       cy - dimensions.maxY * scaled
    ];
+   const tableHoriz = [
+      cx + dimensions.tableMinX * scaled,
+      cy - dimensions.maxY * scaled,
+      cx + dimensions.tableMaxX * scaled,
+      cy - dimensions.maxY * scaled
+   ];
+   const tableVert = [
+      cx + dimensions.minX * scaled,
+      cy - dimensions.tableMinY * scaled,
+      cx + dimensions.minX * scaled,
+      cy - dimensions.tableMaxY * scaled
+   ];
+
+   console.log(tableHoriz);
+   console.log(tableVert);
+
+   const labelOffset = 20;
+
+   const lenghtLabels = ['L', 'U'];
+   const widthLabels = ['W', 'T'];
 
    if (viewIndex === 'top') {
       drawGearIndices(ctx, gear, cx, cy, Math.min(W, H) / 2 - 12);
    }
    else if (viewIndex === 'right') {
-      drawDimension(ctx, ...vertRight, 'L', { offset: 15 });
+      const dimName = summary.lHoriz ? widthLabels : lenghtLabels;
+      drawDimension(ctx, ...vertRight, dimName[0], { offset: labelOffset });
+      drawDimension(ctx, ...tableVert, dimName[1], { offset: -labelOffset });
    } else if (viewIndex === 'front') {
-      drawDimension(ctx, ...horizBottom, 'W', { offset: 15 });
-      // drawDimension(ctx, ...horizTop, 'W', { offset: -15 });
-      drawDimension(ctx, ...vertTop, 'C', { offset: -15 });
-      drawDimension(ctx, ...vertBottom, 'P', { offset: -15 });
+      const dimName = summary.lHoriz ? lenghtLabels : widthLabels;
+      drawDimension(ctx, ...horizBottom, dimName[0], { offset: labelOffset });
+      drawDimension(ctx, ...tableHoriz, dimName[1], { offset: -labelOffset });
+      // drawDimension(ctx, ...horizTop, 'W', { offset: -labelOffset });
+      drawDimension(ctx, ...vertTop, 'C', { offset: -labelOffset });
+      drawDimension(ctx, ...vertBottom, 'P', { offset: -labelOffset });
    }
 }
 

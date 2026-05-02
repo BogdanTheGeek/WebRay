@@ -63,9 +63,12 @@
     "lw": "1.1547",
     "pw": "0.4834",
     "cw": "0.2500",
+    "uw": "0.4330",
+    "tw": "0.5000",
     "gearUsed": 96,
     "nonGirdleCount": 28,
     "girdleCount": 6,
-    "totalCount": 34
+    "totalCount": 34,
+    "lHoriz": false
   }
 }
