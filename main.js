@@ -1486,6 +1486,103 @@ async function setupApp() {
       return result;
    }
 
+   function buildDesignAscText(definition = {}) {
+      const gear = Math.max(1, parseInt(definition.gear, 10) || 96);
+      const riValue = parseFloat(definition.refractiveIndex);
+      const refractiveIndex = Number.isFinite(riValue) && riValue > 1.0 ? riValue : 1.54;
+      const facets = Array.isArray(definition.facets) ? definition.facets : [];
+      const normalizedFacets = facets.map((f, i) => normalizeDesignFacet(f, i));
+
+      const fmt = (value, digits = 6) => {
+         const num = Number(value);
+         if (!Number.isFinite(num)) return '0';
+         return num.toFixed(digits).replace(/\.?0+$/, '');
+      };
+
+      const normalizeAscIndex = (value) => {
+         const raw = parseInt(value, 10);
+         if (!Number.isFinite(raw)) return null;
+         let idx = raw % gear;
+         if (idx < 0) idx += gear;
+         if (idx === 0) idx = gear;
+         return idx;
+      };
+
+      const mirrorAscIndex = (index) => {
+         const idx = normalizeAscIndex(index);
+         if (!Number.isFinite(idx)) return null;
+         if (idx === gear) return gear;
+         return normalizeAscIndex(gear - idx);
+      };
+
+      const titleLines = String(definition.metadata?.title || '')
+         .split(/\r?\n/)
+         .map((line) => line.trim())
+         .filter((line) => line.length > 0);
+      const commentLines = String(definition.metadata?.comments || '')
+         .split(/\r?\n/)
+         .map((line) => line.trim())
+         .filter((line) => line.length > 0);
+
+      const lines = [];
+      lines.push('GemCad 5.0');
+      lines.push(`g ${gear} 0`);
+      lines.push(`I ${fmt(refractiveIndex, 6)}`);
+
+      for (const line of titleLines) {
+         lines.push(`H ${line}`);
+      }
+      for (const line of commentLines) {
+         lines.push(`F ${line}`);
+      }
+
+      normalizedFacets.forEach((facet, idx) => {
+         const symmetry = Math.max(1, Math.min(gear, parseInt(facet.symmetry, 10) || 1));
+         const mirror = Boolean(facet.mirror);
+         const step = gear / symmetry;
+         const indexSet = new Set();
+
+         const explicitIndexes = Array.isArray(facet.indexes)
+            ? [...new Set(
+               facet.indexes
+                  .map((value) => normalizeAscIndex(value))
+                  .filter((value) => Number.isFinite(value)),
+            )]
+            : [];
+
+         if (explicitIndexes.length > 0) {
+            explicitIndexes.forEach((value) => indexSet.add(value));
+         } else {
+            const start = normalizeAscIndex(facet.startIndex) || 1;
+            for (let i = 0; i < symmetry; i++) {
+               const offset = Math.round(i * step);
+               const primary = normalizeAscIndex(start + offset);
+               if (!Number.isFinite(primary)) continue;
+               indexSet.add(primary);
+               if (mirror) {
+                  const mirrored = mirrorAscIndex(primary);
+                  if (Number.isFinite(mirrored)) indexSet.add(mirrored);
+               }
+            }
+         }
+
+         let indexes = [...indexSet].sort((a, b) => a - b);
+         if (!indexes.length) indexes = [1];
+
+         const angleDeg = Number.isFinite(Number(facet.angleDeg)) ? Number(facet.angleDeg) : 0;
+         const rawDistance = Number.isFinite(Number(facet.distance)) ? Number(facet.distance) : 1;
+         const rho = Math.abs(rawDistance);
+         const safeName = String(facet.name || `F${idx + 1}`).trim() || `F${idx + 1}`;
+         const safeInstructions = String(facet.instructions || '').replace(/\r?\n/g, ' ').trim();
+
+         let row = `a ${fmt(angleDeg, 6)} ${fmt(rho, 6)} ${indexes.join(' ')} n ${safeName}`;
+         if (safeInstructions) row += ` G ${safeInstructions}`;
+         lines.push(row);
+      });
+
+      return `${lines.join('\n')}\n`;
+   }
+
    function scheduleDesignApply(geometryChanged = true) {
       if (designApplyTimer) clearTimeout(designApplyTimer);
       designApplyTimer = setTimeout(() => {
@@ -1911,10 +2008,22 @@ async function setupApp() {
 
 
       if (('showSaveFilePicker' in window) === false) {
-         const gemBuffer = convertGCSTextToGEMBuffer(buildDesignGcsText(exportDefinition));
          const baseName = currentModelFilename.replace(/\.[^.]+$/, '') || 'design';
-         const outName = `${baseName}.gem`;
-         const blob = new Blob([gemBuffer], { type: 'application/octet-stream' });
+         const currentExt = (String(currentModelFilename).split('.').pop() || '').toLowerCase();
+         const fallbackExt = currentExt === 'asc' || currentExt === 'gcs' ? currentExt : 'gem';
+         let outName = `${baseName}.${fallbackExt}`;
+         let blob = null;
+         if (fallbackExt === 'asc') {
+            const ascText = buildDesignAscText(exportDefinition);
+            blob = new Blob([ascText], { type: 'text/plain;charset=utf-8' });
+         } else if (fallbackExt === 'gcs') {
+            const gcsText = buildDesignGcsText(exportDefinition);
+            blob = new Blob([gcsText], { type: 'application/xml' });
+         } else {
+            const gemBuffer = convertGCSTextToGEMBuffer(buildDesignGcsText(exportDefinition));
+            outName = `${baseName}.gem`;
+            blob = new Blob([gemBuffer], { type: 'application/octet-stream' });
+         }
          const url = URL.createObjectURL(blob);
          const anchor = document.createElement('a');
          anchor.href = url;
@@ -1939,11 +2048,15 @@ async function setupApp() {
                   description: 'GemCutStudio Design (GCS) File',
                   accept: { 'application/xml': ['.gcs'] },
                },
+               {
+                  description: 'GemCad ASCII Design (ASC) File',
+                  accept: { 'text/plain': ['.asc'] },
+               },
             ],
          });
 
          const file = await handle.getFile();
-         const extension = file.name.split('.').pop();
+         const extension = (file.name.split('.').pop() || '').toLowerCase();
 
          let content = "";
          if (extension === 'gcs') {
@@ -1951,6 +2064,8 @@ async function setupApp() {
          }
          else if (extension === 'gem') {
             content = convertGCSTextToGEMBuffer(buildDesignGcsText(exportDefinition));
+         } else if (extension === 'asc') {
+            content = buildDesignAscText(exportDefinition);
          } else {
             setDesignStatus('Unsupported file type selected.');
             return;
