@@ -114,6 +114,84 @@ function drawDimension(ctx, x1, y1, x2, y2, label, { offset = 0, color = '#000',
    ctx.restore();
 }
 
+function drawBottomGirdleLabels(ctx, faces, view, cx, cy, scaled) {
+   const labels = [];
+   const seen = new Set();
+
+   for (const face of faces) {
+      const isGirdle = Number.isFinite(face?.angleDeg) && face.angleDeg > 89 && face.angleDeg < 91;
+      if (!isGirdle) continue;
+
+      const name = String(face?.name || '').trim();
+      if (!name || seen.has(name)) continue;
+
+      const pts = projectOrtho(face.vertices, view);
+      if (!pts.length) continue;
+
+      const x = pts.reduce((sum, p) => sum + p[0], 0) / pts.length;
+      const y = pts.reduce((sum, p) => sum + p[1], 0) / pts.length;
+      labels.push({ name, x, y });
+      seen.add(name);
+   }
+
+   if (!labels.length) return;
+
+   const leaderLen = 28;
+   const gapFromGirdle = 2;
+   const gapFromLabel = 8;
+   const fontSize = 11;
+
+   ctx.save();
+   ctx.font = `${fontSize}px sans-serif`;
+   ctx.textBaseline = 'middle';
+
+   for (const label of labels) {
+      const px = cx + label.x * scaled;
+      const py = cy - label.y * scaled;
+
+      let vx = px - cx;
+      let vy = py - cy;
+      const vlen = Math.hypot(vx, vy) || 1;
+      vx /= vlen;
+      vy /= vlen;
+
+      const tx = px + vx * leaderLen;
+      const ty = py + vy * leaderLen;
+      const lx0 = tx - vx * gapFromLabel;
+      const ly0 = ty - vy * gapFromLabel;
+      const lx1 = px + vx * gapFromGirdle;
+      const ly1 = py + vy * gapFromGirdle;
+
+      ctx.lineWidth = 1.2;
+      ctx.strokeStyle = '#000000';
+      ctx.beginPath();
+      ctx.moveTo(lx0, ly0);
+      ctx.lineTo(lx1, ly1);
+      ctx.stroke();
+
+      const arrowSize = 5;
+      const nx = -vy;
+      const ny = vx;
+      ctx.beginPath();
+      ctx.moveTo(lx1, ly1);
+      ctx.lineTo(lx1 + vx * arrowSize + nx * arrowSize * 0.7, ly1 + vy * arrowSize + ny * arrowSize * 0.7);
+      ctx.lineTo(lx1 + vx * arrowSize - nx * arrowSize * 0.7, ly1 + vy * arrowSize - ny * arrowSize * 0.7);
+      ctx.closePath();
+      ctx.fillStyle = '#000000';
+      ctx.fill();
+
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = '#ffffff';
+      ctx.strokeText(label.name, tx, ty);
+      ctx.fillStyle = '#000000';
+      ctx.fillText(label.name, tx, ty);
+   }
+
+   ctx.restore();
+}
+
 function getStoneDimensions(faces, view) {
    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
    let girdleMin = Infinity, girdleMax = -Infinity;
@@ -178,7 +256,7 @@ function renderOrtho(faces, view, canvas, scale = 1.0, gear, summary = {}) {
    let viewIndex = '';
    if (view[0] === 0 && view[1] === 0 && view[2] === 1) viewIndex = 'top';
    else if (view[0] === -1 && view[1] === 0 && view[2] === 0) viewIndex = 'right';
-   else if (view[0] === 0 && view[1] === 0 && view[2] === -1) viewIndex = 'back';
+   else if (view[0] === 0 && view[1] === 0 && view[2] === -1) viewIndex = 'bottom';
    else if (view[0] === 0 && view[1] === -1 && view[2] === 0) viewIndex = 'front';
 
    const ctx = canvas.getContext('2d');
@@ -232,6 +310,10 @@ function renderOrtho(faces, view, canvas, scale = 1.0, gear, summary = {}) {
       ctx.strokeText(f.name, x, y);
       ctx.fillText(f.name, x, y);
    });
+
+   if (viewIndex === 'bottom') {
+      drawBottomGirdleLabels(ctx, faces, view, cx, cy, scaled);
+   }
 
    ctx.textAlign = 'left';
    ctx.textBaseline = 'alphabetic';
