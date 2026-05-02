@@ -2042,7 +2042,7 @@ function generateFacesFromFacetList(facetList = [], gear = 96) {
          }
       }
 
-      const angleDeg = Number.isFinite(Number(facet.angleDeg)) ? Number(facet.angleDeg) : 0;
+      const angleDeg = facet.angleDeg < -89 ? -facet.angleDeg : facet.angleDeg;
       for (const idx of indexSet) {
          let normal = computeNormalFromPolar(angleDeg, idx, gear, 0);
          let d = facet.distance;
@@ -2115,8 +2115,9 @@ function generateFacesFromFacetList(facetList = [], gear = 96) {
       const p = planes[pi];
       const n = [p.a, p.b, p.c];
       const angleDeg = computeFacetAngleDeg(n);
-      const isGirdle = Math.abs(angleDeg - 90) <= 1.0;
-      const normal = isGirdle ? [-n[0], n[1], n[2]] : n; // NOTE: no idea why i have to do that
+      const isGirdle = Math.abs(angleDeg) >= 89;
+      // const normal = isGirdle ? [-n[0], n[1], n[2]] : n; // NOTE: no idea why i have to do that
+      const normal = n;
       const signedAngleDeg = computeSignedFacetAngleDeg(n);
       const azimuth = (Math.atan2(n[0], -n[1]) * 180 / Math.PI) || 0;
       const azimuthDeg = ((azimuth % 360) + 360) % 360;

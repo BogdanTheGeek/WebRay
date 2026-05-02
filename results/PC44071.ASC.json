@@ -1,0 +1,247 @@
+{
+  "PAVILION": [
+    {
+      "name": "G1",
+      "angle": "-90.00",
+      "indexes": "120-25-38-106",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.8330"
+    },
+    {
+      "name": "E",
+      "angle": "-49.54",
+      "indexes": "106",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.6338"
+    },
+    {
+      "name": "A",
+      "angle": "-49.72",
+      "indexes": "120",
+      "instructions": "Cut to TCP",
+      "frosted": false,
+      "d": "0.6355"
+    },
+    {
+      "name": "B",
+      "angle": "-50.09",
+      "indexes": "25-38",
+      "instructions": "Cut to TCP",
+      "frosted": false,
+      "d": "0.6390"
+    },
+    {
+      "name": "F",
+      "angle": "-54.27",
+      "indexes": "80",
+      "instructions": "Cut to TCP",
+      "frosted": false,
+      "d": "0.5675"
+    },
+    {
+      "name": "D",
+      "angle": "-50.09",
+      "indexes": "70",
+      "instructions": "Cut to TCP",
+      "frosted": false,
+      "d": "0.6278"
+    },
+    {
+      "name": "C",
+      "angle": "-49.51",
+      "indexes": "47",
+      "instructions": "Cut to TCP",
+      "frosted": false,
+      "d": "0.6445"
+    },
+    {
+      "name": "G2",
+      "angle": "-90.00",
+      "indexes": "80",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.6990"
+    },
+    {
+      "name": "G3",
+      "angle": "-90.00",
+      "indexes": "70",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.8184"
+    },
+    {
+      "name": "K",
+      "angle": "-45.69",
+      "indexes": "112",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.6376"
+    },
+    {
+      "name": "L",
+      "angle": "-41.00",
+      "indexes": "13",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.6886"
+    },
+    {
+      "name": "M",
+      "angle": "-45.95",
+      "indexes": "31",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.6349"
+    },
+    {
+      "name": "G",
+      "angle": "-42.46",
+      "indexes": "55",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.6757"
+    },
+    {
+      "name": "H",
+      "angle": "-50.22",
+      "indexes": "77",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.5818"
+    },
+    {
+      "name": "P12",
+      "angle": "-44.53",
+      "indexes": "88",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.6484"
+    },
+    {
+      "name": "G4",
+      "angle": "-90.00",
+      "indexes": "47",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.8474"
+    }
+  ],
+  "CROWN": [
+    {
+      "name": "3",
+      "angle": "55.00",
+      "indexes": "120-25-38-106",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.7172"
+    },
+    {
+      "name": "4",
+      "angle": "55.00",
+      "indexes": "80",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.6074"
+    },
+    {
+      "name": "5",
+      "angle": "55.00",
+      "indexes": "70",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.7052"
+    },
+    {
+      "name": "2",
+      "angle": "55.00",
+      "indexes": "47",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.7289"
+    },
+    {
+      "name": "9",
+      "angle": "36.71",
+      "indexes": "54",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.6403"
+    },
+    {
+      "name": "7",
+      "angle": "35.61",
+      "indexes": "89",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.5959"
+    },
+    {
+      "name": "12",
+      "angle": "32.63",
+      "indexes": "09",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.6093"
+    },
+    {
+      "name": "11",
+      "angle": "48.35",
+      "indexes": "35",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.6876"
+    },
+    {
+      "name": "10",
+      "angle": "50.20",
+      "indexes": "40",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.6945"
+    },
+    {
+      "name": "1",
+      "angle": "20.00",
+      "indexes": "04-11-19-26-34-41-49-56-64-71-79-86-94-101-109-116",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.4775"
+    },
+    {
+      "name": "T",
+      "angle": "0.00",
+      "indexes": "Table",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.3597"
+    },
+    {
+      "name": "6",
+      "angle": "51.51",
+      "indexes": "119",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.7037"
+    },
+    {
+      "name": "8",
+      "angle": "52.08",
+      "indexes": "79",
+      "instructions": "",
+      "frosted": false,
+      "d": "0.6115"
+    }
+  ],
+  "summary": {
+    "lw": "1.0004",
+    "pw": "0.4958",
+    "cw": "0.1627",
+    "gearUsed": 120,
+    "nonGirdleCount": 44,
+    "girdleCount": 7,
+    "totalCount": 51
+  }
+}
