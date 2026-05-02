@@ -1388,28 +1388,48 @@ async function setupApp() {
       // Normalize input facets for tier metadata, and generate planar faces
       const normalizedFacets = facets.map((f, i) => normalizeDesignFacet(f, i));
       const faces = generateFacesFromFacetList(facets, gear);
-      // Group faces by tier name+instructions so each original design facet becomes a <tier>
+      // Group faces by source facet order to preserve original tier sequence.
       const groups = new Map();
       for (const face of faces) {
-         const key = `${face.name}\u0000${face.instructions}`;
-         if (!groups.has(key)) groups.set(key, { name: face.name || '', instructions: face.instructions || '', faces: [] });
+         const sourceOrder = Number.isFinite(Number(face.sourceFacetOrder)) ? Number(face.sourceFacetOrder) : Number.MAX_SAFE_INTEGER;
+         const key = `${sourceOrder}\u0000${face.name}\u0000${face.instructions}`;
+         if (!groups.has(key)) {
+            groups.set(key, {
+               sourceOrder,
+               name: face.name || '',
+               instructions: face.instructions || '',
+               faces: [],
+            });
+         }
          groups.get(key).faces.push(face);
       }
 
       // No geometric modifications here — rely on generateFacesFromFacetList output.
 
-      for (const { name, instructions, faces: grpFaces } of groups.values()) {
-         // Sort faces in this tier by their index angle (azimuth) ascending
+      const orderedGroups = [...groups.values()].sort((a, b) => {
+         if (a.sourceOrder !== b.sourceOrder) return a.sourceOrder - b.sourceOrder;
+         const nameCmp = String(a.name).localeCompare(String(b.name));
+         if (nameCmp !== 0) return nameCmp;
+         return String(a.instructions).localeCompare(String(b.instructions));
+      });
+
+      for (const { sourceOrder, name, instructions, faces: grpFaces } of orderedGroups) {
+         // Sort faces in this tier by source gear index first, then index angle.
          grpFaces.sort((a, b) => {
-            const va = Number.isFinite(Number(a.indexAngle)) ? Number(a.indexAngle) : Number(a.azimuthDeg || 0);
-            const vb = Number.isFinite(Number(b.indexAngle)) ? Number(b.indexAngle) : Number(b.azimuthDeg || 0);
+            const ia = a.sourceGearIndex;
+            const ib = b.sourceGearIndex;
+            if (ia !== ib) return ia - ib;
+            const va = a.indexAngle ? a.indexAngle : a.azimuthDeg;
+            const vb = b.indexAngle ? b.indexAngle : b.azimuthDeg;
             return va - vb;
          });
-         // find a matching source facet (normalized) to extract angle/depth/flags
-         const source = normalizedFacets.find(f => String((f.name || '')).trim() === String((name || '')).trim() && String((f.instructions || '')).trim() === String((instructions || '')).trim()) || null;
-         const angleAttr = source && Number.isFinite(Number(source.angleDeg)) ? Number(source.angleDeg) : (grpFaces[0]?.signedAngleDeg ?? 0);
+         // Match by source facet order first; fallback by labels for compatibility.
+         const source = normalizedFacets[sourceOrder]
+            || normalizedFacets.find(f => String((f.name || '')).trim() === String((name || '')).trim() && String((f.instructions || '')).trim() === String((instructions || '')).trim())
+            || null;
+         const angleAttr = source && source.angleDeg ? source.angleDeg : (grpFaces[0]?.signedAngleDeg ?? 0);
          // depth fallback: normalized source distance or plane distance from first face
-         let depthAttr = source && Number.isFinite(Number(source.distance)) ? Number(source.distance) : null;
+         let depthAttr = source && source.distance ? source.distance : null;
          if (!Number.isFinite(depthAttr) && grpFaces[0] && Array.isArray(grpFaces[0].vertices) && grpFaces[0].vertices.length) {
             const n0 = grpFaces[0].normal || [0, 0, 1];
             const v0 = grpFaces[0].vertices[0];
@@ -1877,11 +1897,9 @@ async function setupApp() {
       try {
          const normalizedStone = buildStoneFromFacetDesign(designDefinition);
          normalizeStoneToUnitSphere(normalizedStone);
-         const exportFacets = groupExternalFacetsForDesign(
-            (normalizedStone.facets || []).filter((facet) => !isBootstrapFacet(facet)),
-            designDefinition.gear,
-         ).map((facet, idx) => normalizeDesignFacet(facet, idx));
-         if (exportFacets.length > 0) {
+         // Preserve authored facet tier/index order for export; only normalize values.
+         const exportFacets = designDefinition.facets.map((facet, idx) => normalizeDesignFacet(facet, idx));
+         if (exportFacets.length > 0 && normalizedStone) {
             exportDefinition = {
                ...designDefinition,
                facets: exportFacets,
@@ -4135,7 +4153,7 @@ async function setupApp() {
 
       normalizeStoneToUnitSphere(stone);
 
-      await applyStoneData(filename, stone, { syncDesignFromStone: true, isDesign: false});
+      await applyStoneData(filename, stone, { syncDesignFromStone: true, isDesign: false });
    }
 
    function shouldKeepRendering() {

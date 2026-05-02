@@ -2022,7 +2022,8 @@ function generateFacesFromFacetList(facetList = [], gear = 96) {
 
    // Build plane half-spaces from facet definitions (one plane per patterned index)
    const planes = [];
-   for (const facet of normalizedInput) {
+   for (let facetOrder = 0; facetOrder < normalizedInput.length; facetOrder++) {
+      const facet = normalizedInput[facetOrder];
       const symmetry = Math.min(gear, Math.round(Number(facet.symmetry) || gear));
       const step = Math.max(1, gear) / symmetry;
       const mirror = Boolean(facet.mirror);
@@ -2058,7 +2059,17 @@ function generateFacesFromFacetList(facetList = [], gear = 96) {
             d = -d;
          }
 
-         planes.push({ a: normal[0], b: normal[1], c: normal[2], d, name: facet.name, instructions: facet.instructions, frosted: Boolean(facet.frosted), index: idx });
+         planes.push({
+            a: normal[0],
+            b: normal[1],
+            c: normal[2],
+            d,
+            name: facet.name,
+            instructions: facet.instructions,
+            frosted: Boolean(facet.frosted),
+            index: idx,
+            facetOrder,
+         });
       }
    }
 
@@ -2146,6 +2157,8 @@ function generateFacesFromFacetList(facetList = [], gear = 96) {
          signedAngleDeg,
          azimuthDeg,
          indexAngle,
+         sourceFacetOrder: Number.isFinite(Number(p.facetOrder)) ? Number(p.facetOrder) : -1,
+         sourceGearIndex: Number.isFinite(Number(p.index)) ? Number(p.index) : null,
       };
       // Heuristic: ensure girdle facets are laterally aligned with expected polar direction.
       if (isGirdle && Number.isFinite(Number(p.index))) {
