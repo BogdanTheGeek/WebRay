@@ -28,7 +28,7 @@ function drawGearIndices(ctx, gear, cx, cy, radius) {
       pts.push({ index: name, x: Math.sin(angle), y: -Math.cos(angle) });
    }
 
-   console.log(`Drawing gear indices at radius ${radius} with step ${step}...`, pts);
+   // console.log(`Drawing gear indices at radius ${radius} with step ${step}...`, pts);
 
    ctx.font = `12px sans-serif`;
    ctx.textAlign = 'center';
@@ -266,8 +266,6 @@ function renderOrtho(faces, view, canvas, scale = 1.0, gear, summary = {}) {
    // ctx.fillStyle = '#ff0000';
    // ctx.fillRect(0, 0, W, H);
 
-   console.log(`Rendering ${canvas.id} view of size ${W}x${H}...`);
-
    const edgeCol = `#000000`;
 
    const scaled = Math.min(W, H) / 2 * scale * 0.8;
@@ -367,9 +365,6 @@ function renderOrtho(faces, view, canvas, scale = 1.0, gear, summary = {}) {
       cx + dimensions.minX * scaled,
       cy - dimensions.tableMaxY * scaled
    ];
-
-   console.log(tableHoriz);
-   console.log(tableVert);
 
    const labelOffset = 20;
 
