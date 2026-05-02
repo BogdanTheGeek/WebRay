@@ -3761,8 +3761,6 @@ async function setupApp() {
       const isDesign = options.isDesign ?? false;
       currentModelFilename = filename;
 
-      normalizeStoneToUnitSphere(stone);
-
       currentStone = stone;
       designHaloCache = null;
       invalidateDesignPickState(true);
@@ -4039,6 +4037,8 @@ async function setupApp() {
 
       ui.convexFacetMode = convexFacetMode;
       designGearEl.value = stone.sourceGear;
+
+      normalizeStoneToUnitSphere(stone);
 
       await applyStoneData(filename, stone, { syncDesignFromStone: true, isDesign: false});
    }
