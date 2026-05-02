@@ -1991,12 +1991,19 @@ async function setupApp() {
 
    designFacetListEl.addEventListener('click', (e) => {
       const removeBtn = e.target.closest('[data-remove]');
-      if (!removeBtn) return;
       const itemEl = e.target.closest('[data-id]');
       if (!itemEl) return;
-      designFacets = designFacets.filter((facet) => facet.id !== itemEl.dataset.id);
-      renderDesignFacetList();
-      scheduleDesignApply();
+
+      if (removeBtn) {
+         designFacets = designFacets.filter((facet) => facet.id !== itemEl.dataset.id);
+         renderDesignFacetList();
+         scheduleDesignApply();
+         return;
+      }
+
+      if (applyFacetDistanceFromSelectedVertex(itemEl.dataset.id)) {
+         requestRender();
+      }
    });
 
    designHeaderEl.addEventListener('input', () => {
@@ -2720,11 +2727,11 @@ async function setupApp() {
       return normal[2] >= 0 ? absAngle : -absAngle;
    }
 
-   function computeFacetNormalFromDesignInputs() {
-      const gear = Math.max(1, parseInt(designGearEl.value, 10) || 96);
-      const rawIndex = parseFloat(designStartIndexEl.value) || 0;
-      const angleDeg = Math.max(-90, Math.min(90, parseFloat(designAngleEl.value) || 0));
-      const distance = parseFloat(designDistanceEl.value);
+   function computeFacetNormalFromParams(gearValue, rawIndexValue, angleValue, distanceValue) {
+      const gear = Math.max(1, parseInt(gearValue, 10) || 96);
+      const rawIndex = parseFloat(rawIndexValue) || 0;
+      const angleDeg = Math.max(-90, Math.min(90, parseFloat(angleValue) || 0));
+      const distance = parseFloat(distanceValue);
 
       const isNegativeZero = (value) => value === 0 && 1 / value === -Infinity;
       const resolveFlatNormalZ = (angle, depth) => {
@@ -2746,6 +2753,94 @@ async function setupApp() {
          s *= -1;
       }
       return normalize3([s * Math.sin(azi), -s * Math.cos(azi), c]);
+   }
+
+   function computeFacetNormalFromDesignInputs() {
+      const gear = Math.max(1, parseInt(designGearEl.value, 10) || 96);
+      const rawIndex = parseFloat(designStartIndexEl.value) || 0;
+      const angleDeg = Math.max(-90, Math.min(90, parseFloat(designAngleEl.value) || 0));
+      const distance = parseFloat(designDistanceEl.value);
+      return computeFacetNormalFromParams(gear, rawIndex, angleDeg, distance);
+   }
+
+   function buildFacetIndexSetForRow(facet, gearValue) {
+      const gear = Math.max(1, parseInt(gearValue, 10) || 96);
+      const normalized = normalizeDesignFacet(facet || {}, 0);
+      const symmetry = Math.max(1, Math.min(gear, Math.round(Number(normalized.symmetry) || 1)));
+      const mirror = Boolean(normalized.mirror);
+      const step = gear / symmetry;
+      const indexSet = new Set();
+
+      const explicitIndexes = Array.isArray(normalized.indexes)
+         ? [...new Set(
+            normalized.indexes
+               .map((value) => parseInt(value, 10))
+               .filter((value) => Number.isFinite(value) && value >= 0)
+               .map((value) => (value === 0 ? gear : value))
+               .map((value) => wrapDesignGearIndex(value, gear)),
+         )]
+         : [];
+
+      if (explicitIndexes.length > 0) {
+         for (const idx of explicitIndexes) indexSet.add(idx);
+      } else {
+         const start = wrapDesignGearIndex(normalized.startIndex, gear);
+         for (let i = 0; i < symmetry; i++) {
+            const off = Math.round(i * step);
+            const primary = wrapDesignGearIndex(start + off, gear);
+            indexSet.add(primary);
+            if (mirror) indexSet.add(mirrorDesignGearIndex(primary, gear));
+         }
+      }
+
+      const list = [...indexSet];
+      if (list.length === 0) list.push(wrapDesignGearIndex(normalized.startIndex, gear));
+      return list;
+   }
+
+   function applyFacetDistanceFromSelectedVertex(facetId) {
+      if (!facetId) return false;
+      if (!Array.isArray(designSelection.vertexIds) || designSelection.vertexIds.length !== 1) return false;
+      if (Array.isArray(designSelection.edgeIds) && designSelection.edgeIds.length > 0) return false;
+
+      const facetIdx = designFacets.findIndex((facet) => facet.id === facetId);
+      if (facetIdx < 0) return false;
+
+      buildDesignPickCacheIfNeeded();
+      const selectedVertexId = designSelection.vertexIds[0];
+      const vertex = designPickCache.vertices[selectedVertexId];
+      if (!vertex || !Array.isArray(vertex.p) || vertex.p.length < 3) return false;
+
+      const facet = normalizeDesignFacet(designFacets[facetIdx], facetIdx);
+      const gear = Math.max(1, parseInt(designGearEl.value, 10) || 96);
+      const candidateIndexes = buildFacetIndexSetForRow(facet, gear);
+
+      let best = null;
+      for (const idx of candidateIndexes) {
+         const normal = computeFacetNormalFromParams(gear, idx, facet.angleDeg, facet.distance);
+         const requiredDistance = Math.abs(dot3(normal, vertex.p));
+         if (!Number.isFinite(requiredDistance)) continue;
+         const score = Math.abs(requiredDistance - Math.abs(Number(facet.distance) || 0));
+         if (!best || score < best.score) {
+            best = { idx, requiredDistance, score };
+         }
+      }
+      if (!best) return false;
+
+      const keepNegativeFlat = Math.abs(facet.angleDeg) <= 1e-8 && Number(facet.distance) < 0;
+      designFacets[facetIdx] = normalizeDesignFacet(
+         {
+            ...facet,
+            distance: keepNegativeFlat ? -best.requiredDistance : best.requiredDistance,
+            indexDistances: undefined,
+         },
+         facetIdx,
+      );
+
+      renderDesignFacetList();
+      scheduleDesignApply();
+      setDesignStatus(`Set ${facet.name || `F${facetIdx + 1}`} distance to meet selected vertex on index ${best.idx}`);
+      return true;
    }
 
    function computeDesignIndexFromNormal(normal, gear, fallbackIndex = 0) {
